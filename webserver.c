@@ -90,9 +90,8 @@ static int serve_clients(int listener_fd)
         if (client_fd == -1)
         {
             if (errno == EINTR)
-            {
                 continue;
-            }
+
             perror("Accepting Client Failed.");
             return EXIT_FAILURE;
         }
@@ -114,8 +113,7 @@ static void handle_client(int client_fd)
         if (receive_length > BUF_SIZE)
             receive_length = BUF_SIZE;
 
-        ssize_t bytes_received = recv(client_fd, receive_buffer + total_received,
-                                      receive_length, 0);
+        ssize_t bytes_received = recv(client_fd, receive_buffer + total_received, receive_length, 0);
         if (bytes_received == -1)
         {
             if (errno == EINTR)
@@ -150,14 +148,12 @@ static void handle_client(int client_fd)
     size_t total_sent = 0;
     while (total_sent < response_length)
     {
-        ssize_t bytes_sent = send(client_fd, response + total_sent,
-                                  response_length - total_sent, MSG_NOSIGNAL);
+        ssize_t bytes_sent = send(client_fd, response + total_sent, response_length - total_sent, MSG_NOSIGNAL);
         if (bytes_sent == -1)
         {
             if (errno == EINTR)
-            {
                 continue;
-            }
+
             perror("Sending Data Failed.");
             return;
         }

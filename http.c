@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-static int is_method_character(unsigned char byte)
+static int is_token_character(unsigned char byte)
 {
     return (byte >= 'A' && byte <= 'Z') ||
            (byte >= 'a' && byte <= 'z') ||
@@ -59,7 +59,7 @@ struct http_request_line_result http_parse_request_line(const char *data, size_t
         return result;
 
     for (const char *cursor = data; cursor < method_end; ++cursor)
-        if (!is_method_character((unsigned char)*cursor))
+        if (!is_token_character((unsigned char)*cursor))
             return result;
 
     const char *target = method_end + 1;
@@ -84,6 +84,93 @@ struct http_request_line_result http_parse_request_line(const char *data, size_t
     result.request.version_major = (unsigned int)(version[5] - '0');
     result.request.version_minor = (unsigned int)(version[7] - '0');
     return result;
+}
+
+struct http_headers_result http_parse_headers(const char *data, size_t length, size_t request_line_length)
+{
+    struct http_headers_result result = {
+        .status = HTTP_PARSE_ERROR,
+        .error_status = 400};
+    struct http_headers headers = {0};
+    size_t budget = HTTP_REQUEST_HEAD_MAX - request_line_length;
+    size_t offset = 0;
+
+    while (1)
+    {
+        size_t line_end = offset;
+        int found_crlf = 0;
+        for (; line_end < length; ++line_end)
+        {
+            if (line_end >= budget || line_end - offset >= HTTP_HEADER_LINE_MAX)
+            {
+                result.error_status = 431;
+                return result;
+            }
+            unsigned char byte = (unsigned char)data[line_end];
+            if (byte == '\r')
+            {
+                if (line_end + 1 == length)
+                    break;
+                if (data[line_end + 1] != '\n')
+                    return result;
+                if (line_end + 2 > budget || line_end - offset + 2 > HTTP_HEADER_LINE_MAX)
+                {
+                    result.error_status = 431;
+                    return result;
+                }
+                found_crlf = 1;
+                break;
+            }
+            if ((byte < 32 && byte != '\t') || byte == 127)
+                return result;
+        }
+
+        if (!found_crlf)
+        {
+            if (length >= budget || length - offset >= HTTP_HEADER_LINE_MAX)
+                result.error_status = 431;
+            else
+            {
+                result.status = HTTP_PARSE_NEED_MORE;
+                result.error_status = 0;
+            }
+            return result;
+        }
+
+        if (line_end == offset)
+        {
+            result.status = HTTP_PARSE_COMPLETE;
+            result.error_status = 0;
+            result.consumed = line_end + 2;
+            result.headers = headers;
+            return result;
+        }
+        if (headers.count == HTTP_HEADER_COUNT_MAX)
+        {
+            result.error_status = 431;
+            return result;
+        }
+
+        const char *name = data + offset;
+        const char *colon = memchr(name, ':', line_end - offset);
+        if (colon == NULL || colon == name)
+            return result;
+        for (const char *cursor = name; cursor < colon; ++cursor)
+            if (!is_token_character((unsigned char)*cursor))
+                return result;
+
+        const char *value = colon + 1;
+        const char *value_end = data + line_end;
+        while (value < value_end && (*value == ' ' || *value == '\t'))
+            ++value;
+        while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t'))
+            --value_end;
+
+        headers.fields[headers.count++] = (struct http_header){
+            .name = {name, (size_t)(colon - name)},
+            .value = {value, (size_t)(value_end - value)}};
+        offset = line_end + 2;
+    }
 }
 
 const char HTTP_OK_RESPONSE[] =
