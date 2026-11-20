@@ -9,75 +9,76 @@
 
 #include <errno.h>
 
-#define MAX_CON 5
+#define LISTEN_BACKLOG 5
 
-static int init_socket(void);
-static int run_server(int server_fd);
+static int create_listener(void);
+static int serve_clients(int listener_fd);
+static void receive_client_data(int client_fd);
 
 int main(void)
 {
-    int server_fd = init_socket();
-    if (server_fd == -1)
+    int listener_fd = create_listener();
+    if (listener_fd == -1)
     {
         return EXIT_FAILURE;
     }
 
-    int result = run_server(server_fd);
-    if (close(server_fd) == -1)
+    int exit_status = serve_clients(listener_fd);
+    if (close(listener_fd) == -1)
     {
         perror("Closing Server Socket Failed.");
         return EXIT_FAILURE;
     }
 
-    return result;
+    return exit_status;
 }
 
-static int init_socket(void)
+static int create_listener(void)
 {
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == -1)
+    int listener_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener_fd == -1)
     {
         perror("Socket Creation Failed.");
         return -1;
     }
 
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(8080);
+    struct sockaddr_in listen_addr = {0};
+    listen_addr.sin_family = AF_INET;
+    listen_addr.sin_port = htons(8080);
 
-    if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1)
+    if (inet_pton(AF_INET, "127.0.0.1", &listen_addr.sin_addr) != 1)
     {
         fputs("Invalid Listen Address.\n", stderr);
         goto fail;
     }
 
-    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
+    if (bind(listener_fd, (struct sockaddr *)&listen_addr, sizeof(listen_addr)) == -1)
     {
         perror("Binding Socket Failed.");
         goto fail;
     }
 
-    if (listen(server_fd, MAX_CON) == -1)
+    if (listen(listener_fd, LISTEN_BACKLOG) == -1)
     {
         perror("Listen Failed.");
         goto fail;
     }
 
-    return server_fd;
+    return listener_fd;
 
 fail:
-    close(server_fd);
+    close(listener_fd);
     return -1;
 }
 
-static int run_server(int server_fd)
+static int serve_clients(int listener_fd)
 {
     puts("Waiting for client...");
     fflush(stdout);
 
     while (1)
     {
-        int client_fd = accept(server_fd, NULL, NULL);
+        int client_fd = accept(listener_fd, NULL, NULL);
         if (client_fd == -1)
         {
             if (errno == EINTR)
@@ -89,6 +90,29 @@ static int run_server(int server_fd)
         }
 
         puts("Client Connected!");
+        receive_client_data(client_fd);
         close(client_fd);
+    }
+}
+
+static void receive_client_data(int client_fd)
+{
+    char receive_buffer[1024];
+    ssize_t bytes_received;
+    do
+    {
+        bytes_received = recv(client_fd, receive_buffer, sizeof(receive_buffer), 0);
+    } while (bytes_received == -1 && errno == EINTR);
+
+    if (bytes_received > 0)
+    {
+        printf("Received %zd bytes:\n", bytes_received);
+        fwrite(receive_buffer, 1, (size_t)bytes_received, stdout);
+        putchar('\n');
+        fflush(stdout);
+    }
+    else if (bytes_received == -1)
+    {
+        perror("Receiving Data Failed.");
     }
 }

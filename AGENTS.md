@@ -67,7 +67,7 @@ Phase 1의 구체적인 확정 정책은 이 세 문서를 함께 갱신한다.
 | 테스트 설계 | 작성됨, HTTP 테스트 코드 없음 | T-01~T-32. 별도 도구 체인 검사만 추가 |
 | 진행 원장 | 이 파일에 저장 | 결정·상태·증빙·다음 작업 |
 | 개발환경 구성 | PASS | 기본 dev.sh의 build/check, 실제 PTY의 shell, 도구 체인 검사·정리 확인 |
-| 서버 구현·빌드 | 기본 소켓 예제 PARTIAL, 개별 컴파일 PASS | webserver.c의 블로킹 연결 반복만 구현. 서버 빌드 타깃·HTTP 기능 없음 |
+| 서버 구현·빌드 | 기본 소켓 예제 PARTIAL, 개별 컴파일 PASS | webserver.c의 블로킹 연결 반복·한 차례 데이터 수신 구현. 서버 빌드 타깃·HTTP 기능 없음 |
 | HTTP 기능·보안·메모리 검사 | NOT_RUN | HTTP 구현 없음. 기본 연결 예제 검증과 구분 |
 | Linux Docker 컨테이너 검증 | 환경·기본 연결 예제 PASS, HTTP NOT_RUN | 아래 개발환경·블로킹 연결 반복 증빙. HTTP 기능·보안 검증 아님 |
 | Docker 데몬 접근 | 개발 진입점 PASS | WSL에서 Windows 클라이언트·서버 29.9.2 사용. Ubuntu 내부 Docker 소켓은 사용하지 않음 |
@@ -159,7 +159,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 ### D-07 하위 결정: 첫 구현의 I/O와 종료 처리 시점
 
 - 출처·결정: 2026-11-20 사용자 확정. Phase 1은 블로킹 순차 처리로 진행하고, 정상 종료·시그널 처리는 Phase 2 시작으로 옮긴다.
-- 계약: `socket`·`bind`·`listen` 후 블로킹 `accept`를 반복한다. 현재 예제는 연결을 받고 닫는 단계이며, HTTP 수신·응답은 아직 없다.
+- 계약: `socket`·`bind`·`listen` 후 블로킹 `accept`를 반복한다. 현재 예제는 연결마다 `recv` 한 번으로 최대 1,024바이트를 수신·출력하고 닫는다. HTTP 요청 경계 판정·응답은 아직 없다.
 - 제거 범위: SIGINT/SIGTERM 핸들러·종료 플래그·시그널 마스크·pselect·O_NONBLOCK. 소켓 생성 실패와 일반 연결 처리의 close·오류 반환은 유지한다.
 - Phase 구분: P1-27/T-27과 30초 정상 종료 유예는 Phase 2 시작에 구현·검증하며 Phase 1 완료 게이트에서 제외한다. SIGPIPE 송신 실패 안전성은 별도인 P1-26/T-26의 Phase 1 요구다.
 - 영향: P1-04·P1-12·P1-27·P1-29·P1-32, A-01·A-02·A-04·A-08·A-10, T-27·T-29·T-32, D-05·D-07·D-08.
@@ -192,7 +192,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 | P1-01 | NOT_STARTED | NOT_RUN | - | - |
 | P1-02 | NOT_STARTED | NOT_RUN | - | - |
 | P1-03 | NOT_STARTED | NOT_RUN | - | - |
-| P1-04 | PARTIAL: 블로킹 accept 반복·close | PARTIAL: 기본 연결 예제만 실행 | 기본 예제 PASS, HTTP NOT_RUN | 아래 블로킹 순차 예제 증빙 |
+| P1-04 | PARTIAL: 블로킹 accept·단일 recv·close | PARTIAL: 기본 연결·수신 예제만 실행 | 기본 예제 PASS, HTTP NOT_RUN | 아래 블로킹 순차·단일 수신 예제 증빙 |
 | P1-05 | NOT_STARTED | NOT_RUN | - | - |
 | P1-06 | NOT_STARTED | NOT_RUN | - | - |
 | P1-07 | NOT_STARTED | NOT_RUN | - | - |
@@ -377,9 +377,18 @@ if command -v docker >/dev/null 2>&1; then docker version --format 'client={{.Cl
 - 제약: HTTP 기능·마감·보안·메모리 검사와 Phase 2 정상 종료는 NOT_RUN이다. 호스트 clangd가 없어 LSP 대신 컨테이너 GCC의 엄격한 경고 검사와 실제 소켓 실행을 사용했다.
 - 문서 교차 검토: explore 역할, `opencode-go/deepseek-v4.1-flash`, 작업 `st_01a1f7eb`, COMPLETED. 현재 파일과 대조해 종료 단계·완료 게이트의 남은 모호한 표현을 보완했다. 이미 수정된 P1-12 문장은 다시 변경하지 않았다.
 
+### 2026-11-20 단일 데이터 수신 예제 검증
+
+- 변경: `webserver.c`는 연결 후 즉시 닫지 않고 블로킹 `recv`로 최대 1,024바이트를 한 번 수신·출력한 뒤 닫는다. EINTR만 재호출하며 EOF·수신 실패도 클라이언트 소켓을 닫고 다음 연결을 받는다.
+- 경계: 수신한 길이만큼 `fwrite`하며 NUL 종료 문자열로 가정하지 않는다. 한 번의 수신이 HTTP 요청 전체라는 가정은 하지 않는다. HTTP 파싱·응답·마감·정상 종료는 추가하지 않았다.
+- 환경·명령: 앞선 검사와 같은 개발 이미지의 별도 비특권 임시 컨테이너·읽기 전용 소스 마운트·격리 루프백에서 `gcc -std=c17 -Wall -Wextra -Wpedantic -Werror -g webserver.c -o <임시 디렉터리>/webserver`와 Python 표준 라이브러리 하네스를 실행했다.
+- 전환 전: monitor `mon_0JPJ9ZWXA6RM19PB`, exit 1. 즉시 close 뒤 데이터를 읽지 않아 클라이언트에서 ConnectionResetError가 발생했다.
+- 전환 후: monitor `mon_G8KGDJA99NTBEPA8`, exit 0. `BUILD_PASS`, `BINARY_RECEIVE_PASS`, `EOF_RESET_RECOVERY_AND_REPEAT_PASS count=20 fds=4`, `RECEIVE_CHECK_PASS`. NUL·0xff 출력, 데이터 없는 EOF, 연결 reset 후 후속 연결 수신·FD 유지 확인.
+- 제약: 기본 수신 예제 검사이며 HTTP·메모리 검사 통과로 계산하지 않는다. 테스트·결과 파일은 추가하지 않았고 임시 실행 파일·컨테이너는 정리했다.
+
 ## 9. 다음 작업과 재개 지점
 
-1. 개발환경과 기본 블로킹 연결 반복 예제를 검증했다. 현재 학습 단계의 다음 단위는 연결된 클라이언트의 recv/send이며 HTTP·CLI·마감은 아직 없다.
+1. 개발환경과 기본 블로킹 연결·단일 수신 예제를 검증했다. 다음 단위는 메시지 경계를 고려한 반복 수신과 응답 송신이며 HTTP·CLI·마감은 아직 없다.
 2. CLI는 이미 확정한 이름·필수 인자·포트 범위를 유지하고 남은 D-07 하위 결정과 D-02의 루트 초기화 정책을 정한다.
 3. 해당 계약이 DECIDED인 범위부터 서버 코드와 실제 성공/실패 검증을 작성한다. 개발환경 검사를 서버 테스트로 재사용하지 않는다.
 4. 파서 전에 D-03의 초과 코드·trailer와 D-04의 지원 범위 및 판정표를 정리한다. P1-11 한도는 복원한 확정 수치를 사용한다.
