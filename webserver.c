@@ -66,17 +66,17 @@ int init_socket(void)
 
 void run_server(int server_fd)
 {
-    int client_fd = accept(server_fd, NULL, NULL);
-    if (client_fd == -1)
+    while (1)
     {
-        perror("Accepting Client Failed.");
-        close(server_fd);
-        exit(1);
+        int client_fd = accept(server_fd, NULL, NULL);
+        if (client_fd == -1)
+        {
+            perror("Accepting Client Failed.");
+            close(server_fd);
+            exit(1);
+        }
+
+        puts("Client Connected!");
+        close(client_fd);
     }
-
-    puts("Client Connected!");
-
-    close(client_fd);
-    close(server_fd);
-    exit(0);
 }
