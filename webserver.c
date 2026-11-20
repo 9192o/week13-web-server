@@ -1,7 +1,11 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include "webserver.h"
+#include "app.h"
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -13,9 +17,9 @@
 
 static int create_listener(void);
 static int serve_clients(int listener_fd);
-static void receive_client_data(int client_fd);
+static void handle_client(int client_fd);
 
-int main(void)
+int webserver_run(void)
 {
     int listener_fd = create_listener();
     if (listener_fd == -1)
@@ -90,12 +94,12 @@ static int serve_clients(int listener_fd)
         }
 
         puts("Client Connected!");
-        receive_client_data(client_fd);
+        handle_client(client_fd);
         close(client_fd);
     }
 }
 
-static void receive_client_data(int client_fd)
+static void handle_client(int client_fd)
 {
     char receive_buffer[1024];
     ssize_t bytes_received;
@@ -104,15 +108,33 @@ static void receive_client_data(int client_fd)
         bytes_received = recv(client_fd, receive_buffer, sizeof(receive_buffer), 0);
     } while (bytes_received == -1 && errno == EINTR);
 
-    if (bytes_received > 0)
-    {
-        printf("Received %zd bytes:\n", bytes_received);
-        fwrite(receive_buffer, 1, (size_t)bytes_received, stdout);
-        putchar('\n');
-        fflush(stdout);
-    }
-    else if (bytes_received == -1)
+    if (bytes_received == -1)
     {
         perror("Receiving Data Failed.");
+        return;
+    }
+
+    const char *response = app_handle_data(receive_buffer, (size_t)bytes_received);
+    size_t response_length = strlen(response);
+    size_t total_sent = 0;
+    while (total_sent < response_length)
+    {
+        ssize_t bytes_sent = send(client_fd, response + total_sent,
+                                  response_length - total_sent, MSG_NOSIGNAL);
+        if (bytes_sent == -1)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            perror("Sending Data Failed.");
+            return;
+        }
+        if (bytes_sent == 0)
+        {
+            fputs("Sending Data Made No Progress.\n", stderr);
+            return;
+        }
+        total_sent += (size_t)bytes_sent;
     }
 }

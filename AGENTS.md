@@ -21,7 +21,11 @@
 
 Docker 개발환경과 도구 체인 검사 구성을 완료하고 실제 실행 결과를 기록했다.
 Dockerfile·dev.sh·Makefile·환경 검사와 `webserver.c`의 기본 블로킹 연결 반복 예제가 있다.
-HTTP 수신·응답·CLI·서버 단위/통합 테스트 파일·벤치마크는 아직 구현하지 않았다.
+`app.c`는 main 진입점·수신 데이터 출력·고정 200 응답 선택을, `app.h`는 서버가 호출할 앱 인터페이스를 담당한다.
+`webserver.h`의 `webserver_run()`을 앱이 호출하며 서버가 소켓 수명을 관리한다.
+소켓 생성·수신·송신·연결 닫기는 `webserver.c`가 담당하며 고정 HTTP 응답 바이트는 `http.c`·`http.h`에 둔다.
+한 번 수신한 내용과 관계없이 본문 없는 200을 보내는 학습 예제다. EOF에도 송신 가능한 연결이면 200을 보낸다.
+HTTP 요청 파서·메서드/경로 판정·정적 파일·echo·CLI·서버 단위/통합 테스트 파일·벤치마크는 아직 구현하지 않았다.
 2026-11-20 사용자 결정으로 커스텀 SIGINT/SIGTERM 종료 처리와 논블로킹 대기를 제거했다.
 정상 종료·시그널 처리(P1-27/T-27)는 Phase 2 시작에 구현하며 Phase 1 완료 조건에서 제외한다.
 일반적인 연결·오류 경로의 자원 정리, 송신 실패의 SIGPIPE 안전성 요구는 Phase 1에 유지한다.
@@ -67,9 +71,9 @@ Phase 1의 구체적인 확정 정책은 이 세 문서를 함께 갱신한다.
 | 테스트 설계 | 작성됨, HTTP 테스트 코드 없음 | T-01~T-32. 별도 도구 체인 검사만 추가 |
 | 진행 원장 | 이 파일에 저장 | 결정·상태·증빙·다음 작업 |
 | 개발환경 구성 | PASS | 기본 dev.sh의 build/check, 실제 PTY의 shell, 도구 체인 검사·정리 확인 |
-| 서버 구현·빌드 | 기본 소켓 예제 PARTIAL, 개별 컴파일 PASS | webserver.c의 블로킹 연결 반복·한 차례 데이터 수신 구현. 서버 빌드 타깃·HTTP 기능 없음 |
-| HTTP 기능·보안·메모리 검사 | NOT_RUN | HTTP 구현 없음. 기본 연결 예제 검증과 구분 |
-| Linux Docker 컨테이너 검증 | 환경·기본 연결 예제 PASS, HTTP NOT_RUN | 아래 개발환경·블로킹 연결 반복 증빙. HTTP 기능·보안 검증 아님 |
+| 서버 구현·빌드 | 최소 200 응답 예제 PARTIAL, make 빌드 PASS | app.c·webserver.c·http.c를 기본 webserver 타깃으로 컴파일. HTTP 파서 없음 |
+| HTTP 기능·보안·메모리 검사 | 고정 200 예제 PASS, 나머지 NOT_RUN | 아래 기본 응답 증빙. 전체 HTTP·보안·메모리 검사 통과가 아님 |
+| Linux Docker 컨테이너 검증 | 환경·최소 200 예제 PASS, 전체 HTTP NOT_RUN | 아래 개발환경·연결·응답 증빙. 전체 기능·보안 검증과 구분 |
 | Docker 데몬 접근 | 개발 진입점 PASS | WSL에서 Windows 클라이언트·서버 29.9.2 사용. Ubuntu 내부 Docker 소켓은 사용하지 않음 |
 | 구현 착수 순서 | 준비 문서 작성 | A-10의 단계별 착수 조건·첫 구현 단위 |
 | 성능 기준선 | NOT_RUN | 측정 자료 없음 |
@@ -139,7 +143,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 - 출처·결정: 현재 P1-03에 기록된 확정 계약을 원장과 T-03에 동기화한다. 이번 정리에서 새 옵션을 추가하지 않는다.
 - 계약: Makefile을 제공한다. 실행 파일 이름은 `webserver`, `--port`/`--root`는 필수이며 포트는 1~65535다. 잘못된 인자·루트·바인드 실패는 진단 후 비정상 종료한다. 필수 두 인자의 생략 기본값은 없다.
 - 영향: P1-03, A-02·A-10, T-03. 청취 주소·IPv4/IPv6·테스트용 동적 포트·중복 인자 세부는 OPEN으로 남긴다.
-- 설계 상태: 위 기본 계약만 DECIDED. 검증 상태: NOT_RUN, 구현 없음.
+- 설계 상태: 위 기본 계약만 DECIDED. 검증 상태: Makefile 기본 빌드 PASS, CLI 인자 처리·검증은 미구현/NOT_RUN.
 - 닫는 조건: 관련 세부 결정을 정한 뒤 빌드·CLI 성공/실패·FD 정리 결과를 남긴다.
 
 ### D-07 하위 결정: 개발 도구와 실행 진입점
@@ -159,7 +163,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 ### D-07 하위 결정: 첫 구현의 I/O와 종료 처리 시점
 
 - 출처·결정: 2026-11-20 사용자 확정. Phase 1은 블로킹 순차 처리로 진행하고, 정상 종료·시그널 처리는 Phase 2 시작으로 옮긴다.
-- 계약: `socket`·`bind`·`listen` 후 블로킹 `accept`를 반복한다. 현재 예제는 연결마다 `recv` 한 번으로 최대 1,024바이트를 수신·출력하고 닫는다. HTTP 요청 경계 판정·응답은 아직 없다.
+- 계약: `socket`·`bind`·`listen` 후 블로킹 `accept`를 반복한다. 현재 예제는 연결마다 `recv` 한 번으로 최대 1,024바이트를 수신·출력하고 고정 200 응답을 보낸 뒤 닫는다. HTTP 요청 경계 판정은 아직 없다.
 - 제거 범위: SIGINT/SIGTERM 핸들러·종료 플래그·시그널 마스크·pselect·O_NONBLOCK. 소켓 생성 실패와 일반 연결 처리의 close·오류 반환은 유지한다.
 - Phase 구분: P1-27/T-27과 30초 정상 종료 유예는 Phase 2 시작에 구현·검증하며 Phase 1 완료 게이트에서 제외한다. SIGPIPE 송신 실패 안전성은 별도인 P1-26/T-26의 Phase 1 요구다.
 - 영향: P1-04·P1-12·P1-27·P1-29·P1-32, A-01·A-02·A-04·A-08·A-10, T-27·T-29·T-32, D-05·D-07·D-08.
@@ -191,7 +195,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 | --- | --- | --- | --- | --- |
 | P1-01 | NOT_STARTED | NOT_RUN | - | - |
 | P1-02 | NOT_STARTED | NOT_RUN | - | - |
-| P1-03 | NOT_STARTED | NOT_RUN | - | - |
+| P1-03 | PARTIAL: 기본 make 빌드, CLI 미구현 | PARTIAL: 빌드 PASS, CLI NOT_RUN | 기본 빌드 PASS | 아래 make 빌드 증빙 |
 | P1-04 | PARTIAL: 블로킹 accept·단일 recv·close | PARTIAL: 기본 연결·수신 예제만 실행 | 기본 예제 PASS, HTTP NOT_RUN | 아래 블로킹 순차·단일 수신 예제 증빙 |
 | P1-05 | NOT_STARTED | NOT_RUN | - | - |
 | P1-06 | NOT_STARTED | NOT_RUN | - | - |
@@ -201,7 +205,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 | P1-10 | NOT_STARTED | NOT_RUN | - | - |
 | P1-11 | NOT_STARTED | NOT_RUN | - | - |
 | P1-12 | NOT_STARTED | NOT_RUN | - | - |
-| P1-13 | NOT_STARTED | NOT_RUN | - | - |
+| P1-13 | PARTIAL: 고정 200·CL=0·Connection: close | PARTIAL: 최소 응답·부분 송신 검사 | 기본 응답 PASS, 전체 T-13 NOT_RUN | 아래 최소 200 응답 예제 증빙 |
 | P1-14 | NOT_STARTED | NOT_RUN | - | - |
 | P1-15 | NOT_STARTED | NOT_RUN | - | - |
 | P1-16 | NOT_STARTED | NOT_RUN | - | - |
@@ -214,7 +218,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 | P1-23 | NOT_STARTED | NOT_RUN | - | - |
 | P1-24 | NOT_STARTED | NOT_RUN | - | - |
 | P1-25 | NOT_STARTED | NOT_RUN | - | - |
-| P1-26 | NOT_STARTED | NOT_RUN | - | - |
+| P1-26 | PARTIAL: send 반복·EINTR·MSG_NOSIGNAL·FD 정리 | PARTIAL: reset·부분 송신·EPIPE 경로 | 하위 예제 PASS, 전체 T-26 NOT_RUN | 아래 최소 200 응답 예제 증빙 |
 | P1-27 | PHASE_2: 시작 시 구현 | NOT_RUN | Phase 1 게이트 제외 | - |
 | P1-28 | NOT_STARTED | NOT_RUN | - | - |
 | P1-29 | NOT_STARTED | NOT_RUN | - | - |
@@ -294,7 +298,8 @@ Phase 2 시작으로 이관한 P1-27/T-27의 미실행은 Phase 1 완료 차단 
 
 ### 실행 결과
 
-현재 HTTP 서버의 빌드·기능·보안·메모리·성능 실행 결과는 없다.
+전체 요구사항 기준의 HTTP 서버·보안·메모리·성능 실행 결과는 없다.
+기본 연결·수신·고정 200 응답 예제의 하위 범위 실행 결과는 아래에 별도로 기록한다.
 개발환경 빌드·검사·셸 결과는 아래 최종 검증에 별도로 기록한다.
 결과가 생기면 아래 형식의 실제 값으로 행을 추가한다.
 
@@ -386,9 +391,35 @@ if command -v docker >/dev/null 2>&1; then docker version --format 'client={{.Cl
 - 전환 후: monitor `mon_G8KGDJA99NTBEPA8`, exit 0. `BUILD_PASS`, `BINARY_RECEIVE_PASS`, `EOF_RESET_RECOVERY_AND_REPEAT_PASS count=20 fds=4`, `RECEIVE_CHECK_PASS`. NUL·0xff 출력, 데이터 없는 EOF, 연결 reset 후 후속 연결 수신·FD 유지 확인.
 - 제약: 기본 수신 예제 검사이며 HTTP·메모리 검사 통과로 계산하지 않는다. 테스트·결과 파일은 추가하지 않았고 임시 실행 파일·컨테이너는 정리했다.
 
+### 2026-11-20 서버·앱 파일 분리 검증
+
+- 변경: 수신 데이터 출력 처리를 `app.c`의 `app_handle_data(const char *, size_t)`로 옮기고 `app.h`에 선언했다. 소켓 수신·연결 관리는 `webserver.c`가 담당한다. 기존 app.c의 사용자 주석은 유지했다.
+- 현재 컴파일: 컨테이너에서 `gcc -std=c17 -Wall -Wextra -Wpedantic -Werror -g webserver.c app.c -o <임시 디렉터리>/webserver`. 두 소스를 함께 빌드해야 한다.
+- 검증: 분리 전 monitor `mon_E062XQ06CFCKZTX7`, 분리 후 monitor `mon_R6TV4W7HZJEA9RDZ` 모두 exit 0. 바이너리 수신 출력·빈 입력 EOF·reset 후 복구·20회 반복 연결·FD 개수 4 유지 확인.
+- 범위: 기존 단일 수신 동작을 유지한 파일 분리다. HTTP 파일·200 응답·빌드 타깃은 추가하지 않았다.
+- 후속 진입점 조정: main을 `app.c`로 옮기고 기존 서버 실행 본문을 `webserver_run()`으로 공개했다. 선언은 새 `webserver.h`에 둔다. 앱에서 서버를 시작하고 수신 시 앱 처리 함수를 호출하는 흐름이다.
+- 진입점 조정 검증: monitor `mon_7S9DA46PHPEPR9PZ`, exit 0. 같은 두 소스의 엄격한 컴파일·바이너리 수신·EOF/reset 복구·20회 반복 연결·FD 유지 검사 PASS.
+
+### 2026-11-20 임의 입력에 대한 최소 200 응답 검증
+
+- 사용자 요청: 현재 학습 단계에서는 요청 문법·내용·바이트 값을 검사하지 않고 200 OK를 보낸다. 이 과도기 예제로 향후 P1-05~P1-12의 파싱·오류·입력 제한 계약을 대체하지 않는다.
+- 책임: `http.c`의 `HTTP_OK_RESPONSE`는 `HTTP/1.1 200 OK`, `Content-Length: 0`, `Connection: close`와 CRLF 헤더 종료를 제공한다. `app_handle_data()`는 이 상수의 포인터를 반환하고 `webserver.c`가 전체 응답을 송신한다. 입력이 더 필요하다고 대기하는 HTTP 파서는 아직 없다.
+- 송신: 부분 송신은 남은 바이트를 반복 전송하고 EINTR는 재호출한다. MSG_NOSIGNAL로 연결이 끊긴 클라이언트의 송신 실패가 프로세스를 SIGPIPE로 종료하지 않게 한다. SIGINT/SIGTERM 정상 종료 기능은 추가하지 않았다.
+- 환경·빌드: 앞선 검사와 같은 개발 이미지의 비특권·격리 루프백 임시 컨테이너에서 `gcc -std=c17 -Wall -Wextra -Wpedantic -Werror -g webserver.c app.c http.c -o <임시 디렉터리>/webserver`와 Python 표준 라이브러리 하네스를 실행했다.
+- 기준선: monitor `mon_ERTZVYXKY11ZZQZ0`, exit 1. 기존 서버가 응답 없이 닫아 HTTPResponse에서 RemoteDisconnected가 발생했다.
+- 실제 소켓 검증: monitor `mon_GA4XC8TR4Z07EC53`, exit 0. 정상 HTTP 요청·비HTTP 텍스트·전체 바이트 값·NUL·빈 입력 후 송신 half-close·64 KiB 입력에서 200/CL=0/Connection: close를 확인했다. reset 뒤 20회 요청·FD 개수 4 유지와 실제 curl의 200도 PASS.
+- 송신 경계 검증: monitor `mon_173GB4C6X3CJ4DKN`, exit 0. 테스트 번역 단위에서 실제 클라이언트 처리 함수를 호출하고 linker wrap으로 send/recv만 제어했다. 3바이트 단위 송신·EINTR 후 정확한 전체 응답, EPIPE 뒤 후속 처리, MSG_NOSIGNAL을 확인했다. Broken pipe 진단은 의도한 실패 주입 결과다.
+- 제약: 고정 응답 학습 예제만 검증했다. HTTP 메시지 경계·크기 제한·Date·요청별 상태 판정·연결 정리 예산·정적 파일·echo·메모리 검사는 미구현/NOT_RUN이다. 테스트·결과 파일은 추가하지 않았고 임시 실행 파일·컨테이너는 정리했다.
+
+### 2026-11-20 기본 make 빌드 검증
+
+- 변경: Makefile 기본 목표를 `webserver`로 바꾸고 세 C 소스·세 헤더를 선행 조건으로 지정했다. C17·엄격한 경고 옵션으로 컴파일하며 기존 개발환경 타깃과 `make help`는 유지한다.
+- 명령·결과: `docker.exe exec week13-web-server-dev make`, monitor `mon_DEEY2ATDPG24G65Y`, exit 0. `/workspace`에서 `gcc -std=c17 -Wall -Wextra -Wpedantic -Werror app.c webserver.c http.c -o webserver`를 실행해 소스 디렉터리에 실행 파일을 생성했다.
+- 범위: 기본 빌드만 추가했다. CLI·HTTP 파싱·정상 종료 등 서버 동작은 변경하지 않았다.
+
 ## 9. 다음 작업과 재개 지점
 
-1. 개발환경과 기본 블로킹 연결·단일 수신 예제를 검증했다. 다음 단위는 메시지 경계를 고려한 반복 수신과 응답 송신이며 HTTP·CLI·마감은 아직 없다.
+1. 개발환경과 기본 블로킹 연결·단일 수신·고정 200 응답 예제를 검증했다. 다음 단위는 HTTP 메시지 경계를 고려한 반복 수신·파싱이며 CLI·마감·상태별 응답은 아직 없다.
 2. CLI는 이미 확정한 이름·필수 인자·포트 범위를 유지하고 남은 D-07 하위 결정과 D-02의 루트 초기화 정책을 정한다.
 3. 해당 계약이 DECIDED인 범위부터 서버 코드와 실제 성공/실패 검증을 작성한다. 개발환경 검사를 서버 테스트로 재사용하지 않는다.
 4. 파서 전에 D-03의 초과 코드·trailer와 D-04의 지원 범위 및 판정표를 정리한다. P1-11 한도는 복원한 확정 수치를 사용한다.

@@ -11,7 +11,8 @@
 
 개발환경은 Debian 13의 `trixie-20261104-slim` 이미지와 C17·GCC·Make·Python을 사용한다.
 GDB·strace·curl·Valgrind와 sanitizer 실행 환경도 포함한다.
-현재 구성은 Linux/amd64 개발용이며, HTTP 서버의 빌드·실행은 아직 구현하지 않았다.
+현재 구성은 Linux/amd64 개발용이며, 임의 입력에 고정 200 응답을 보내는 최소 예제가 있다.
+HTTP 요청 파싱·정적 파일·echo 등 전체 서버 기능은 아직 구현하지 않았다.
 실제 Docker 접근 상태와 미실행 사유는 [진행 원장](AGENTS.md#8-증빙-원장)에 기록한다.
 
 ## 개발환경 사용
@@ -39,10 +40,23 @@ sh dev.sh shell
 
 `check`는 정상 C 프로그램을 실제 도구로 컴파일·실행하는 환경 확인이다.
 HTTP 기능·보안·메모리 검사나 GDB/strace의 ptrace 동작 검증을 대신하지 않는다.
-현재 Makefile의 기본 타깃은 도움말이고, 서버 빌드 타깃은 후속 구현에서 추가한다.
+컨테이너에서 `make`를 실행하면 `webserver`를 빌드한다. 도움말은 `make help`다.
 호스트에 Make가 있다면 `make dev-build`·`make dev-shell`도 같은 진입점을 호출한다.
-`webserver.c`에는 블로킹 방식으로 연결을 하나씩 받고 닫는 기본 소켓 예제가 있다.
-HTTP 수신·응답과 서버용 Makefile 타깃은 아직 없다.
+`app.c`의 main에서 서버를 시작하고, `webserver.c`가 블로킹 방식으로 연결을 하나씩 처리한다.
+최대 1,024바이트를 한 번 수신하면 내용에 관계없이 본문 없는 200 응답을 보내고 닫는다.
+`http.c`는 고정 HTTP 응답 형식을, 앱은 응답 선택을, 서버는 실제 송신을 담당한다.
+컨테이너 안에서 다음과 같이 빌드·실행한다.
+
+```sh
+make
+./webserver
+```
+
+같은 컨테이너의 다른 터미널에서 확인한다. 본문은 비어 있고 상태와 헤더만 출력된다.
+
+```sh
+curl -i http://127.0.0.1:8080/anything
+```
 
 Docker Desktop은 Linux 컨테이너 모드로 실행한다.
 이 PC에서는 Ubuntu 내부 Docker 소켓 대신 Windows 클라이언트를 통해 연결한다.
@@ -53,7 +67,7 @@ Docker Desktop은 Linux 컨테이너 모드로 실행한다.
 
 | 단계 | 범위 | 상태 |
 | --- | --- | --- |
-| Phase 1 | 블로킹 순차 처리, HTTP/1.1, 정적 GET/HEAD, 바이너리 POST `/echo` | 기본 연결 반복 구현, HTTP 미구현 |
+| Phase 1 | 블로킹 순차 처리, HTTP/1.1, 정적 GET/HEAD, 바이너리 POST `/echo` | 기본 수신·고정 200 응답 예제 구현, 전체 HTTP 기능 미구현 |
 | Phase 2 전반 | 시작 시 정상 종료·시그널 처리, 여러 연결의 동시 처리 | 구현 전, 동시성 모델 미정 |
 | Phase 2 후반 | keep-alive 연결 재사용 | 구현 전 |
 | Phase 3 | Forward 또는 Reverse Proxy | 구현 전, 방식 미정 |
