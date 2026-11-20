@@ -2,6 +2,7 @@
 
 #include "webserver.h"
 #include "app.h"
+#include "http.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,9 @@
 #include <errno.h>
 
 #define LISTEN_BACKLOG 5
+#define BUF_SIZE 1024
+#define DEFAULT_PORT 8080
+#define DEFAULT_IP "127.0.0.1"
 
 static int create_listener(void);
 static int serve_clients(int listener_fd);
@@ -39,7 +43,7 @@ int webserver_run(void)
 
 static int create_listener(void)
 {
-    int listener_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int listener_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listener_fd == -1)
     {
         perror("Socket Creation Failed.");
@@ -48,9 +52,9 @@ static int create_listener(void)
 
     struct sockaddr_in listen_addr = {0};
     listen_addr.sin_family = AF_INET;
-    listen_addr.sin_port = htons(8080);
+    listen_addr.sin_port = htons(DEFAULT_PORT);
 
-    if (inet_pton(AF_INET, "127.0.0.1", &listen_addr.sin_addr) != 1)
+    if (inet_pton(AF_INET, DEFAULT_IP, &listen_addr.sin_addr) != 1)
     {
         fputs("Invalid Listen Address.\n", stderr);
         goto fail;
@@ -101,20 +105,47 @@ static int serve_clients(int listener_fd)
 
 static void handle_client(int client_fd)
 {
-    char receive_buffer[1024];
-    ssize_t bytes_received;
-    do
+    char receive_buffer[HTTP_REQUEST_LINE_MAX];
+    size_t total_received = 0;
+    const char *response;
+    while (1)
     {
-        bytes_received = recv(client_fd, receive_buffer, sizeof(receive_buffer), 0);
-    } while (bytes_received == -1 && errno == EINTR);
+        size_t receive_length = sizeof(receive_buffer) - total_received;
+        if (receive_length > BUF_SIZE)
+            receive_length = BUF_SIZE;
 
-    if (bytes_received == -1)
-    {
-        perror("Receiving Data Failed.");
-        return;
+        ssize_t bytes_received = recv(client_fd, receive_buffer + total_received,
+                                      receive_length, 0);
+        if (bytes_received == -1)
+        {
+            if (errno == EINTR)
+                continue;
+            perror("Receiving Data Failed.");
+            return;
+        }
+        if (bytes_received == 0)
+        {
+            response = HTTP_BAD_REQUEST_RESPONSE;
+            break;
+        }
+
+        total_received += (size_t)bytes_received;
+        struct http_request_line_result result =
+            http_parse_request_line(receive_buffer, total_received);
+        if (result.status == HTTP_PARSE_NEED_MORE)
+            continue;
+        if (result.status == HTTP_PARSE_ERROR)
+        {
+            response = result.error_status == 414
+                           ? HTTP_URI_TOO_LONG_RESPONSE
+                           : HTTP_BAD_REQUEST_RESPONSE;
+            break;
+        }
+
+        response = app_handle_data(receive_buffer, result.consumed);
+        break;
     }
 
-    const char *response = app_handle_data(receive_buffer, (size_t)bytes_received);
     size_t response_length = strlen(response);
     size_t total_sent = 0;
     while (total_sent < response_length)
