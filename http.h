@@ -7,6 +7,11 @@
 #define HTTP_HEADER_LINE_MAX 8192
 #define HTTP_REQUEST_HEAD_MAX 32768
 #define HTTP_HEADER_COUNT_MAX 100
+#define HTTP_BODY_MAX 1048576
+#define HTTP_CHUNK_LINE_MAX 8192
+#define HTTP_CHUNK_EXTENSIONS_MAX 32768
+#define HTTP_TRAILER_MAX 32768
+#define HTTP_TRAILER_COUNT_MAX 100
 
 enum http_parse_status
 {
@@ -57,6 +62,48 @@ struct http_headers_result
     struct http_headers headers;
 };
 
+struct http_request
+{
+    struct http_request_line line;
+    struct http_headers headers;
+    struct http_slice body;
+};
+
+enum http_body_state
+{
+    HTTP_BODY_LENGTH,
+    HTTP_BODY_CHUNK_SIZE,
+    HTTP_BODY_CHUNK_DATA,
+    HTTP_BODY_CHUNK_CR,
+    HTTP_BODY_CHUNK_LF,
+    HTTP_BODY_TRAILERS,
+    HTTP_BODY_DONE,
+    HTTP_BODY_FAILED
+};
+
+struct http_body_parser
+{
+    enum http_body_state state;
+    size_t remaining;
+    char *data;
+    size_t length;
+    size_t capacity;
+    char line[HTTP_CHUNK_LINE_MAX];
+    size_t line_length;
+    size_t extension_bytes;
+    size_t trailer_bytes;
+    size_t trailer_count;
+    int expect_continue;
+    int error_status;
+};
+
+struct http_body_result
+{
+    enum http_parse_status status;
+    size_t consumed;
+    int error_status;
+};
+
 /*
  * Pass the accumulated bytes from the start of the request line, not just
  * the latest recv. COMPLETE means only the request line is complete.
@@ -80,8 +127,27 @@ struct http_request_line_result http_parse_request_line(const char *data, size_t
  */
 struct http_headers_result http_parse_headers(const char *data, size_t length, size_t request_line_length);
 
+/*
+ * Initialize once from COMPLETE generic headers. Returns 0 or HTTP error status.
+ * Validates CL/TE framing and Expect, not Host, methods, targets or versions.
+ * Feed ONLY new bytes to http_parse_body; consumed applies even to NEED_MORE.
+ * Decoded binary bytes accumulate in parser->data/length, growing on demand.
+ * COMPLETE stops at the body boundary, leaving surplus input unconsumed.
+ * EOF before COMPLETE is an error for the caller to handle.
+ * Call destroy on every path, including failed init. Do not re-init a live parser.
+ */
+int http_body_init(struct http_body_parser *parser, const struct http_headers *headers);
+struct http_body_result http_parse_body(struct http_body_parser *parser, const char *data, size_t length);
+void http_body_destroy(struct http_body_parser *parser);
+
 extern const char HTTP_OK_RESPONSE[];
 extern const char HTTP_BAD_REQUEST_RESPONSE[];
 extern const char HTTP_URI_TOO_LONG_RESPONSE[];
+extern const char HTTP_CONTENT_TOO_LARGE_RESPONSE[];
+extern const char HTTP_HEADERS_TOO_LARGE_RESPONSE[];
+extern const char HTTP_EXPECTATION_FAILED_RESPONSE[];
+extern const char HTTP_NOT_IMPLEMENTED_RESPONSE[];
+extern const char HTTP_INTERNAL_ERROR_RESPONSE[];
+extern const char HTTP_CONTINUE_RESPONSE[];
 
 #endif

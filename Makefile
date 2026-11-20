@@ -10,10 +10,12 @@ webserver: app.c webserver.c http.c app.h webserver.h http.h
 
 test-unit:
 	@set -eu; \
-		http_bin=$$(mktemp); server_bin=$$(mktemp); \
-		trap 'rm -f "$$http_bin" "$$server_bin"' EXIT HUP INT TERM; \
+		http_bin=$$(mktemp); body_bin=$$(mktemp); server_bin=$$(mktemp); \
+		trap 'rm -f "$$http_bin" "$$body_bin" "$$server_bin"' EXIT HUP INT TERM; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_http.c http.c $(LDLIBS) -o "$$http_bin"; \
 		"$$http_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c http.c $(LDLIBS) -o "$$body_bin"; \
+		"$$body_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
 		"$$server_bin"
 

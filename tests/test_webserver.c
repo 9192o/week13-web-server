@@ -10,7 +10,7 @@
 
 #include "webserver.c"
 
-#define MAX_RECV_CALLS 16
+#define MAX_RECV_CALLS 64
 
 static struct
 {
@@ -21,7 +21,7 @@ static struct
     size_t recv_next;
     size_t recv_offset;
 
-    char send_buf[16384];
+    char send_buf[65536];
     size_t send_len;
     size_t send_calls;
     int send_next_errno;
@@ -32,14 +32,46 @@ static struct
 static struct
 {
     int called;
-    char data[HTTP_REQUEST_LINE_MAX];
-    size_t length;
+    char method[32];
+    char target[HTTP_REQUEST_LINE_MAX];
+    unsigned int version_major;
+    unsigned int version_minor;
+    size_t header_count;
+    char body[HTTP_BODY_MAX];
+    size_t body_length;
 } app_stub;
 
 static void reset(void)
 {
     memset(&mock, 0, sizeof(mock));
     memset(&app_stub, 0, sizeof(app_stub));
+}
+
+static void feedv(const char *data[], const size_t len[], size_t n)
+{
+    assert(n <= MAX_RECV_CALLS);
+    for (size_t i = 0; i < n; ++i)
+    {
+        mock.recv_data[i] = data[i];
+        mock.recv_len[i] = len[i];
+    }
+    mock.recv_calls = n;
+    mock.recv_next = 0;
+    mock.recv_offset = 0;
+}
+
+static void feed(const char *s)
+{
+    const char *data[] = {s};
+    size_t len[] = {strlen(s)};
+    feedv(data, len, 1);
+}
+
+static void feed2(const char *a, const char *b)
+{
+    const char *data[] = {a, b};
+    size_t len[] = {strlen(a), strlen(b)};
+    feedv(data, len, 2);
 }
 
 ssize_t __wrap_recv(int sockfd, void *buf, size_t len, int flags)
@@ -95,12 +127,22 @@ ssize_t __wrap_send(int sockfd, const void *buf, size_t len, int flags)
     return (ssize_t)n;
 }
 
-const char *app_handle_data(const char *data, size_t data_length)
+const char *app_handle_request(const struct http_request *request)
 {
     app_stub.called++;
-    assert(data_length <= sizeof(app_stub.data));
-    memcpy(app_stub.data, data, data_length);
-    app_stub.length = data_length;
+    assert(request->line.method.length < sizeof(app_stub.method));
+    memcpy(app_stub.method, request->line.method.data, request->line.method.length);
+    app_stub.method[request->line.method.length] = '\0';
+    assert(request->line.target.length < sizeof(app_stub.target));
+    memcpy(app_stub.target, request->line.target.data, request->line.target.length);
+    app_stub.target[request->line.target.length] = '\0';
+    app_stub.version_major = request->line.version_major;
+    app_stub.version_minor = request->line.version_minor;
+    app_stub.header_count = request->headers.count;
+    assert(request->body.length <= sizeof(app_stub.body));
+    if (request->body.length)
+        memcpy(app_stub.body, request->body.data, request->body.length);
+    app_stub.body_length = request->body.length;
     return HTTP_OK_RESPONSE;
 }
 
@@ -118,34 +160,56 @@ static void assert_response_is(const char *response)
     assert(memcmp(mock.send_buf, response, len) == 0);
 }
 
-static void test_normal_valid(void)
+static void assert_response_contains(const char *needle)
+{
+    size_t len = strlen(needle);
+    assert(mock.send_len >= len);
+    int found = 0;
+    for (size_t i = 0; i + len <= mock.send_len; ++i)
+    {
+        if (memcmp(mock.send_buf + i, needle, len) == 0)
+        {
+            found = 1;
+            break;
+        }
+    }
+    assert(found);
+}
+
+static void assert_app_called_with(const char *method, const char *target,
+                                   unsigned int major, unsigned int minor,
+                                   size_t headers, const void *body, size_t body_len)
+{
+    assert(app_stub.called == 1);
+    assert(strcmp(app_stub.method, method) == 0);
+    assert(strcmp(app_stub.target, target) == 0);
+    assert(app_stub.version_major == major);
+    assert(app_stub.version_minor == minor);
+    assert(app_stub.header_count == headers);
+    assert(app_stub.body_length == body_len);
+    assert(memcmp(app_stub.body, body, body_len) == 0);
+}
+
+static void test_header_only_valid(void)
 {
     reset();
-    const char req[] = "GET /foo HTTP/1.1\r\nHost: ignored\r\n";
-    mock.recv_data[0] = req;
-    mock.recv_len[0] = sizeof(req) - 1;
-    mock.recv_calls = 1;
+    feed("GET /foo HTTP/1.1\r\nHost: ignored\r\n\r\n");
     handle_client(0);
-    assert(app_stub.called == 1);
-    assert(app_stub.length == strlen("GET /foo HTTP/1.1\r\n"));
-    assert(memcmp(app_stub.data, "GET /foo HTTP/1.1\r\n", app_stub.length) == 0);
+    assert_app_called_with("GET", "/foo", 1, 1, 1, "", 0);
     assert_response_is(HTTP_OK_RESPONSE);
     assert(mock.send_last_flags == MSG_NOSIGNAL);
 }
 
-static void test_fragmented_line(void)
+static void test_fragmented_line_and_headers(void)
 {
     reset();
     const char part1[] = "POST /echo HTTP/1.1\r";
-    const char part2[] = "\n";
-    mock.recv_data[0] = part1;
-    mock.recv_len[0] = sizeof(part1) - 1;
-    mock.recv_data[1] = part2;
-    mock.recv_len[1] = sizeof(part2) - 1;
-    mock.recv_calls = 2;
+    const char part2[] = "\nHost: x\r\n\r\n";
+    const char *data[] = {part1, part2};
+    size_t len[] = {sizeof(part1) - 1, sizeof(part2) - 1};
+    feedv(data, len, 2);
     handle_client(0);
-    assert(app_stub.called == 1);
-    assert(app_stub.length == strlen("POST /echo HTTP/1.1\r\n"));
+    assert_app_called_with("POST", "/echo", 1, 1, 1, "", 0);
     assert_response_is(HTTP_OK_RESPONSE);
 }
 
@@ -157,15 +221,12 @@ static void test_long_line_over_1024(void)
     memcpy(line, "GET /", 5);
     memcpy(line + sizeof(line) - strlen(" HTTP/1.1\r\n"),
            " HTTP/1.1\r\n", strlen(" HTTP/1.1\r\n"));
-    mock.recv_data[0] = line;
-    mock.recv_len[0] = 1024;
-    mock.recv_data[1] = line + 1024;
-    mock.recv_len[1] = sizeof(line) - 1024;
-    mock.recv_calls = 2;
+    const char *data[] = {line, line + 1024, "\r\n\r\n"};
+    size_t len[] = {1024, sizeof(line) - 1024, 4};
+    feedv(data, len, 3);
     handle_client(0);
     assert(app_stub.called == 1);
-    assert(app_stub.length == sizeof(line));
-    assert(memcmp(app_stub.data, line, sizeof(line)) == 0);
+    assert(app_stub.body_length == 0);
     assert_response_is(HTTP_OK_RESPONSE);
 }
 
@@ -177,25 +238,25 @@ static void test_exact_limit_8192(void)
     memcpy(line, "GET /", 5);
     memcpy(line + sizeof(line) - strlen(" HTTP/1.1\r\n"),
            " HTTP/1.1\r\n", strlen(" HTTP/1.1\r\n"));
-    for (int i = 0; i < 8; i++)
+    const char *data[9];
+    size_t len[9];
+    for (int i = 0; i < 8; ++i)
     {
-        mock.recv_data[i] = line + i * 1024;
-        mock.recv_len[i] = 1024;
+        data[i] = line + i * 1024;
+        len[i] = 1024;
     }
-    mock.recv_calls = 8;
+    data[8] = "\r\n\r\n";
+    len[8] = 4;
+    feedv(data, len, 9);
     handle_client(0);
     assert(app_stub.called == 1);
-    assert(app_stub.length == sizeof(line));
     assert_response_is(HTTP_OK_RESPONSE);
 }
 
 static void test_malformed_400(void)
 {
     reset();
-    const char req[] = "GET / HTTP/1.1 extra\r\n";
-    mock.recv_data[0] = req;
-    mock.recv_len[0] = sizeof(req) - 1;
-    mock.recv_calls = 1;
+    feed("GET / HTTP/1.1 extra\r\n");
     handle_client(0);
     assert(app_stub.called == 0);
     assert_response_prefix("HTTP/1.1 400");
@@ -207,12 +268,16 @@ static void test_oversize_414(void)
     char line[8192];
     memset(line, 'A', sizeof(line));
     memcpy(line, "GET /", 5);
-    for (int i = 0; i < 8; i++)
+    const char *data[9];
+    size_t len[9];
+    for (int i = 0; i < 8; ++i)
     {
-        mock.recv_data[i] = line + i * 1024;
-        mock.recv_len[i] = 1024;
+        data[i] = line + i * 1024;
+        len[i] = 1024;
     }
-    mock.recv_calls = 8;
+    data[8] = " HTTP/1.1\r\n";
+    len[8] = strlen(data[8]);
+    feedv(data, len, 9);
     handle_client(0);
     assert(app_stub.called == 0);
     assert_response_prefix("HTTP/1.1 414");
@@ -221,9 +286,7 @@ static void test_oversize_414(void)
 static void test_eof_empty_400(void)
 {
     reset();
-    mock.recv_data[0] = "";
-    mock.recv_len[0] = 0;
-    mock.recv_calls = 1;
+    feed("");
     handle_client(0);
     assert(app_stub.called == 0);
     assert_response_prefix("HTTP/1.1 400");
@@ -232,10 +295,12 @@ static void test_eof_empty_400(void)
 static void test_recv_eintr_retries(void)
 {
     reset();
-    const char req[] = "GET / HTTP/1.1\r\n";
+    feed("GET / HTTP/1.1\r\n\r\n");
     mock.recv_errno[0] = EINTR;
-    mock.recv_data[1] = req;
-    mock.recv_len[1] = sizeof(req) - 1;
+    mock.recv_data[1] = mock.recv_data[0];
+    mock.recv_len[1] = mock.recv_len[0];
+    mock.recv_data[0] = "";
+    mock.recv_len[0] = 0;
     mock.recv_calls = 2;
     handle_client(0);
     assert(app_stub.called == 1);
@@ -246,6 +311,8 @@ static void test_recv_error_cleanup(void)
 {
     reset();
     mock.recv_errno[0] = EIO;
+    mock.recv_data[0] = "";
+    mock.recv_len[0] = 0;
     mock.recv_calls = 1;
     handle_client(0);
     assert(app_stub.called == 0);
@@ -255,10 +322,7 @@ static void test_recv_error_cleanup(void)
 static void test_send_partial_and_eintr(void)
 {
     reset();
-    const char req[] = "GET / HTTP/1.1\r\n";
-    mock.recv_data[0] = req;
-    mock.recv_len[0] = sizeof(req) - 1;
-    mock.recv_calls = 1;
+    feed("GET / HTTP/1.1\r\n\r\n");
     mock.send_next_partial = 5;
     mock.send_next_errno = EINTR;
     handle_client(0);
@@ -267,10 +331,326 @@ static void test_send_partial_and_eintr(void)
     assert(mock.send_calls > 1);
 }
 
+static void test_content_length_body(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello");
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 1, "hello", 5);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_content_length_fragmented(void)
+{
+    reset();
+    const char part1[] = "POST /x HTTP/1.1\r\nContent-Length: 12\r\n\r\nhel";
+    const char part2[] = "lo\0world\xff";
+    const char *data[] = {part1, part2};
+    size_t len[] = {sizeof(part1) - 1, sizeof(part2) - 1};
+    feedv(data, len, 2);
+    handle_client(0);
+    assert(app_stub.called == 1);
+    assert(app_stub.body_length == 12);
+    assert(memcmp(app_stub.body, "hello\0world\xff", 12) == 0);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_content_length_early_eof(void)
+{
+    reset();
+    feed2("POST /x HTTP/1.1\r\nContent-Length: 5\r\n\r\nab", "");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_no_content_length_no_body(void)
+{
+    reset();
+    feed("GET /x HTTP/1.1\r\nHost: x\r\n\r\nsurplus-not-body");
+    handle_client(0);
+    assert_app_called_with("GET", "/x", 1, 1, 1, "", 0);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_duplicate_content_length(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_content_length_and_transfer_encoding(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_invalid_content_length(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 1x\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_content_length_overflow(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 184467440737095516160\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_content_length_overlimit(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 1048577\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 413");
+}
+
+static void test_transfer_encoding_gzip(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 501");
+}
+
+static void test_transfer_encoding_chunked(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"
+         "5\r\nhello\r\n0\r\nX-Note: yes\r\n\r\n");
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 1, "hello", 5);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_chunked_fragmented(void)
+{
+    reset();
+    feed2("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhe",
+          "llo\r\n0\r\n\r\n");
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 1, "hello", 5);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_chunked_early_eof(void)
+{
+    reset();
+    feed2("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhe", "");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_chunked_size_overlimit(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n100001\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 413");
+}
+
+static void test_expect_100_continue_length(void)
+{
+    reset();
+    feed2("POST /x HTTP/1.1\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n",
+          "hello");
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 2, "hello", 5);
+    assert_response_contains("HTTP/1.1 100 Continue");
+    assert_response_contains("HTTP/1.1 200 OK");
+}
+
+static void test_expect_100_continue_chunked(void)
+{
+    reset();
+    feed2("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
+          "5\r\nhello\r\n0\r\n\r\n");
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 2, "hello", 5);
+    assert_response_contains("HTTP/1.1 100 Continue");
+    assert_response_contains("HTTP/1.1 200 OK");
+}
+
+static void test_expect_unknown(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nExpect: unknown\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 417");
+}
+
+static void test_expect_malformed(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nExpect: bad value\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_header_syntax_error(void)
+{
+    reset();
+    feed("GET /x HTTP/1.1\r\nBad(Name: x\r\n\r\n");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_header_too_large(void)
+{
+    reset();
+    char big[HTTP_HEADER_LINE_MAX + 8];
+    memset(big, 'a', sizeof(big));
+    memcpy(big, "X:", 2);
+    memcpy(big + HTTP_HEADER_LINE_MAX - 1, "\r\n\r\n", 4);
+    const char req[] = "GET /x HTTP/1.1\r\n";
+    const char *data[] = {req, big};
+    size_t len[] = {sizeof(req) - 1, HTTP_HEADER_LINE_MAX + 3};
+    feedv(data, len, 2);
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 431");
+}
+
+static void test_eof_before_headers(void)
+{
+    reset();
+    feed2("GET /x HTTP/1.1\r\nHost: x", "");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_no_premature_app_callback(void)
+{
+    reset();
+    feed2("POST /x HTTP/1.1\r\nContent-Length: 5\r\n\r\n", "");
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert_response_prefix("HTTP/1.1 400");
+}
+
+static void test_later_bytes_not_body(void)
+{
+    reset();
+    feed("POST /x HTTP/1.1\r\nContent-Length: 3\r\n\r\nabcleftover");
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 1, "abc", 3);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_custom_method_still_200(void)
+{
+    reset();
+    feed("CUSTOM /x HTTP/1.1\r\nHost: x\r\n\r\n");
+    handle_client(0);
+    assert_app_called_with("CUSTOM", "/x", 1, 1, 1, "", 0);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_multiple_recv_before_app(void)
+{
+    reset();
+    const char *data[] = {
+        "POST /x HTTP/1.1\r\n",
+        "Content-Length: 5\r\n",
+        "\r\n",
+        "hel",
+        "lo",
+    };
+    size_t len[] = {
+        sizeof("POST /x HTTP/1.1\r\n") - 1,
+        sizeof("Content-Length: 5\r\n") - 1,
+        2,
+        3,
+        2,
+    };
+    feedv(data, len, 5);
+    handle_client(0);
+    assert_app_called_with("POST", "/x", 1, 1, 1, "hello", 5);
+    assert_response_is(HTTP_OK_RESPONSE);
+}
+
+static void test_all_request_splits(void)
+{
+    const char wire[] =
+        "POST /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "3\r\na\0b\r\n0\r\nX-T: ignored\r\n\r\n";
+    const char body[] = "a\0b";
+    for (size_t split = 1; split < sizeof(wire) - 1; ++split)
+    {
+        reset();
+        const char *data[] = {wire, wire + split};
+        size_t len[] = {split, sizeof(wire) - 1 - split};
+        feedv(data, len, 2);
+        handle_client(0);
+        assert_app_called_with("POST", "/x", 1, 1, 2, body, sizeof(body) - 1);
+        assert_response_is(HTTP_OK_RESPONSE);
+    }
+}
+
+static void test_expect_shortcuts_and_errors(void)
+{
+    const char *requests[] = {
+        "POST / HTTP/1.1\r\nContent-Length: 0\r\nExpect: 100-continue\r\n\r\n",
+        "POST / HTTP/1.1\r\nContent-Length: 1\r\nExpect: 100-continue\r\n\r\na",
+        "POST / HTTP/1.1\r\nContent-Length: 1048577\r\nExpect: 100-continue\r\n\r\n"};
+    for (size_t i = 0; i < 3; ++i)
+    {
+        reset();
+        feed(requests[i]);
+        handle_client(0);
+        assert(app_stub.called == (i == 2 ? 0 : 1));
+        assert_response_is(i == 2 ? HTTP_CONTENT_TOO_LARGE_RESPONSE : HTTP_OK_RESPONSE);
+    }
+}
+
+static void test_allocated_body_io_errors(void)
+{
+    reset();
+    feed2("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nab", "");
+    mock.recv_errno[1] = EIO;
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert(mock.send_len == 0);
+
+    reset();
+    feed("POST / HTTP/1.1\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\nab");
+    mock.send_next_errno = EPIPE;
+    handle_client(0);
+    assert(app_stub.called == 0);
+    assert(mock.send_len == 0);
+
+    reset();
+    feed("POST / HTTP/1.1\r\nContent-Length: 1\r\n\r\na");
+    mock.send_next_errno = EPIPE;
+    handle_client(0);
+    assert(app_stub.called == 1);
+    assert(mock.send_len == 0);
+}
+
 int main(void)
 {
-    test_normal_valid();
-    test_fragmented_line();
+    test_header_only_valid();
+    test_fragmented_line_and_headers();
     test_long_line_over_1024();
     test_exact_limit_8192();
     test_malformed_400();
@@ -279,6 +659,34 @@ int main(void)
     test_recv_eintr_retries();
     test_recv_error_cleanup();
     test_send_partial_and_eintr();
-    puts("WEBSERVER_REQUEST_LINE_TESTS_PASS");
+    test_content_length_body();
+    test_content_length_fragmented();
+    test_content_length_early_eof();
+    test_no_content_length_no_body();
+    test_duplicate_content_length();
+    test_content_length_and_transfer_encoding();
+    test_invalid_content_length();
+    test_content_length_overflow();
+    test_content_length_overlimit();
+    test_transfer_encoding_gzip();
+    test_transfer_encoding_chunked();
+    test_chunked_fragmented();
+    test_chunked_early_eof();
+    test_chunked_size_overlimit();
+    test_expect_100_continue_length();
+    test_expect_100_continue_chunked();
+    test_expect_unknown();
+    test_expect_malformed();
+    test_header_syntax_error();
+    test_header_too_large();
+    test_eof_before_headers();
+    test_no_premature_app_callback();
+    test_later_bytes_not_body();
+    test_custom_method_still_200();
+    test_multiple_recv_before_app();
+    test_all_request_splits();
+    test_expect_shortcuts_and_errors();
+    test_allocated_body_io_errors();
+    puts("WEBSERVER_BODY_FRAMING_TESTS_PASS");
     return 0;
 }

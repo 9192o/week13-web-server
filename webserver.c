@@ -22,6 +22,40 @@
 static int create_listener(void);
 static int serve_clients(int listener_fd);
 static void handle_client(int client_fd);
+static int send_response(int client_fd, const char *response);
+
+static const char *error_response(int status)
+{
+    switch (status)
+    {
+    case 400:
+        return HTTP_BAD_REQUEST_RESPONSE;
+    case 413:
+        return HTTP_CONTENT_TOO_LARGE_RESPONSE;
+    case 414:
+        return HTTP_URI_TOO_LONG_RESPONSE;
+    case 417:
+        return HTTP_EXPECTATION_FAILED_RESPONSE;
+    case 431:
+        return HTTP_HEADERS_TOO_LARGE_RESPONSE;
+    case 501:
+        return HTTP_NOT_IMPLEMENTED_RESPONSE;
+    default:
+        return HTTP_INTERNAL_ERROR_RESPONSE;
+    }
+}
+
+static ssize_t receive_data(int client_fd, char *buffer, size_t length)
+{
+    ssize_t received;
+    do
+    {
+        received = recv(client_fd, buffer, length, 0);
+    } while (received == -1 && errno == EINTR);
+    if (received == -1)
+        perror("Receiving Data Failed.");
+    return received;
+}
 
 int webserver_run(void)
 {
@@ -104,46 +138,91 @@ static int serve_clients(int listener_fd)
 
 static void handle_client(int client_fd)
 {
-    char receive_buffer[HTTP_REQUEST_LINE_MAX];
+    char receive_buffer[HTTP_REQUEST_HEAD_MAX];
     size_t total_received = 0;
-    const char *response;
+    struct http_request_line_result line = {.status = HTTP_PARSE_NEED_MORE};
+    struct http_headers_result headers;
+    struct http_body_parser body = {0};
+    struct http_request request;
+    const char *response = HTTP_BAD_REQUEST_RESPONSE;
     while (1)
     {
         size_t receive_length = sizeof(receive_buffer) - total_received;
         if (receive_length > BUF_SIZE)
             receive_length = BUF_SIZE;
-
-        ssize_t bytes_received = recv(client_fd, receive_buffer + total_received, receive_length, 0);
-        if (bytes_received == -1)
-        {
-            if (errno == EINTR)
-                continue;
-            perror("Receiving Data Failed.");
-            return;
-        }
+        ssize_t bytes_received = receive_data(client_fd, receive_buffer + total_received, receive_length);
+        if (bytes_received < 0)
+            goto cleanup;
         if (bytes_received == 0)
-        {
-            response = HTTP_BAD_REQUEST_RESPONSE;
-            break;
-        }
+            goto respond;
 
         total_received += (size_t)bytes_received;
-        struct http_request_line_result result =
-            http_parse_request_line(receive_buffer, total_received);
-        if (result.status == HTTP_PARSE_NEED_MORE)
+        if (line.status == HTTP_PARSE_NEED_MORE)
+            line = http_parse_request_line(receive_buffer, total_received);
+        if (line.status == HTTP_PARSE_NEED_MORE)
             continue;
-        if (result.status == HTTP_PARSE_ERROR)
+        if (line.status == HTTP_PARSE_ERROR)
         {
-            response = result.error_status == 414
-                           ? HTTP_URI_TOO_LONG_RESPONSE
-                           : HTTP_BAD_REQUEST_RESPONSE;
-            break;
+            response = error_response(line.error_status);
+            goto respond;
         }
-
-        response = app_handle_data(receive_buffer, result.consumed);
+        headers = http_parse_headers(receive_buffer + line.consumed,
+                                     total_received - line.consumed, line.consumed);
+        if (headers.status == HTTP_PARSE_NEED_MORE)
+            continue;
+        if (headers.status == HTTP_PARSE_ERROR)
+        {
+            response = error_response(headers.error_status);
+            goto respond;
+        }
         break;
     }
 
+    int error = http_body_init(&body, &headers.headers);
+    if (error)
+    {
+        response = error_response(error);
+        goto respond;
+    }
+    size_t body_offset = line.consumed + headers.consumed;
+    struct http_body_result result =
+        http_parse_body(&body, receive_buffer + body_offset, total_received - body_offset);
+    int sent_continue = 0;
+    while (result.status == HTTP_PARSE_NEED_MORE)
+    {
+        if (body.expect_continue && !sent_continue)
+        {
+            if (send_response(client_fd, HTTP_CONTINUE_RESPONSE) == -1)
+                goto cleanup;
+            sent_continue = 1;
+        }
+        char buffer[BUF_SIZE];
+        ssize_t received = receive_data(client_fd, buffer, sizeof(buffer));
+        if (received < 0)
+            goto cleanup;
+        if (received == 0)
+            goto respond;
+        result = http_parse_body(&body, buffer, (size_t)received);
+    }
+    if (result.status == HTTP_PARSE_ERROR)
+    {
+        response = error_response(result.error_status);
+        goto respond;
+    }
+    request = (struct http_request){
+        .line = line.request,
+        .headers = headers.headers,
+        .body = {body.data, body.length}};
+    response = app_handle_request(&request);
+
+respond:
+    send_response(client_fd, response);
+cleanup:
+    http_body_destroy(&body);
+}
+
+static int send_response(int client_fd, const char *response)
+{
     size_t response_length = strlen(response);
     size_t total_sent = 0;
     while (total_sent < response_length)
@@ -155,13 +234,14 @@ static void handle_client(int client_fd)
                 continue;
 
             perror("Sending Data Failed.");
-            return;
+            return -1;
         }
         if (bytes_sent == 0)
         {
             fputs("Sending Data Made No Progress.\n", stderr);
-            return;
+            return -1;
         }
         total_sent += (size_t)bytes_sent;
     }
+    return 0;
 }

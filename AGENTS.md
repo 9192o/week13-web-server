@@ -21,14 +21,17 @@
 
 Docker 개발환경과 도구 체인 검사 구성을 완료하고 실제 실행 결과를 기록했다.
 Dockerfile·dev.sh·Makefile·환경 검사와 `webserver.c`의 기본 블로킹 연결 반복 예제가 있다.
-`app.c`는 main 진입점·수신 데이터 출력·고정 200 응답 선택을, `app.h`는 서버가 호출할 앱 인터페이스를 담당한다.
+`app.c`는 main 진입점·파싱된 요청의 크기 출력·고정 200 응답 선택을, `app.h`는 서버가 호출할 앱 인터페이스를 담당한다.
 `webserver.h`의 `webserver_run()`을 앱이 호출하며 서버가 소켓 수명을 관리한다.
 소켓 생성·수신·송신·연결 닫기는 `webserver.c`가 담당하며 고정 HTTP 응답 바이트는 `http.c`·`http.h`에 둔다.
-요청 라인을 최대 8,192바이트까지 누적 수신하는 학습 예제다. 정상 라인은 빈 200,
-문법 오류·완성 전 EOF는 400, 길이 한도 위반은 414를 보내고 닫는다.
-`http.c`·`http.h`에 독립적인 요청 라인 파서, `tests/test_http.c`와 `make test-unit`을 추가했다.
-서버 수신 루프에 연결했고 `tests/test_webserver.c`·`tests/test_server.py`로 검사했다.
-독립적인 헤더 구문 파서와 단위 테스트도 추가했다. 헤더 의미 검증·서버 연결·본문 파서·메서드/경로 판정·정적 파일·echo·CLI·전체 서버 통합 테스트·벤치마크는 아직 구현하지 않았다.
+요청 라인·헤더를 최대 32,768바이트까지 누적 수신하고 `http.c`의 본문 상태 머신으로
+CL/chunked 본문을 디코딩하는 학습 예제다. 디코딩 본문은 최대 1 MiB다.
+세 파서의 완료 후 `app_handle_request()`에 요청 구조체를 한 번 전달하고 빈 200을 선택한다.
+문법·미완성 EOF 400, 본문 초과 413, 요청 라인 초과 414, 헤더/메타데이터 초과 431,
+Expect 미지원 417·전송 코딩 미지원 501을 송신한다. 추가 본문을 기다리는 100-continue도 처리한다.
+본문 파서의 새 바이트 입력 계약은 요청 라인·헤더의 누적 입력 계약과 다르다.
+`tests/test_http.c`·`tests/test_body.c`의 단위 테스트와 서버 단위/소켓 하네스를 사용한다.
+Host·지원 버전·URI·메서드/경로 판정·정적 파일·echo·CLI·마감·전체 서버 테스트·벤치마크는 아직 구현하지 않았다.
 2026-11-20 사용자 결정으로 커스텀 SIGINT/SIGTERM 종료 처리와 논블로킹 대기를 제거했다.
 정상 종료·시그널 처리(P1-27/T-27)는 Phase 2 시작에 구현하며 Phase 1 완료 조건에서 제외한다.
 일반적인 연결·오류 경로의 자원 정리, 송신 실패의 SIGPIPE 안전성 요구는 Phase 1에 유지한다.
@@ -71,12 +74,12 @@ Phase 1의 구체적인 확정 정책은 이 세 문서를 함께 갱신한다.
 | 인터뷰 합의 정리 | 작성됨 | PHASE_1_REQUIREMENTS의 확정 항목 |
 | 요구사항 명세 | 작성됨, 정합성 검사·독립 검토 반영 | P1-01~P1-32 |
 | 아키텍처 | 초안, 구현 증명 미완료 | A-01~A-10, 특히 D-02·D-05 |
-| 테스트 설계 | 작성됨, 요청 라인·헤더 구문 단위 테스트 추가 | T-05·T-10의 구문·한도 하위 범위만 구현 |
+| 테스트 설계 | 요청 라인·헤더·본문 및 수신 연결 테스트 추가 | T-04·05·07~11·24·26의 하위 범위, 전체 완료 아님 |
 | 진행 원장 | 이 파일에 저장 | 결정·상태·증빙·다음 작업 |
 | 개발환경 구성 | PASS | 기본 dev.sh의 build/check, 실제 PTY의 shell, 도구 체인 검사·정리 확인 |
-| 서버 구현·빌드 | 요청 라인 200/400/414 예제 PARTIAL, make 빌드 PASS | 독립 헤더 구문 파서 추가, 헤더 서버 연결·본문 파서 없음 |
-| HTTP 기능·보안·메모리 검사 | 요청 라인 서버 예제·헤더 구문 단위/메모리 검사 PASS, 나머지 NOT_RUN | 아래 하위 범위 증빙. 전체 HTTP·보안·메모리 검사 통과가 아님 |
-| Linux Docker 컨테이너 검증 | 환경·최소 200 예제 PASS, 전체 HTTP NOT_RUN | 아래 개발환경·연결·응답 증빙. 전체 기능·보안 검증과 구분 |
+| 서버 구현·빌드 | 세 파서 수신 연결 예제 PARTIAL, make 빌드 PASS | CL/chunked·프레이밍·Expect 추가, 라우팅·Host·마감 없음 |
+| HTTP 기능·보안·메모리 검사 | 세 파서 단위·수신 연결·실제 소켓·메모리 하위 검사 | 아래 본문·수신 연결 증빙. 전체 HTTP·보안·메모리 검사 통과가 아님 |
+| Linux Docker 컨테이너 검증 | 환경·요청 수신/파싱 예제 PASS, 전체 HTTP NOT_RUN | 아래 단계별 증빙. 전체 기능·보안 검증과 구분 |
 | Docker 데몬 접근 | 개발 진입점 PASS | WSL에서 Windows 클라이언트·서버 29.9.2 사용. Ubuntu 내부 Docker 소켓은 사용하지 않음 |
 | 구현 착수 순서 | 준비 문서 작성 | A-10의 단계별 착수 조건·첫 구현 단위 |
 | 성능 기준선 | NOT_RUN | 측정 자료 없음 |
@@ -101,8 +104,8 @@ OPEN에서 계약·알고리즘·예상 결과가 정해지면 DECIDED로 기록
 | --- | --- | --- | --- |
 | D-01 | OPEN | MIME 정확한 목록/대소문자/별칭 검사 기준, 3xx 코드·쿼리·Location, 인코딩된 구분자·dot segment·UTF-8, echo query | 명시적 정책표, 인터뷰 제안과 확정 구분, T-17·19~21 예상값 |
 | D-02 | OPEN, 보안 차단 | Linux 컨테이너의 링크/경계/TOCTOU 안전한 열기, 지원 커널·마운트, 내부 절대 링크, 숨김 링크, 순환, 디렉터리 교체·파일 변경 | DECIDED: 지원 Linux API 근거·알고리즘 불변 조건·위협 모델. VERIFIED: 구현 후 제어된 T-16·T-18·T-22 결과 |
-| D-03 | OPEN | 청크 메타데이터 초과 코드, trailer 허용/금지·중복·무시 규칙 | RFC 근거와 자체 정책 분리, T-08·11의 정확한 oracle |
-| D-04 | OPEN | HTTP 버전/minor, request-target 형식·Host, 오류 우선순위, GET/HEAD 본문·Content-Encoding·Expect 반복/빈 본문 | RFC 9110/9112와 실제 지원 범위, 파서/라우팅/응답 판정표 |
+| D-03 | DECIDED, 메타데이터/트레일러 단위 검증 VERIFIED | 메타데이터 초과 431·금지 trailer 400·그 외/중복 무시 | 아래 본문·수신 계약과 P1-08·11, 실제 단위·메모리 증빙 |
+| D-04 | OPEN, CL/TE·Expect 기본 해석 DECIDED | HTTP 버전/minor, request-target 형식·Host, 자원 오류 우선순위, 최종 GET/HEAD 본문·Content-Encoding·버전별 Expect 정책 | RFC 9110/9112와 실제 지원 범위, 아래 과도기 계약과 최종 판정표 구분 |
 | D-05 | OPEN, 연결 수명 차단 | 100·최종·408 송신·연결 닫기 예산, 무진행 카운터·동시 만료, unread input·half-close와 응답 보존 | T-12·14·24·26의 타임라인·최장 점유 상한. T-27의 서버 종료 마감은 Phase 2 시작 |
 | D-06 | OPEN | JSONL 필드명·단위·null/부분 송신·완전 송신 여부, 출력 채널과 로그 backpressure | 기계 판독 스키마와 오류 정책, 민감정보/로그 주입/출력 실패 테스트 |
 | D-07 | OPEN, 실행 환경·기본 CLI·블로킹 순차 I/O DECIDED, 개발 도구 VERIFIED | 최소 커널·서버 포트 공개, 청취 주소/IP·동적 포트·중복 인자·SO_REUSEADDR. 시그널 전달·중지 유예·종료 대기는 Phase 2 시작 | T-02·T-03·T-04와 개발 도구 증빙. T-27은 Phase 2 시작에 별도 검증 |
@@ -187,9 +190,26 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 - 계약: `http_parse_headers()`는 요청 라인 직후 누적 버퍼와 정상 요청 라인의 소비 길이를 받는다. 헤더 이름은 token, 값은 앞뒤 SP/HTAB을 제외한 원문 참조다. 이름 대소문자·중복·순서를 보존하며 이름 비교는 후속 의미 검증에서 대소문자를 구분하지 않는다.
 - 경계·오류: 빈 줄까지의 소비 길이는 헤더 시작 기준이다. 본문은 검사·소비하지 않는다. NEED_MORE/ERROR는 소비 0·빈 목록이다. 잘못된 구문·금지 제어문자·obs-fold는 400, 필드 줄 CRLF 포함 8,192바이트·요청 라인/종료 빈 줄 포함 32,768바이트·100개 제한은 431이다.
 - 영향: P1-05·P1-10, A-03, T-05·T-10의 구문/제한 하위 범위. 중복 필드를 보존하는 것은 Host/CL 등의 중복 승인이 아니며 P1-05·P1-07의 의미 검증 요구를 유지한다.
-- 상태: 설계 DECIDED, 독립 단위·메모리 검증 VERIFIED. 헤더 서버 연결·Host/프레이밍·본문 검증은 미구현이며 D-04 전체는 OPEN이다. 실행 증빙은 아래 헤더 구문 파서 검증을 따른다.
+- 상태: 구문 단위·메모리 검증 VERIFIED. 이후 본문·수신 연결에서 서버 연결·CL/TE·Expect 해석을 추가했다. Host·지원 버전·URI 검증과 D-04 전체는 OPEN이다. 단계별 실행 증빙은 아래를 따른다.
 
 ### 변경 기록
+
+2026-11-20 본문·수신 연결 구현 계약 (구현자 결정, 설계 DECIDED, 하위 범위 검증 VERIFIED):
+`http.c`의 본문 구역은 CL/TE 프레이밍·Expect 해석과 새 바이트 기반 본문 상태 머신을 담당한다.
+서버는 요청 라인·헤더 누적 버퍼를 유지하고 본문은 증분 디코딩하며,
+완료 후 `http_request`를 앱에 한 번 전달한다. 앱의 정상 응답은 빈 200으로 유지한다.
+청크 줄/확장 누적/trailer 줄·총량·개수 초과는 431, 디코딩 본문 초과는 413,
+문법·숫자 오버플로·프레이밍/금지 trailer 오류는 400으로 구분한다.
+trailer의 Host·Content-Length·Transfer-Encoding·Connection·Trailer·TE·Upgrade·Expect·
+Content-Encoding·Content-Type·Authorization·Proxy-Authorization·Cookie는 거부한다.
+그 외 유효한 trailer는 중복을 포함해 무시하고 초기 헤더·앱 본문에 합치지 않는다.
+여러 Expect 필드/목록의 단순 100-continue 반복은 허용하고,
+알 수 있는 문법의 미지원 기대 조건은 417, 문법 오류는 400이다.
+이미 완성된 본문·빈 본문에는 100을 생략하며 추가 수신이 필요하면 한 번 보낸다.
+메서드와 무관하게 유효한 프레이밍 본문을 읽는 과도기 예제이며 라우팅·지원 버전·
+URI/Host 검증·Content-Encoding 정책·마감/종료 예산은 이 작업으로 확정하지 않는다.
+영향: P1-04·05·07~11·24·26, A-02~04, T-04·05·07~11·24·26.
+아래 본문·수신 연결 검증에서 실제 명령·결과와 전체 Phase 1 미완료 범위를 구분한다.
 
 2026-11-20 요청 라인 서버 연결 하위 계약: 사용자 연결 요청에 따른 구현자 결정.
 정상 요청 라인은 기존 앱의 빈 200, 문법 오류는 400, 길이 제한은 414로 연결한다.
@@ -222,16 +242,16 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 | P1-01 | NOT_STARTED | NOT_RUN | - | - |
 | P1-02 | NOT_STARTED | NOT_RUN | - | - |
 | P1-03 | PARTIAL: 기본 make 빌드, CLI 미구현 | PARTIAL: 빌드 PASS, CLI NOT_RUN | 기본 빌드 PASS | 아래 make 빌드 증빙 |
-| P1-04 | PARTIAL: 블로킹 accept·요청 라인 누적 recv·close | PARTIAL: 요청 라인 서버 연결 PASS, 전체 요청 NOT_RUN | 아래 서버 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
-| P1-05 | PARTIAL: 요청 라인 서버 연결·독립 헤더 구문 파서 | PARTIAL: 구문 단위·요청 라인 소켓 PASS, 헤더 의미/서버 연결 NOT_RUN | 아래 요청 라인·헤더 구문 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
+| P1-04 | PARTIAL: 블로킹 accept·세 파서 수신 연결·close | PARTIAL: 요청 수신/파싱 하위 검사 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
+| P1-05 | PARTIAL: 요청 라인·헤더·본문 연결, Host/버전/URI 미검증 | PARTIAL: 구문·프레이밍 단위/소켓 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
 | P1-06 | NOT_STARTED | NOT_RUN | - | - |
-| P1-07 | NOT_STARTED | NOT_RUN | - | - |
-| P1-08 | NOT_STARTED | NOT_RUN | - | - |
-| P1-09 | NOT_STARTED | NOT_RUN | - | - |
-| P1-10 | PARTIAL: 요청 라인·독립 헤더의 줄/총량/개수 제한 | PARTIAL: 단위 경계 PASS, 헤더 서버 연결 NOT_RUN | 아래 요청 라인·헤더 구문 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
-| P1-11 | NOT_STARTED | NOT_RUN | - | - |
+| P1-07 | CL/TE 해석·중복/충돌/코딩 검사 구현 | 단위·오류 응답 소켓 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
+| P1-08 | 청크 디코더·확장/trailer 구문/정책 구현 | 단위·청크 소켓 PASS, 전체 T-29 아님 | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
+| P1-09 | PARTIAL: 1 MiB·조기 거부·점진 할당, 최종 라우팅 우선순위 미정 | CL/chunked 경계 단위·소켓 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
+| P1-10 | 요청 라인·헤더의 줄/총량/개수 제한과 서버 연결 | 단위 경계·400/414/431 소켓 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
+| P1-11 | 청크 줄·확장 누적·trailer 한도/431 구현 | 메타데이터 단위·메모리 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너 |
 | P1-12 | NOT_STARTED | NOT_RUN | - | - |
-| P1-13 | PARTIAL: 200/400/414·CL=0·Connection: close | PARTIAL: 요청 라인 오류 응답·부분 송신 검사 | 하위 응답 PASS, 전체 T-13 NOT_RUN | 아래 최소 200·서버 연결 증빙 |
+| P1-13 | PARTIAL: 상태별 빈 최종 응답·100·CL=0·close | PARTIAL: 오류 응답·부분 송신·100 검사, Date/표현 응답 없음 | 하위 응답 PASS, 전체 T-13 NOT_RUN | 아래 본문·수신 연결 증빙 |
 | P1-14 | NOT_STARTED | NOT_RUN | - | - |
 | P1-15 | NOT_STARTED | NOT_RUN | - | - |
 | P1-16 | NOT_STARTED | NOT_RUN | - | - |
@@ -242,7 +262,7 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 | P1-21 | NOT_STARTED | NOT_RUN | - | - |
 | P1-22 | NOT_STARTED | NOT_RUN | - | - |
 | P1-23 | NOT_STARTED | NOT_RUN | - | - |
-| P1-24 | NOT_STARTED | NOT_RUN | - | - |
+| P1-24 | PARTIAL: 100-continue·417/400·빈/완료 본문 생략 | 기본 단위·실제 100 왕복 PASS, 버전/마감 미검증 | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
 | P1-25 | NOT_STARTED | NOT_RUN | - | - |
 | P1-26 | PARTIAL: send 반복·EINTR·MSG_NOSIGNAL·FD 정리 | PARTIAL: reset·부분 송신·EPIPE 경로 | 하위 예제 PASS, 전체 T-26 NOT_RUN | 아래 최소 200 응답 예제 증빙 |
 | P1-27 | PHASE_2: 시작 시 구현 | NOT_RUN | Phase 1 게이트 제외 | - |
@@ -478,9 +498,34 @@ if command -v docker >/dev/null 2>&1; then docker version --format 'client={{.Cl
 - 제약: 위 소켓 검사는 기존 요청 라인 동작의 회귀 검사이며 헤더 수신 통합 검사가 아니다. Host·CL·TE 등 의미 검증·본문·전체 HTTP/보안·FD·성능 검사는 NOT_RUN이다. 별도 결과 파일은 없고 위 monitor 출력이 증빙이다.
 - 명세 확인 보조: explore 역할, 실제 모델 `opencode-go/deepseek-v4.1-flash`, 작업 `st_01a1f8b5`, CANCELLED. 최종 결과 전달 전에 주 담당자가 관련 명세를 직접 확인해 구현·검증을 끝냈으므로 중복 조사를 중지했다. 작업자의 미완료 결과를 증빙으로 사용하지 않았다.
 
+### 2026-11-20 본문 파서와 세 파서 수신 연결 검증
+
+- 변경: `http_body.c`·`http.h`의 `http_body_init()`·`http_parse_body()`·`http_body_destroy()`, 요청 구조체와 상태 타입. `webserver.c`는 요청 라인·헤더·본문을 연결하고 `app.c`의 `app_handle_request()`에 완료 요청을 한 번 전달한다. 앱은 원문 대신 헤더 개수·본문 길이만 출력하고 빈 200을 반환한다. Makefile에 본문 소스와 `tests/test_body.c`를 연결했다.
+- 입력·소유권: 요청 라인·헤더는 누적 버퍼, 본문은 새 바이트만 입력한다. 본문 NEED_MORE에서도 consumed가 유효하다. 원본 head 버퍼와 디코딩 본문은 앱 콜백 동안만 유효하며 완료·오류·수신/송신 실패에서 본문 메모리를 해제한다. 남은 입력은 다음 요청으로 실행하지 않는다.
+- 환경: 기존 Linux/amd64 개발 이미지·비특권 사용자, `/workspace`. 단위·메모리는 `docker.exe exec week13-web-server-dev`, 소켓/curl은 사용 중인 서버와 분리한 `docker.exe run --rm --init --network none --user 1000:1000 --env HOME=/tmp --mount "type=bind,source=$(wslpath -w "$PWD"),target=/workspace" --workdir /workspace week13-web-server-dev:trixie`에서 실행했다.
+- RED: `make test-unit`, monitor `mon_AX5QZQ9XA8Q070ZG`, exit 2. 기존 라인/헤더 테스트는 PASS, 새 본문 함수·타입 미선언으로 컴파일이 실패했다.
+- 본문 GREEN·서버 빌드: monitor `mon_QEKYWSD2QBDD4H87`와 `mon_DR978M9RFGVQ7Y6T`, 모두 exit 0. 본문 단위 PASS와 네 C 소스의 엄격한 `make` 빌드. 후자는 확장/trailer 누적 한도·40,000개 작은 청크 테스트도 포함한다.
+- 최종 전체 단위: `docker.exe exec week13-web-server-dev make test-unit`, monitor `mon_72K9GWHAH27NZCQT`, exit 0. `HTTP_REQUEST_LINE_TESTS_PASS`·`HTTP_HEADERS_TESTS_PASS`·`HTTP_BODY_TESTS_PASS`·`WEBSERVER_BODY_FRAMING_TESTS_PASS`.
+- 실제 소켓: 위 격리 컨테이너에서 `make test-integration`, monitor `mon_8MNQTQD4NWKE2YN5`, exit 0, `INTEGRATION_TESTS_PASS`. 바이너리 CL/chunked·각 1 MiB·초과 선언·중복/잘못된 프레이밍·미완성 라인/헤더/본문/trailer EOF·400/413/414/417/431/501·후속 정상 연결과 본문 전 실제 100 왕복을 검사했다.
+- 실제 curl: 같은 격리 컨테이너·읽기 전용 마운트에서 Python 표준 하네스로 서버를 시작/회수하고 `curl --silent --show-error --include --max-time 5 --data-binary @-`를 실행했다. 0~255 바이너리 입력의 기본 CL·`Transfer-Encoding: chunked`·`Expect: 100-continue`를 각각 검사했다. monitor `mon_5ETRNVNZ5NDKTYQJ`, exit 0, `CURL_CL_PASS`·`CURL_CHUNKED_PASS`·`CURL_EXPECT_PASS`.
+- 메모리: 본문 단독 ASan/UBSan `mon_V7VXE250DPMDGVZH`, Valgrind `mon_52TPT5DMEGTZ8274`, 모두 exit 0. 최종 전체 `make test-unit CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer"`와 서버 연결 C 단위의 일반 디버그 빌드·Valgrind는 `mon_JPYHJW4YQYBX79MN`, exit 0. Valgrind는 `--leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1`을 사용했고 본문/서버 각각 종료 시 0바이트·0블록, 오류 0건이다. 임시 실행 파일은 trap으로 제거했다.
+- 결정적 분할: C 서버 단위는 원본 recv/send만 제어하며 미소비 바이트를 보존한다. 전체 chunked 요청의 모든 단일 분할점에서 요청 필드·디코딩 바이너리를 앱 콜백 안에서 복사해 검증한다. 실제 소켓 테스트는 send 횟수를 recv 분할 증거로 쓰지 않으며 준비 출력 이벤트와 bounded I/O로 동기화한다. sleep·재시도는 사용하지 않았다.
+- 실패 주입: EIO 수신 실패와 EPIPE 송신 실패 진단은 예상 출력이다. 본문이 이미 할당된 수신 실패·100 송신 실패·최종 송신 실패에도 해제하고, 미완성 요청에는 앱을 호출하지 않는지 확인했다.
+- 테스트 초안 보조: implementation 역할, monitor에 노출된 실제 모델 `kimi-k2.7-code`, 작업 `st_01a1f8c1`, CANCELLED. C 테스트 초안이 작성된 상태에서 주 담당자가 인계받았다. 잘못된 CL 바이너리 길이·EOF 스크립트·헤더 초과 fixture·gzip 오류 예상값·길이 0의 NULL memcpy를 바로잡고, 모든 분할·100 생략·할당 후 I/O 실패 테스트와 Python 소켓 테스트를 직접 완성했다. 작업자 완료나 작업자 검증을 주장하지 않는다.
+- 제약: clangd·basedpyright가 없어 LSP는 NOT_RUN, GCC·실제 Python으로 검사했다. Host·지원 버전·URI·라우팅·echo 응답·Date·마감·읽지 않은 입력의 응답 보존/닫기 예산·전체 보안/FD/성능 검사는 미구현 또는 NOT_RUN이다. 이번 통과는 요청 수신/프레이밍/파싱 하위 범위이며 전체 Phase 1 완료가 아니다. 별도 결과 파일은 없고 위 monitor 출력이 증빙이다.
+
+### 2026-11-20 HTTP 구현 파일 통합
+
+- 사용자 요청: `http_body.c`를 `http.c`로 합치고 요청 라인·헤더·본문에 쓰는 함수 순서로 배치한다. 마지막에 응답 상수를 둔다. 함수 내용·공개 API·파서 상태·오류/제한 계약은 변경하지 않았다.
+- 변경: 본문 함수들을 그대로 이동하고 `http_body.c`를 제거했다. Makefile의 서버·본문 단위·서버 연결 단위 링크 입력에서 삭제한 파일을 뺐다. README와 세 명세의 현재 배치를 동기화했다. 위 본문 구현 검증의 `http_body.c`와 네 C 소스 빌드는 당시 배치의 기록이며 현재 명령으로 해석하지 않는다.
+- 이동 대조: 수정 전 두 소스의 읽은 내용을 보관해 통합 소스와 직접 대조했다. include·구역 주석·본문 이동 외 차이 없음, `HTTP_MERGE_CONTENT_MATCH`. 회귀 테스트 파일을 새로 만들지 않았다.
+- 단위·sanitizer: `docker.exe exec week13-web-server-dev sh -c 'set -eu; make test-unit; make test-unit CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer"'`, monitor `mon_H5MM1MKM5ZYDKM81`, exit 0. 두 실행 모두 요청 라인·헤더·본문·서버 수신 테스트 PASS. EIO/EPIPE 진단은 기존 실패 주입의 예상 출력이다.
+- 빌드·실제 소켓: 기존과 같은 격리 Linux 컨테이너(`--network none`, 비특권 사용자, `/workspace` 소스 마운트)에서 `make test-integration`, monitor `mon_608JFJQE41A0Z3P3`, exit 0. 세 소스 `app.c webserver.c http.c`의 엄격한 빌드와 `INTEGRATION_TESTS_PASS`.
+- 제약: 파일 배치 변경 검증이다. clangd가 없어 LSP는 NOT_RUN이며 Valgrind·성능·FD 검사는 이번 이동에서 다시 실행하지 않았다. 위 본문 구현 때의 결과를 이번 실행 결과로 복사하지 않는다. 미구현 서버 기능의 상태도 그대로다.
+
 ## 9. 다음 작업과 재개 지점
 
-1. 독립 헤더 구문 파서·한도·단위/메모리 검증을 추가했다. 다음 단위는 지원 버전·요청 대상/Host 정책 결정과 헤더 의미 검증·서버 수신 연결이다. CLI·마감·라우팅·본문·요청 전체 판정은 아직 없다.
+1. 요청 라인·헤더·CL/chunked 본문을 서버 수신에 연결하고 단위·실제 소켓·curl·메모리 검사를 완료했다. 다음 단위는 지원 버전·요청 대상/Host 정책 결정과 검증이다. 그 뒤 파싱된 요청을 라우팅에 연결한다. CLI·마감·라우팅·전체 HTTP 승인은 아직 없다.
 2. CLI는 이미 확정한 이름·필수 인자·포트 범위를 유지하고 남은 D-07 하위 결정과 D-02의 루트 초기화 정책을 정한다.
 3. 해당 계약이 DECIDED인 범위부터 서버 코드와 실제 성공/실패 검증을 작성한다. 개발환경 검사를 서버 테스트로 재사용하지 않는다.
 4. 요청 라인의 구문 분리와 서버 지원 판정은 별개다. D-04의 지원 버전·요청 대상 정책은 서버 검증 연결 전에, D-03의 초과 코드·trailer는 청크 파서 전에 정리한다. P1-11 한도는 복원한 확정 수치를 사용한다.

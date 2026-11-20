@@ -1,8 +1,9 @@
 #ifndef APP_H
 #define APP_H
 
-#include <stddef.h>
+#include "http.h"
 
-const char *app_handle_data(const char *data, size_t data_length);
+/* All slices are borrowed and valid only for the duration of this call. */
+const char *app_handle_request(const struct http_request *request);
 
 #endif

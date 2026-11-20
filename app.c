@@ -11,11 +11,10 @@ int main(void)
     return webserver_run();
 }
 
-const char *app_handle_data(const char *data, size_t data_length)
+const char *app_handle_request(const struct http_request *request)
 {
-    printf("Received %zu bytes:\n", data_length);
-    fwrite(data, 1, data_length, stdout);
-    putchar('\n');
+    printf("Parsed request: headers=%zu body=%zu bytes\n",
+           request->headers.count, request->body.length);
     fflush(stdout);
 
     return HTTP_OK_RESPONSE;
