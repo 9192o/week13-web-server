@@ -21,17 +21,24 @@
 
 Docker 개발환경과 도구 체인 검사 구성을 완료하고 실제 실행 결과를 기록했다.
 Dockerfile·dev.sh·Makefile·환경 검사와 `webserver.c`의 기본 블로킹 연결 반복 예제가 있다.
-`app.c`는 main 진입점·파싱된 요청의 크기 출력·고정 200 응답 선택을, `app.h`는 서버가 호출할 앱 인터페이스를 담당한다.
+`app.c`는 main 진입점·고정 index 파일/바이너리 echo/Router 오류 응답 준비를,
+`app.h`는 서버가 호출할 앱 인터페이스를 담당한다. `router.c`·`router.h`가 경로와 메서드를 선택한다.
 `webserver.h`의 `webserver_run()`을 앱이 호출하며 서버가 소켓 수명을 관리한다.
-소켓 생성·수신·송신·연결 닫기는 `webserver.c`가 담당하며 고정 HTTP 응답 바이트는 `http.c`·`http.h`에 둔다.
+소켓 생성·수신·송신·연결 닫기는 `webserver.c`가 담당하며 HTTP 응답 헤더 생성과 기존 고정 오류 바이트는 `http.c`·`http.h`에 둔다.
 요청 라인·헤더를 최대 32,768바이트까지 누적 수신하고 `http.c`의 본문 상태 머신으로
 CL/chunked 본문을 디코딩하는 학습 예제다. 디코딩 본문은 최대 1 MiB다.
-세 파서의 완료 후 `app_handle_request()`에 요청 구조체를 한 번 전달하고 빈 200을 선택한다.
+헤더 완료 뒤 `http_validate_request_head()`로 버전·대상 구문·Host를 검증한 뒤 본문을 처리한다.
+head/프레이밍 검증 뒤 고정 Router를 선택하고 index/오류는 본문 전에,
+echo는 본문 완료 뒤 앱에서 준비한다. 원문 path/query/authority를 요청 구조체에 보존한다.
+`GET/HEAD /`·`/index.html`은 실행 디렉터리의 고정 index 파일, `POST /echo`는 바이너리를 그대로 반환한다.
+query는 두 경로 모두 무시하며 다른 경로 404·메서드 불일치 405/Allow·미구현 메서드 501이다.
 문법·미완성 EOF 400, 본문 초과 413, 요청 라인 초과 414, 헤더/메타데이터 초과 431,
 Expect 미지원 417·전송 코딩 미지원 501을 송신한다. 추가 본문을 기다리는 100-continue도 처리한다.
 본문 파서의 새 바이트 입력 계약은 요청 라인·헤더의 누적 입력 계약과 다르다.
 `tests/test_http.c`·`tests/test_body.c`의 단위 테스트와 서버 단위/소켓 하네스를 사용한다.
-Host·지원 버전·URI·메서드/경로 판정·정적 파일·echo·CLI·마감·전체 서버 테스트·벤치마크는 아직 구현하지 않았다.
+HTTP/1.0·다른 major는 505, 잘못된 Host·대상 구문은 400으로 본문 추가 수신·100 전에 거부한다.
+Router는 경로를 한 번 디코딩해 리터럴 비교만 한다. 일반 정적 루트/하위 디렉터리·
+경로 정규화·내부 링크 허용·CLI·마감·전체 서버 테스트·벤치마크는 아직 구현하지 않았다.
 2026-11-20 사용자 결정으로 커스텀 SIGINT/SIGTERM 종료 처리와 논블로킹 대기를 제거했다.
 정상 종료·시그널 처리(P1-27/T-27)는 Phase 2 시작에 구현하며 Phase 1 완료 조건에서 제외한다.
 일반적인 연결·오류 경로의 자원 정리, 송신 실패의 SIGPIPE 안전성 요구는 Phase 1에 유지한다.
@@ -77,7 +84,7 @@ Phase 1의 구체적인 확정 정책은 이 세 문서를 함께 갱신한다.
 | 테스트 설계 | 요청 라인·헤더·본문 및 수신 연결 테스트 추가 | T-04·05·07~11·24·26의 하위 범위, 전체 완료 아님 |
 | 진행 원장 | 이 파일에 저장 | 결정·상태·증빙·다음 작업 |
 | 개발환경 구성 | PASS | 기본 dev.sh의 build/check, 실제 PTY의 shell, 도구 체인 검사·정리 확인 |
-| 서버 구현·빌드 | 세 파서 수신 연결 예제 PARTIAL, make 빌드 PASS | CL/chunked·프레이밍·Expect 추가, 라우팅·Host·마감 없음 |
+| 서버 구현·빌드 | 세 파서·head 검증·고정 index/echo Router PARTIAL | 본문/파일 바이트 송신·HEAD·404/405/501 구현. 일반 root·CLI·마감 없음. 최신 실행은 아래 증빙 |
 | HTTP 기능·보안·메모리 검사 | 세 파서 단위·수신 연결·실제 소켓·메모리 하위 검사 | 아래 본문·수신 연결 증빙. 전체 HTTP·보안·메모리 검사 통과가 아님 |
 | Linux Docker 컨테이너 검증 | 환경·요청 수신/파싱 예제 PASS, 전체 HTTP NOT_RUN | 아래 단계별 증빙. 전체 기능·보안 검증과 구분 |
 | Docker 데몬 접근 | 개발 진입점 PASS | WSL에서 Windows 클라이언트·서버 29.9.2 사용. Ubuntu 내부 Docker 소켓은 사용하지 않음 |
@@ -102,10 +109,10 @@ OPEN에서 계약·알고리즘·예상 결과가 정해지면 DECIDED로 기록
 
 | ID | 상태 | 미해결 내용 | 닫는 데 필요한 근거 |
 | --- | --- | --- | --- |
-| D-01 | OPEN | MIME 정확한 목록/대소문자/별칭 검사 기준, 3xx 코드·쿼리·Location, 인코딩된 구분자·dot segment·UTF-8, echo query | 명시적 정책표, 인터뷰 제안과 확정 구분, T-17·19~21 예상값 |
+| D-01 | OPEN, 고정 Router의 query 무시 DECIDED | 일반 정적 파일의 MIME 목록/대소문자/별칭, 3xx 코드·쿼리·Location, 인코딩된 구분자·dot segment·UTF-8 | 명시적 정책표, 인터뷰 제안과 확정 구분, T-17·19~21 예상값 |
 | D-02 | OPEN, 보안 차단 | Linux 컨테이너의 링크/경계/TOCTOU 안전한 열기, 지원 커널·마운트, 내부 절대 링크, 숨김 링크, 순환, 디렉터리 교체·파일 변경 | DECIDED: 지원 Linux API 근거·알고리즘 불변 조건·위협 모델. VERIFIED: 구현 후 제어된 T-16·T-18·T-22 결과 |
 | D-03 | DECIDED, 메타데이터/트레일러 단위 검증 VERIFIED | 메타데이터 초과 431·금지 trailer 400·그 외/중복 무시 | 아래 본문·수신 계약과 P1-08·11, 실제 단위·메모리 증빙 |
-| D-04 | OPEN, CL/TE·Expect 기본 해석 DECIDED | HTTP 버전/minor, request-target 형식·Host, 자원 오류 우선순위, 최종 GET/HEAD 본문·Content-Encoding·버전별 Expect 정책 | RFC 9110/9112와 실제 지원 범위, 아래 과도기 계약과 최종 판정표 구분 |
+| D-04 | OPEN, head/프레이밍·고정 Router 하위 계약 DECIDED | 일반 정적 파일/추가 API의 자원 오류·본문·Content-Encoding·Expect 조합 | 아래 하위 결정과 일반 서버의 최종 판정표 구분 |
 | D-05 | OPEN, 연결 수명 차단 | 100·최종·408 송신·연결 닫기 예산, 무진행 카운터·동시 만료, unread input·half-close와 응답 보존 | T-12·14·24·26의 타임라인·최장 점유 상한. T-27의 서버 종료 마감은 Phase 2 시작 |
 | D-06 | OPEN | JSONL 필드명·단위·null/부분 송신·완전 송신 여부, 출력 채널과 로그 backpressure | 기계 판독 스키마와 오류 정책, 민감정보/로그 주입/출력 실패 테스트 |
 | D-07 | OPEN, 실행 환경·기본 CLI·블로킹 순차 I/O DECIDED, 개발 도구 VERIFIED | 최소 커널·서버 포트 공개, 청취 주소/IP·동적 포트·중복 인자·SO_REUSEADDR. 시그널 전달·중지 유예·종료 대기는 Phase 2 시작 | T-02·T-03·T-04와 개발 도구 증빙. T-27은 Phase 2 시작에 별도 검증 |
@@ -191,6 +198,54 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 - 경계·오류: 빈 줄까지의 소비 길이는 헤더 시작 기준이다. 본문은 검사·소비하지 않는다. NEED_MORE/ERROR는 소비 0·빈 목록이다. 잘못된 구문·금지 제어문자·obs-fold는 400, 필드 줄 CRLF 포함 8,192바이트·요청 라인/종료 빈 줄 포함 32,768바이트·100개 제한은 431이다.
 - 영향: P1-05·P1-10, A-03, T-05·T-10의 구문/제한 하위 범위. 중복 필드를 보존하는 것은 Host/CL 등의 중복 승인이 아니며 P1-05·P1-07의 의미 검증 요구를 유지한다.
 - 상태: 구문 단위·메모리 검증 VERIFIED. 이후 본문·수신 연결에서 서버 연결·CL/TE·Expect 해석을 추가했다. Host·지원 버전·URI 검증과 D-04 전체는 OPEN이다. 단계별 실행 증빙은 아래를 따른다.
+
+### D-04 하위 결정: Router 전 요청 head 의미 검증
+
+- 출처: 2026-11-20 사용자 요청으로 Router 선행 문서를 점검하고 검증을 구현한다.
+  사용자가 HTTP/1.1 기반 유지를 선택했다. HTTP/1.0·다른 major는 505,
+  높은 1.x minor는 1.1 규칙으로 처리한다. 지원하지 않는 버전 표기와 구문 오류를 구분한다.
+- 표준 근거: RFC 9110 §2.5·§7.2, RFC 9112 §3.2~3.3, RFC 3986 §2~3.
+  origin/absolute/CONNECT authority/OPTIONS asterisk 문법, Host 단일 필드·authority 우선,
+  URI 구성요소 문자를 적용한다. 공식 RFC 본문을 실제 조회했다.
+- 구현자 결정: HTTP(S) absolute URI만 수용한다. 기본 authority를 설정하지 않으므로
+  origin/asterisk의 빈 Host는 400이다. 자체 authority가 있는 absolute/CONNECT에서는
+  빈 Host를 허용하되 Host 누락·중복·비어 있지 않은 잘못된 값은 모두 400이다.
+  port는 URI 구문만 검사하며 endpoint 범위나 DNS를 검증하지 않는다.
+  정확한 표와 빈 port·IPvFuture·zone ID 범위는 P1-05 하위 계약에 기록했다.
+- 순서·소유권: 헤더 구문/한도 → 버전 → 대상 구문 → Host → CL/TE·Expect → 본문.
+  의미 오류에서는 본문 추가 recv·할당·100이 없다. 이미 한 recv로 들어온 바이트와 구분한다.
+  `http_target`의 form/authority/path/query는 원문 참조이고 빈 absolute path만 정적 `/`다.
+  path/query는 아직 percent-encoded이며 실패 출력은 빈 구조체다.
+- 영향: P1-05·P1-19·P1-20·P1-24, A-03·A-05, T-05·T-24. 세 명세와 README 동기화.
+- 설계 상태: 위 하위 계약 DECIDED. 검증 상태는 아래 최신 head 검증 증빙을 따른다.
+  고정 Router의 query·본문·coding·메서드/자원 오류와 Expect 순서는 다음 하위 결정에서
+  추가로 정했다. 일반 파일의 encoded separator·dot segment·UTF-8 정책은 계속 OPEN이다.
+  이 항목이 D-01·D-04 전체나 Router 구현 완료를 뜻하지 않는다.
+
+### D-01·D-02·D-04 하위 결정: 고정 index/echo Router
+
+- 출처: 2026-11-20 사용자 구현 요청 및 「고정 두 경로」 선택. 실행 디렉터리의
+  `index.html`만 `/`·`/index.html`로 제공하고 두 라우트에서 query를 무시한다.
+  일반 정적 루트·하위 디렉터리·CLI root는 이번 요청에 포함하지 않는다.
+- 계약: 한 번 percent decode 후 리터럴 비교. dot segment·중복/끝 슬래시를 정규화하지
+  않고 일치하지 않으면 404다. GET/HEAD index, POST echo만 구현한다.
+  미구현 메서드 501 → 등록 경로 존재 판정 404 → 해당 경로의 허용 메서드 405/Allow 순서다.
+  index 파일 열기는 그 뒤이므로 POST index는 실제 파일 유무와 관계없이 405다.
+- 파일 경계: 사용자 경로를 open 인자로 만들지 않는다. 신뢰한 cwd의 고정 리터럴을
+  O_NOFOLLOW·O_NONBLOCK·O_CLOEXEC로 열어 fstat 일반 파일만 제공한다.
+  최종 링크/특수 파일 403, 없음 404, 기타 내부 실패 500이며 실패한 FD는 닫는다.
+  이 제한된 경로는 일반 내부 링크 허용 알고리즘의 fallback이 아니며 D-02 전체는 OPEN이다.
+- 순서: head 의미 검증 → CL/TE·Expect 초기화 → Router/index 열기 → 필요한 본문 →
+  최종 응답. 헤더만으로 판정한 Router/파일 오류는 100·추가 본문 없이 거부한다.
+  GET/HEAD의 유효한 프레이밍 본문은 공통 한도로 수신 후 버린다.
+  Content-Type/Content-Encoding은 해석하지 않고 echo 바이트를 그대로 돌려주며 헤더에는 복사하지 않는다.
+- 소유권: echo 응답은 디코딩 본문을 송신 종료까지 빌린다. index 응답 FD는 서버 소유이며
+  fstat 크기 스냅샷까지만 고정 버퍼로 읽고 모든 성공/실패에서 닫는다.
+  HEAD는 표현 길이를 보존하되 본문을 송신하지 않는다.
+- 영향: P1-06·13~20·23~25, A-03·05~07, T-06·13~20·23~26의 고정 라우트 하위 범위.
+  세 명세와 README를 함께 갱신했다. 설계 DECIDED, 검증은 아래 최신 증빙을 따른다.
+- 남은 범위: 일반 root·링크/숨김/정규화·디렉터리·파일 공개 정책·CLI·마감·접근 로그.
+  기존 파싱/프레이밍 오류의 빈 응답도 유지한다. 고정 Router 완료와 Phase 1 완료는 다르다.
 
 ### 변경 기록
 
@@ -523,12 +578,92 @@ if command -v docker >/dev/null 2>&1; then docker version --format 'client={{.Cl
 - 빌드·실제 소켓: 기존과 같은 격리 Linux 컨테이너(`--network none`, 비특권 사용자, `/workspace` 소스 마운트)에서 `make test-integration`, monitor `mon_608JFJQE41A0Z3P3`, exit 0. 세 소스 `app.c webserver.c http.c`의 엄격한 빌드와 `INTEGRATION_TESTS_PASS`.
 - 제약: 파일 배치 변경 검증이다. clangd가 없어 LSP는 NOT_RUN이며 Valgrind·성능·FD 검사는 이번 이동에서 다시 실행하지 않았다. 위 본문 구현 때의 결과를 이번 실행 결과로 복사하지 않는다. 미구현 서버 기능의 상태도 그대로다.
 
+### 2026-11-20 Router 선행 head 의미 검증
+
+- 문서 점검: 기존 P1-05에는 HTTP/1.1 Host 오류 400만 확정되어 있었고 지원 버전,
+  request-target 형식·빈 Host·조합별 우선순위는 OPEN이었다. P1-19의 한 번 디코딩과
+  query 분리 요구를 URI 구문 검증과 구별해 세 명세·README·D-04를 동기화했다.
+- 구현: `http.c`·`http.h`에 `http_validate_request_head()`와 `http_target`,
+  505 고정 응답을 추가했다. `webserver.c`는 헤더 완료 뒤 이 함수를 호출하고
+  성공한 구성요소를 앱에 전달한다. 메서드 분기/Router와 파일 경로 디코딩은 추가하지 않았다.
+- RED: `docker.exe exec week13-web-server-dev make test-unit`,
+  monitor `mon_NJWSNTKZVQ3F4W2C`, exit 2. Host 없는 Expect 요청에서 최종 거부 대신
+  추가 recv를 시도하여 `mock.recv_next < mock.recv_calls` assert가 실패했다.
+- GREEN: 같은 명령, monitor `mon_ZE5HTSPNR6S91T7P`, exit 0.
+  이후 absolute 요청의 모든 분할점과 앱 전달 구성요소 검사를 추가했다.
+- 최종 단위·sanitizer: `docker.exe exec week13-web-server-dev sh -c 'set -eu; make test-unit; make test-unit CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer"'`,
+  monitor `mon_VNYYPRFS92ZN6R9Z`, exit 0. 두 실행 모두 요청 라인·헤더·head 의미 검증·
+  본문·수신 연결 테스트 PASS. EIO/EPIPE 진단은 기존 의도적 실패 주입이다.
+- 빌드·실제 소켓: `docker.exe run --rm --init --network none --user 1000:1000 --env HOME=/tmp --mount "type=bind,source=$(wslpath -w "$PWD"),target=/workspace" --workdir /workspace week13-web-server-dev:trixie make test-integration`,
+  monitor `mon_70QBQQ0DE5QT0FA4`, exit 0, 엄격한 서버 빌드와 `INTEGRATION_TESTS_PASS`.
+  실제 400/505, 높은 minor·absolute 수용, 본문/EOF 없는 Expect 요청의 즉시 최종 거부,
+  기존 바이너리 본문·100 왕복·후속 연결을 확인했다.
+- Valgrind: `docker.exe exec week13-web-server-dev`에서 `tests/test_http.c http.c`와
+  `tests/test_webserver.c http.c`를 각각 C17·엄격한 경고·디버그 옵션으로 임시 빌드했다.
+  서버 단위에는 `-Wl,--wrap=recv -Wl,--wrap=send`를 사용했다.
+  `valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1`,
+  monitor `mon_CY1TMAB6BEFKQ5VC`, exit 0. 두 실행 모두 오류 0건·종료 시 0바이트/0블록,
+  임시 실행 파일은 trap으로 제거했다.
+- 검증 상태: head 의미 검증 하위 범위 VERIFIED. LSP는 clangd·basedpyright 미설치로
+  NOT_RUN이며 설치하지 않았다. 전체 HTTP·파일 경로 안전성·라우팅·Date/오류 본문·
+  마감·FD·성능 검사는 이번 결과에 포함하지 않는다. 별도 결과 파일 없이 monitor가 증빙이다.
+- 보조 문서 점검: explore 역할, 실제 표시 모델 `opencode-go/deepseek-v4.1-flash`,
+  작업 `st_01a1f910`, CANCELLED. 최종 결과가 전달되기 전에 주 담당자의 문서 대조와
+  검증이 끝나 중복 작업을 중지했다. 독립 검토 완료나 보조 작업자의 검증을 주장하지 않는다.
+
+### 2026-11-20 고정 index/echo Router 검증
+
+- 변경: `router.c`·`router.h`의 한 번 디코딩/경로/메서드 선택, `app.c`·`app.h`의
+  index/echo/Router 오류 응답, `http.c`·`http.h`의 응답 구조체·헤더 생성,
+  `webserver.c`의 바이트/파일 송신·HEAD 억제·본문 전 거부와 FD 정리.
+  루트 `index.html`과 Router C 테스트를 추가하고 Makefile·세 명세·README를 동기화했다.
+- 초기 RED: 새 Router C 테스트가 `router.h` 부재로 실패했다.
+  monitor `mon_WY3XM3D5X1HZH6JZ`, exit 1.
+- 초기 GREEN: Router 단독 `mon_5827CG6CFYFYSYGP`, 전체 단위/빌드
+  `mon_X9BF5JWB65M328N4`, 준비한 파일 FD의 실패 경로 추가 후 `mon_JN5XPV6M6AR5W542`,
+  모두 exit 0. 초기 sanitizer/Valgrind `mon_SZVMRK4FS5XPPEN3`도 exit 0.
+- 실제 curl: 읽기 전용 소스·격리 루프백의 비특권 임시 컨테이너에서 임시 서버를 엄격히
+  빌드하고 시작/회수했다. index 응답은 `cmp index.html -`로, echo는 0~255 전체 바이트와
+  가짜 HTTP 헤더 본문을 비교했다. `mon_GF0HPPQXWMSBTK7R`, exit 0,
+  `CURL_INDEX_PASS`·`CURL_ECHO_CL_PASS`·`CURL_ECHO_CHUNKED_PASS`·`CURL_ECHO_EXPECT_PASS`.
+- 소켓 테스트 보조: implementation 역할, 실제 모델 `Kimi K2.7 Code`,
+  작업 `st_01a1f921`, COMPLETED. Python 테스트 초안을 작성하고 당시 단위/소켓을 통과했다.
+  주 담당자는 전체 파일을 읽고 테스트의 원본 index 이동을 임시 cwd fixture로 바꾸고,
+  EOF 없이 조용한 시간 초과도 통과하던 HEAD 검사를 실제 EOF 확인으로 보완했다.
+  버전/absolute-form·중복 디코딩·head/용량 오류의 100 이전 거부 회귀를 복원/추가하고
+  HTML/script/가짜 응답·요청 헤더와 Content-Encoding의 비반영도 검사했다.
+  이 보완 뒤 소켓 `mon_MPJAYAM3VC5QY00V`, exit 0.
+- 코드 검토 보조: analysis 역할, 실제 모델 `DeepSeek V4.1 Flash`,
+  작업 `st_01a1f926`, COMPLETED. Unix 소켓 index의 ENXIO가 500으로 분류되는 결함과
+  비어 있지 않은 응답 Content-Length/405 Allow의 C 단위 검증 공백을 지적했다.
+  주 담당자가 Unix 소켓 fixture를 추가해 `mon_K2Y0MA11PGBSXKZ8`, exit 134로 재현했다.
+  app의 ENXIO/ENODEV를 403으로 분류하고 Unix 소켓의 실제 소켓/단위 회귀와
+  비어 있지 않은 바이트/파일/HEAD의 길이, 405 Allow 송신 검사를 추가했다.
+- 최종 단위·메모리: `docker.exe exec week13-web-server-dev`에서 `make test-unit`,
+  `make test-unit CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer"`,
+  Router/서버 연결 C 단위의 일반 디버그 빌드·Valgrind를 순서대로 실행했다.
+  Valgrind는 `--leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1`,
+  서버 단위는 `-Wl,--wrap=recv -Wl,--wrap=send`, Router 단위는 `router.c`를 링크했다.
+  `mon_9167HBTNFA6V2H4P`, exit 0. 여섯 테스트 그룹 PASS,
+  Valgrind 두 실행 모두 오류 0건·종료 시 0바이트/0블록. 임시 실행 파일은 trap으로 제거했다.
+  EIO/EPIPE와 조기 파일 EOF 진단은 의도한 실패 주입이다.
+- 최종 빌드·소켓: `docker.exe run --rm --init --network none --user 1000:1000 --env HOME=/tmp --mount "type=bind,source=$(wslpath -w "$PWD"),target=/workspace" --workdir /workspace week13-web-server-dev:trixie make test-integration`,
+  `mon_2MYY1MYQN0082GC8`, exit 0, `INTEGRATION_TESTS_PASS`.
+  index/HEAD/query·한 번 디코딩·404/405/501·바이너리/1 MiB/빈 CL·chunked echo·
+  프레이밍/EOF/한도·100 왕복·head/Router/파일 오류의 100 이전 거부·후속 연결을 검사했다.
+  index 없음·symlink·FIFO·Unix 소켓은 임시 cwd에서만 만들고 서버 종료 후 제거한다.
+- 제약: 고정 두 경로 하위 범위 VERIFIED이며 전체 Phase 1의 완료가 아니다.
+  CLI root·일반 정적 파일/링크 허용·마감·접근 로그·전체 FD/성능 검사는 미구현/NOT_RUN이다.
+  clangd/basedpyright/biome 미설치로 LSP는 NOT_RUN이다.
+  Bun.WebView의 Chrome 실행 실패로 브라우저 렌더는 NOT_RUN이며 설치하지 않았다.
+  별도 결과 파일 없이 위 monitor 출력이 실행 증빙이다.
+
 ## 9. 다음 작업과 재개 지점
 
-1. 요청 라인·헤더·CL/chunked 본문을 서버 수신에 연결하고 단위·실제 소켓·curl·메모리 검사를 완료했다. 다음 단위는 지원 버전·요청 대상/Host 정책 결정과 검증이다. 그 뒤 파싱된 요청을 라우팅에 연결한다. CLI·마감·라우팅·전체 HTTP 승인은 아직 없다.
+1. 요청 파싱·head 검증에 이어 고정 index/echo Router를 구현했다. query 무시·한 번 디코딩·메서드/경로 오류와 Expect 순서는 위 하위 계약을 따른다. 다음 확장은 일반 정적 루트/CLI·파일 경계·마감의 관련 결정을 먼저 닫은 뒤 진행한다. 전체 Phase 1 승인은 아직 없다.
 2. CLI는 이미 확정한 이름·필수 인자·포트 범위를 유지하고 남은 D-07 하위 결정과 D-02의 루트 초기화 정책을 정한다.
 3. 해당 계약이 DECIDED인 범위부터 서버 코드와 실제 성공/실패 검증을 작성한다. 개발환경 검사를 서버 테스트로 재사용하지 않는다.
-4. 요청 라인의 구문 분리와 서버 지원 판정은 별개다. D-04의 지원 버전·요청 대상 정책은 서버 검증 연결 전에, D-03의 초과 코드·trailer는 청크 파서 전에 정리한다. P1-11 한도는 복원한 확정 수치를 사용한다.
+4. 요청 라인의 구문 분리와 서버 지원 판정은 별개다. D-04의 버전·대상 구문·Host 및 D-03의 초과 코드·trailer 하위 계약은 결정·구현했다. 이것으로 파일 경로 정규화나 Router 지원을 승인하지 않는다. P1-11 한도는 확정 수치를 유지한다.
 5. Phase 1의 소켓 마감 전에 D-05, 정적 파일 전에 D-01·D-02, 로그·전체 검사 전에 D-06·D-08의 관련 하위 결정을 닫는다. 정상 종료·시그널 관련 하위 결정은 Phase 2 시작에 닫고 P1-27/T-27을 구현한다.
 6. 각 구현 단위의 실제 결과를 갱신한다. 모든 D 그룹의 VERIFIED를 첫 빌드의 착수 조건으로 요구하지 않는다.
 

@@ -62,12 +62,42 @@ struct http_headers_result
     struct http_headers headers;
 };
 
+enum http_target_form
+{
+    HTTP_TARGET_ORIGIN,
+    HTTP_TARGET_ABSOLUTE,
+    HTTP_TARGET_AUTHORITY,
+    HTTP_TARGET_ASTERISK
+};
+
+struct http_target
+{
+    enum http_target_form form;
+    struct http_slice authority;
+    struct http_slice path;
+    struct http_slice query;
+};
+
 struct http_request
 {
     struct http_request_line line;
     struct http_headers headers;
+    struct http_target target;
     struct http_slice body;
 };
+
+struct http_response
+{
+    int status;
+    const char *content_type;
+    const char *allow;
+    /* Borrowed bytes, or a file's snapshot length when file_fd >= 0. */
+    struct http_slice body;
+    int file_fd;
+};
+
+const char *http_reason_phrase(int status);
+size_t http_format_response_head(const struct http_response *response, char *buffer, size_t capacity);
 
 enum http_body_state
 {
@@ -128,6 +158,18 @@ struct http_request_line_result http_parse_request_line(const char *data, size_t
 struct http_headers_result http_parse_headers(const char *data, size_t length, size_t request_line_length);
 
 /*
+ * Call only after COMPLETE line and headers, before body init/100 Continue.
+ * Returns 0, 400 or 505; clears target on error. Validation order is version,
+ * target syntax, then Host. Does not approve method/resource support.
+ * Target components borrow input; an empty absolute path uses static "/".
+ * Path/query stay percent-encoded. No decoding or filesystem normalization.
+ * Absolute-form authority overrides a syntactically valid Host value.
+ */
+int http_validate_request_head(const struct http_request_line *line,
+                               const struct http_headers *headers,
+                               struct http_target *target);
+
+/*
  * Initialize once from COMPLETE generic headers. Returns 0 or HTTP error status.
  * Validates CL/TE framing and Expect, not Host, methods, targets or versions.
  * Feed ONLY new bytes to http_parse_body; consumed applies even to NEED_MORE.
@@ -148,6 +190,7 @@ extern const char HTTP_HEADERS_TOO_LARGE_RESPONSE[];
 extern const char HTTP_EXPECTATION_FAILED_RESPONSE[];
 extern const char HTTP_NOT_IMPLEMENTED_RESPONSE[];
 extern const char HTTP_INTERNAL_ERROR_RESPONSE[];
+extern const char HTTP_VERSION_NOT_SUPPORTED_RESPONSE[];
 extern const char HTTP_CONTINUE_RESPONSE[];
 
 #endif

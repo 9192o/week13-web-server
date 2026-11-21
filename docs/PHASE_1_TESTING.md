@@ -7,7 +7,9 @@
 `tests/test_webserver.c`에 서버 연결 C 단위 테스트를 둔다.
 파서 구현은 `http.c` 하나를 링크하며, 단계별 테스트 파일 구분은 유지한다.
 `tests/test_server.py`는 실제 소켓의 요청 수신·오류·본문·100·후속 요청을 검사한다.
-Host·지원 버전·URI·라우팅·시간 제한·요구사항 전체를 검증하는 테스트·성능 측정은 아직 구현하지 않았다.
+Host·지원 버전·URI 구문의 단위/수신 연결 사례를 추가했다.
+고정 index/echo Router의 단위와 실제 소켓 테스트를 추가했다.
+일반 파일 경로 정책·시간 제한·요구사항 전체 테스트·성능 측정은 아직 구현하지 않았다.
 기본 블로킹 수신·고정 200 응답 예제는 일회성 소켓/curl 검사와 부분 송신·실패 주입 검사로 확인했다.
 이 결과를 아래 HTTP 파서·보안·메모리 테스트 전체의 통과로 계산하지 않는다.
 구현된 환경 검사와 아래 후속 타깃 제안을 구분하며 실제 실행 결과는 진행 원장에 기록한다.
@@ -219,9 +221,34 @@ NUL을 포함한 제어문자, `test_syntax_is_not_routing`은 구문 분리와 
 모든 단일 분할점·한 바이트 입력에서 동일한 파싱 결과를 얻는다.
 미완성 헤더는 NEED_MORE, 잘못된 토큰·CRLF·NUL·obs-fold·콜론 앞 공백은 400이다.
 Host 누락·중복·문법 오류를 검사한다.
-HTTP 버전·absolute-form·빈 Host 등 D-04의 판정표를 확정한 뒤 해당 사례를 추가한다.
+요청 head 의미 검증의 D-04 하위 계약은 확정했고 다음 사례를 검사한다.
+`tests/test_http.c`는 1.1/1.9 수용, 1.0/0.9/2.0의 505, Host 누락·중복·빈 값·
+reg-name·port·IPv6/IPvFuture·userinfo·괄호 오류, origin/absolute/authority/asterisk와
+메서드 조합, 잘못된 percent·path NUL·fragment·역슬래시·raw 비ASCII의 400을 검사한다.
+path/query 분리·원문 참조·입력 불변·absolute authority 우선·빈 absolute path `/`,
+실패 시 빈 출력을 확인한다. 이것은 파일 경로 디코딩/경계 테스트 T-18·T-19의 완료가 아니다.
+`tests/test_webserver.c`는 의미 오류가 있으면 본문 recv/앱 호출·100 없이 최종 오류만
+보내는지 검사하고, absolute 요청의 모든 단일 분할점에서 앱에 전달된 구성요소를 비교한다.
+기존 프레이밍 성공/오류 사례에는 정상 Host를 추가해 새 오류에 가려지지 않게 한다.
+`tests/test_server.py`는 실제 소켓의 400/505·높은 minor·absolute-form을 검사하고,
+본문/EOF를 보내지 않은 Expect 요청에도 즉시 최종 오류가 도착하는지 bounded I/O로 확인한다.
+고정 Router의 지원 메서드·405/501·파일 선택·라우팅과 Expect 조합은 T-06·T-24의 하위 범위로 검사한다.
 
 ### T-06 메서드와 라우팅
+
+현재 `tests/test_router.c`는 고정 `/`·`/index.html`·`/echo`, 메서드 대소문자,
+404/405/501·Allow, query 무시, 한 번 percent decode·이중 인코딩 비재해석,
+dot segment/중복 슬래시 비정규화를 검사한다.
+실제 앱 코드를 연결해 바이너리 echo의 포인터/길이 보존과 임시 cwd의 index 파일을 확인한다.
+파일 없음·최종 symlink·FIFO·디렉터리·Unix 소켓의 상태와 FD 반환/닫기를 검사하며 일반 root 테스트는 아니다.
+`tests/test_webserver.c`는 수신/송신 하네스에서 Router를 성공 echo로 격리해 기존 파싱 검사를
+유지한다. 실제 Router 연결은 Router 단위와 실제 소켓에서 검사한다.
+응답 바이트 송신·HEAD 억제·여러 버퍼의 파일·조기 EOF 후 두 번째 최종 응답 방지와
+미리 열린 파일 FD의 성공/본문 EOF·구문 오류/수신 실패/100 실패/최종 송신 실패 정리를 검사한다.
+비어 있지 않은 메모리/파일 응답의 Content-Length와 405의 Allow도 C 단위에서 검증한다.
+문자열 함수로 바이너리 송신 길이를 구하지 않으며 테스트는 고정 sleep·재시도를 쓰지 않는다.
+실제 소켓 검사는 임시 cwd에 배포 index 바이트를 복사해 실행하며 저장소 파일을 옮기거나 바꾸지 않는다.
+HEAD/거부 응답은 bounded recv의 EOF를 확인한다. 시간 초과를 정상 종료로 취급하지 않는다.
 
 GET/HEAD 정적 자원, POST echo를 확인한다.
 정상 존재 정적 자원에 POST는 405·Allow: GET, HEAD,

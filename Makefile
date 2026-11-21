@@ -5,19 +5,21 @@ CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -Werror
 
 .PHONY: help dev-build dev-shell dev-check test-unit test-integration
 
-webserver: app.c webserver.c http.c app.h webserver.h http.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) app.c webserver.c http.c $(LDLIBS) -o $@
+webserver: app.c webserver.c http.c router.c app.h webserver.h http.h router.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) app.c webserver.c http.c router.c $(LDLIBS) -o $@
 
 test-unit:
 	@set -eu; \
-		http_bin=$$(mktemp); body_bin=$$(mktemp); server_bin=$$(mktemp); \
-		trap 'rm -f "$$http_bin" "$$body_bin" "$$server_bin"' EXIT HUP INT TERM; \
+		http_bin=$$(mktemp); body_bin=$$(mktemp); server_bin=$$(mktemp); router_bin=$$(mktemp); \
+		trap 'rm -f "$$http_bin" "$$body_bin" "$$server_bin" "$$router_bin"' EXIT HUP INT TERM; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_http.c http.c $(LDLIBS) -o "$$http_bin"; \
 		"$$http_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c http.c $(LDLIBS) -o "$$body_bin"; \
 		"$$body_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
-		"$$server_bin"
+		"$$server_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c $(LDLIBS) -o "$$router_bin"; \
+		"$$router_bin"
 
 test-integration: webserver
 	@set -eu; python3 tests/test_server.py ./webserver

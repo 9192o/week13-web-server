@@ -1,8 +1,12 @@
+#define _POSIX_C_SOURCE 200809L
 #include "http.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <time.h>
 
 /* Request-line parsing. */
 static int is_token_character(unsigned char byte)
@@ -177,14 +181,6 @@ struct http_headers_result http_parse_headers(const char *data, size_t length, s
     }
 }
 
-/* Body parsing. */
-static int token_byte(unsigned char byte)
-{
-    return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
-           (byte >= '0' && byte <= '9') ||
-           (byte != 0 && strchr("!#$%&'*+-.^_`|~", byte) != NULL);
-}
-
 static int equal_case(struct http_slice value, const char *text)
 {
     if (value.length != strlen(text))
@@ -198,6 +194,192 @@ static int equal_case(struct http_slice value, const char *text)
             return 0;
     }
     return 1;
+}
+
+/* Request-head semantics, after generic header syntax. */
+static int uri_unreserved(unsigned char byte)
+{
+    return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+           (byte >= '0' && byte <= '9') ||
+           (byte != 0 && strchr("-._~", byte) != NULL);
+}
+
+static int uri_sub_delimiter(unsigned char byte)
+{
+    return byte != 0 && strchr("!$&'()*+,;=", byte) != NULL;
+}
+
+static int hex_digit(unsigned char byte)
+{
+    if (byte >= '0' && byte <= '9')
+        return byte - '0';
+    if (byte >= 'A' && byte <= 'F')
+        return byte - 'A' + 10;
+    if (byte >= 'a' && byte <= 'f')
+        return byte - 'a' + 10;
+    return -1;
+}
+
+static int uri_component(struct http_slice value, int path, int query)
+{
+    for (size_t i = 0; i < value.length; ++i)
+    {
+        unsigned char byte = (unsigned char)value.data[i];
+        if (byte == '%')
+        {
+            if (value.length - i < 3 ||
+                hex_digit((unsigned char)value.data[i + 1]) < 0 ||
+                hex_digit((unsigned char)value.data[i + 2]) < 0)
+                return 0;
+            if (path && value.data[i + 1] == '0' && value.data[i + 2] == '0')
+                return 0;
+            i += 2;
+        }
+        else if (!uri_unreserved(byte) && !uri_sub_delimiter(byte) &&
+                 !((path || query) && (byte == ':' || byte == '@' || byte == '/')) &&
+                 !(query && byte == '?'))
+            return 0;
+    }
+    return 1;
+}
+
+static int valid_authority(struct http_slice value, int require_port)
+{
+    if (!value.length)
+        return 0;
+    size_t host_end = 0;
+    if (value.data[0] == '[')
+    {
+        const char *close = memchr(value.data, ']', value.length);
+        if (close == NULL)
+            return 0;
+        host_end = (size_t)(close - value.data) + 1;
+        struct http_slice literal = {value.data + 1, host_end - 2};
+        if (literal.length && (literal.data[0] == 'v' || literal.data[0] == 'V'))
+        {
+            size_t i = 1;
+            while (i < literal.length && hex_digit((unsigned char)literal.data[i]) >= 0)
+                ++i;
+            if (i == 1 || i == literal.length || literal.data[i++] != '.' ||
+                i == literal.length)
+                return 0;
+            for (; i < literal.length; ++i)
+                if (!uri_unreserved((unsigned char)literal.data[i]) &&
+                    !uri_sub_delimiter((unsigned char)literal.data[i]) &&
+                    literal.data[i] != ':')
+                    return 0;
+        }
+        else
+        {
+            char address[INET6_ADDRSTRLEN];
+            struct in6_addr parsed;
+            if (literal.length >= sizeof(address))
+                return 0;
+            memcpy(address, literal.data, literal.length);
+            address[literal.length] = '\0';
+            if (inet_pton(AF_INET6, address, &parsed) != 1)
+                return 0;
+        }
+    }
+    else
+    {
+        while (host_end < value.length && value.data[host_end] != ':')
+            ++host_end;
+        if (!host_end || !uri_component(
+                             (struct http_slice){value.data, host_end}, 0, 0))
+            return 0;
+    }
+    if (host_end == value.length)
+        return !require_port;
+    if (value.data[host_end] != ':' ||
+        (require_port && host_end + 1 == value.length))
+        return 0;
+    for (size_t i = host_end + 1; i < value.length; ++i)
+        if (value.data[i] < '0' || value.data[i] > '9')
+            return 0;
+    return 1;
+}
+
+int http_validate_request_head(const struct http_request_line *line,
+                               const struct http_headers *headers,
+                               struct http_target *target)
+{
+    *target = (struct http_target){0};
+    if (line->version_major != 1 || line->version_minor < 1)
+        return 505;
+    struct http_target parsed = {0};
+    struct http_slice raw = line->target;
+    int connect = line->method.length == 7 && memcmp(line->method.data, "CONNECT", 7) == 0;
+    if (connect)
+    {
+        if (!valid_authority(raw, 1))
+            return 400;
+        parsed.form = HTTP_TARGET_AUTHORITY;
+        parsed.authority = raw;
+    }
+    else if (raw.length == 1 && raw.data[0] == '*')
+    {
+        if (line->method.length != 7 || memcmp(line->method.data, "OPTIONS", 7) != 0)
+            return 400;
+        parsed.form = HTTP_TARGET_ASTERISK;
+    }
+    else
+    {
+        size_t offset = 0;
+        if (raw.data[0] != '/')
+        {
+            size_t scheme_length;
+            if (raw.length >= 7 && equal_case((struct http_slice){raw.data, 7}, "http://"))
+                scheme_length = 7;
+            else if (raw.length >= 8 && equal_case((struct http_slice){raw.data, 8}, "https://"))
+                scheme_length = 8;
+            else
+                return 400;
+            offset = scheme_length;
+            while (offset < raw.length && raw.data[offset] != '/' && raw.data[offset] != '?')
+                ++offset;
+            parsed.form = HTTP_TARGET_ABSOLUTE;
+            parsed.authority = (struct http_slice){raw.data + scheme_length, offset - scheme_length};
+            if (!valid_authority(parsed.authority, 0))
+                return 400;
+        }
+        size_t path_start = offset;
+        while (offset < raw.length && raw.data[offset] != '?')
+            ++offset;
+        parsed.path = (struct http_slice){raw.data + path_start, offset - path_start};
+        if (offset < raw.length)
+            parsed.query = (struct http_slice){raw.data + offset + 1, raw.length - offset - 1};
+        if (!uri_component(parsed.path, 1, 0) || !uri_component(parsed.query, 0, 1))
+            return 400;
+        if (!parsed.path.length)
+            parsed.path = (struct http_slice){"/", 1};
+    }
+    size_t host_count = 0;
+    struct http_slice host = {0};
+    for (size_t i = 0; i < headers->count; ++i)
+        if (equal_case(headers->fields[i].name, "host"))
+        {
+            ++host_count;
+            host = headers->fields[i].value;
+        }
+    if (host_count != 1 || (host.length && !valid_authority(host, 0)))
+        return 400;
+    if (!parsed.authority.length)
+    {
+        if (!host.length)
+            return 400;
+        parsed.authority = host;
+    }
+    *target = parsed;
+    return 0;
+}
+
+/* Body parsing. */
+static int token_byte(unsigned char byte)
+{
+    return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') ||
+           (byte >= '0' && byte <= '9') ||
+           (byte != 0 && strchr("!#$%&'*+-.^_`|~", byte) != NULL);
 }
 
 static void skip_ows(const char **cursor, const char *end)
@@ -590,6 +772,44 @@ void http_body_destroy(struct http_body_parser *parser)
 
 /* Response bytes. */
 
+const char *http_reason_phrase(int status)
+{
+    switch (status)
+    {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 501: return "Not Implemented";
+    default: return "Internal Server Error";
+    }
+}
+
+size_t http_format_response_head(const struct http_response *response, char *buffer, size_t capacity)
+{
+    time_t now = time(NULL);
+    struct tm utc;
+    char date[30];
+    if (now == (time_t)-1 || gmtime_r(&now, &utc) == NULL ||
+        strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &utc) == 0)
+        return 0;
+    int length = snprintf(buffer, capacity,
+        "HTTP/1.1 %d %s\r\n"
+        "Date: %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "X-Content-Type-Options: nosniff\r\n"
+        "%s%s%s\r\n",
+        response->status, http_reason_phrase(response->status), date,
+        response->content_type, response->body.length,
+        response->allow ? "Allow: " : "",
+        response->allow ? response->allow : "",
+        response->allow ? "\r\n" : "");
+    return length > 0 && (size_t)length < capacity ? (size_t)length : 0;
+}
+
 const char HTTP_OK_RESPONSE[] =
     "HTTP/1.1 200 OK\r\n"
     "Content-Length: 0\r\n"
@@ -626,6 +846,10 @@ const char HTTP_NOT_IMPLEMENTED_RESPONSE[] =
 
 const char HTTP_INTERNAL_ERROR_RESPONSE[] =
     "HTTP/1.1 500 Internal Server Error\r\n"
+    "Content-Length: 0\r\nConnection: close\r\n\r\n";
+
+const char HTTP_VERSION_NOT_SUPPORTED_RESPONSE[] =
+    "HTTP/1.1 505 HTTP Version Not Supported\r\n"
     "Content-Length: 0\r\nConnection: close\r\n\r\n";
 
 const char HTTP_CONTINUE_RESPONSE[] = "HTTP/1.1 100 Continue\r\n\r\n";

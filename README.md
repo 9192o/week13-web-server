@@ -12,7 +12,9 @@
 개발환경은 Debian 13의 `trixie-20261104-slim` 이미지와 C17·GCC·Make·Python을 사용한다.
 GDB·strace·curl·Valgrind와 sanitizer 실행 환경도 포함한다.
 현재 구성은 Linux/amd64 개발용이며, 요청 라인·헤더·CL/chunked 본문을 파싱해 앱에 전달하는 예제가 있다.
-Host·지원 버전·URI 검증·라우팅·정적 파일·echo·시간 제한 등 전체 서버 기능은 아직 구현하지 않았다.
+본문 전에 버전·Host·URI 구문과 고정 Router를 검사한다.
+`GET/HEAD /`·`/index.html`은 실행 디렉터리의 index 파일, `POST /echo`는 바이너리 echo를 제공한다.
+일반 정적 루트·하위 디렉터리·CLI·시간 제한 등 전체 서버 기능은 아직 구현하지 않았다.
 실제 Docker 접근 상태와 미실행 사유는 [진행 원장](AGENTS.md#8-증빙-원장)에 기록한다.
 
 ## 개발환경 사용
@@ -46,11 +48,20 @@ HTTP 기능·보안·메모리 검사나 GDB/strace의 ptrace 동작 검증을 �
 한 번에 최대 1,024바이트씩 읽고 요청 라인·헤더·본문을 순서대로 파싱한다.
 `http.c`에 요청 라인·헤더·본문 파싱 함수를 그 순서로 모으고 마지막에 고정 응답을 둔다.
 본문 구역은 프레이밍·Expect·증분 디코딩을 담당한다.
+헤더 뒤의 `http_validate_request_head()`는 HTTP/1.1 및 높은 1.x minor를 수용하고
+1.0·다른 major는 505, 잘못된 Host·대상 구문은 400으로 본문/100 전에 거부한다.
+origin·HTTP(S) absolute·CONNECT authority·OPTIONS asterisk를 구문 분리하고
+원문 path/query/authority를 요청 구조체에 보존한다.
+`router.c`는 path를 한 번 디코딩해 고정 경로만 비교하며 query를 무시한다.
+알 수 없는 경로는 404, 알려진 경로의 메서드 불일치는 405와 Allow, 미구현 메서드는 501이다.
 본문은 최대 1 MiB이며 NUL을 포함하는 바이너리 바이트를 보존한다.
-요청이 완성되면 앱에 구조체로 전달하고 앱은 아직 빈 200만 선택한다.
+앱은 index 파일을 본문 전에 열어 거부 가능 여부를 확인하고 echo 응답은 본문 완료 뒤 준비한다.
+index는 고정 버퍼로, echo는 명시적 바이트 길이로 송신하며 HEAD는 본문을 보내지 않는다.
 문법/미완성 EOF는 400, 본문 초과 413, 요청 라인 초과 414, 헤더/청크 메타데이터 초과 431,
 미지원 Expect는 417, 미지원 전송 코딩은 501을 보내고 닫는다.
-앱은 헤더 개수와 본문 길이만 출력한다. 라우팅이나 echo 응답은 아직 하지 않는다.
+echo는 `application/octet-stream`·`nosniff`를 사용하고 요청 헤더를 응답에 복사하지 않는다.
+라우팅된 응답은 Date와 Content-Length를 생성한다. 기존 파싱/프레이밍 오류는 빈 응답이다.
+index의 최종 symlink·특수 파일은 403이며 임의 파일명·하위 경로는 열지 않는다.
 컨테이너 안에서 다음과 같이 빌드·실행한다.
 
 ```sh
@@ -58,10 +69,12 @@ make
 ./webserver
 ```
 
-같은 컨테이너의 다른 터미널에서 확인한다. 본문은 비어 있고 상태와 헤더만 출력된다.
+레포 디렉터리에서 실행하고, 같은 컨테이너의 다른 터미널에서 확인한다.
 
 ```sh
-curl -i http://127.0.0.1:8080/anything
+curl -i http://127.0.0.1:8080/
+curl -I http://127.0.0.1:8080/index.html
+printf 'hello' | curl -i --data-binary @- http://127.0.0.1:8080/echo
 ```
 
 Docker Desktop은 Linux 컨테이너 모드로 실행한다.
@@ -73,7 +86,7 @@ Docker Desktop은 Linux 컨테이너 모드로 실행한다.
 
 | 단계 | 범위 | 상태 |
 | --- | --- | --- |
-| Phase 1 | 블로킹 순차 처리, HTTP/1.1, 정적 GET/HEAD, 바이너리 POST `/echo` | 요청 라인·헤더·본문 수신/파싱 예제 구현, 전체 HTTP 기능 미구현 |
+| Phase 1 | 블로킹 순차 처리, HTTP/1.1, 정적 GET/HEAD, 바이너리 POST `/echo` | 파싱·head 검증·고정 index/echo Router 구현. 일반 정적 루트·CLI·마감 등 미구현 |
 | Phase 2 전반 | 시작 시 정상 종료·시그널 처리, 여러 연결의 동시 처리 | 구현 전, 동시성 모델 미정 |
 | Phase 2 후반 | keep-alive 연결 재사용 | 구현 전 |
 | Phase 3 | Forward 또는 Reverse Proxy | 구현 전, 방식 미정 |

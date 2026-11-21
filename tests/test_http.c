@@ -7,7 +7,8 @@
 static void assert_slice(struct http_slice actual, const char *expected)
 {
     assert(actual.length == strlen(expected));
-    assert(memcmp(actual.data, expected, actual.length) == 0);
+    if (actual.length)
+        assert(memcmp(actual.data, expected, actual.length) == 0);
 }
 
 static void test_request_line(void)
@@ -378,6 +379,81 @@ static void test_header_total_limit(void)
     }
 }
 
+static void test_request_head_semantics(void)
+{
+    const struct
+    {
+        const char *wire;
+        int status;
+        const char *path;
+        const char *query;
+        const char *authority;
+    } cases[] = {
+        {"GET /a%3Fb?q=x?y HTTP/1.1\r\nhOsT: example.org:8080\r\n\r\n",
+         0, "/a%3Fb", "q=x?y", "example.org:8080"},
+        {"GET /%ED%95%9C%20a HTTP/1.9\r\nHost: [::1]:80\r\n\r\n",
+         0, "/%ED%95%9C%20a", "", "[::1]:80"},
+        {"GET HTTP://example.org/a?b HTTP/1.1\r\nHost: other.org\r\n\r\n",
+         0, "/a", "b", "example.org"},
+        {"GET https://[::1]?x HTTP/1.1\r\nHost: x\r\n\r\n",
+         0, "/", "x", "[::1]"},
+        {"GET http://example.org HTTP/1.1\r\nHost:\r\n\r\n",
+         0, "/", "", "example.org"},
+        {"OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n", 0, "", "", "x"},
+        {"CONNECT [::1]:443 HTTP/1.1\r\nHost: x\r\n\r\n", 0, "", "", "[::1]:443"},
+        {"GET / HTTP/1.1\r\nHost: [v1.a:b]\r\n\r\n", 0, "/", "", "[v1.a:b]"},
+        {"GET / HTTP/1.1\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: x\r\nHOST: x\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost:\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: x, y\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: user@x\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: x:abc\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: ::1\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: [xyz]\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: [::1]junk\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.1\r\nHost: x%zz\r\n\r\n", 400, "", "", ""},
+        {"GET /bad% HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET /%00 HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET /?q=%GG HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET /a#b HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET /a\\b HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET /\xff HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET relative HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET * HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"CONNECT / HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"CONNECT x: HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET http:///a HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET http://user@x/a HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET ftp://x/a HTTP/1.1\r\nHost: x\r\n\r\n", 400, "", "", ""},
+        {"GET / HTTP/1.0\r\nHost: x\r\n\r\n", 505, "", "", ""},
+        {"GET / HTTP/2.0\r\nHost: x\r\n\r\n", 505, "", "", ""},
+        {"GET / HTTP/0.9\r\nHost: x\r\n\r\n", 505, "", "", ""},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+    {
+        size_t length = strlen(cases[i].wire);
+        char input[256];
+        memcpy(input, cases[i].wire, length);
+        struct http_request_line_result line = http_parse_request_line(input, length);
+        assert(line.status == HTTP_PARSE_COMPLETE);
+        struct http_headers_result headers = http_parse_headers(
+            input + line.consumed, length - line.consumed, line.consumed);
+        assert(headers.status == HTTP_PARSE_COMPLETE);
+        struct http_target target;
+        memset(&target, 0xff, sizeof(target));
+        assert(http_validate_request_head(&line.request, &headers.headers, &target) ==
+               cases[i].status);
+        assert_slice(target.path, cases[i].path);
+        assert_slice(target.query, cases[i].query);
+        assert_slice(target.authority, cases[i].authority);
+        if (cases[i].status)
+            assert(target.path.data == NULL && target.authority.data == NULL);
+        if (i == 0)
+            assert(target.path.data == input + 4);
+        assert(memcmp(input, cases[i].wire, length) == 0);
+    }
+}
+
 int main(void)
 {
     test_request_line();
@@ -393,5 +469,7 @@ int main(void)
     test_header_count_limit();
     test_header_total_limit();
     puts("HTTP_HEADERS_TESTS_PASS");
+    test_request_head_semantics();
+    puts("HTTP_HEAD_VALIDATION_TESTS_PASS");
     return 0;
 }

@@ -23,6 +23,8 @@ static int create_listener(void);
 static int serve_clients(int listener_fd);
 static void handle_client(int client_fd);
 static int send_response(int client_fd, const char *response);
+static int send_bytes(int client_fd, const char *data, size_t length);
+static int send_application_response(int client_fd, const struct http_response *response, int head);
 
 static const char *error_response(int status)
 {
@@ -40,6 +42,8 @@ static const char *error_response(int status)
         return HTTP_HEADERS_TOO_LARGE_RESPONSE;
     case 501:
         return HTTP_NOT_IMPLEMENTED_RESPONSE;
+    case 505:
+        return HTTP_VERSION_NOT_SUPPORTED_RESPONSE;
     default:
         return HTTP_INTERNAL_ERROR_RESPONSE;
     }
@@ -144,6 +148,8 @@ static void handle_client(int client_fd)
     struct http_headers_result headers;
     struct http_body_parser body = {0};
     struct http_request request;
+    struct http_response app_response = {.file_fd = -1};
+    int head = 0;
     const char *response = HTTP_BAD_REQUEST_RESPONSE;
     while (1)
     {
@@ -178,11 +184,31 @@ static void handle_client(int client_fd)
         break;
     }
 
-    int error = http_body_init(&body, &headers.headers);
+    struct http_target target;
+    int error = http_validate_request_head(&line.request, &headers.headers, &target);
     if (error)
     {
         response = error_response(error);
         goto respond;
+    }
+    error = http_body_init(&body, &headers.headers);
+    if (error)
+    {
+        response = error_response(error);
+        goto respond;
+    }
+    request = (struct http_request){
+        .line = line.request,
+        .headers = headers.headers,
+        .target = target};
+    head = line.request.method.length == 4 &&
+           memcmp(line.request.method.data, "HEAD", 4) == 0;
+    struct router_result route = router_match_request(&request);
+    if (route.handler != ROUTER_ECHO)
+    {
+        app_response = app_handle_request(&request, route);
+        if (app_response.status != 200)
+            goto app_respond;
     }
     size_t body_offset = line.consumed + headers.consumed;
     struct http_body_result result =
@@ -209,25 +235,33 @@ static void handle_client(int client_fd)
         response = error_response(result.error_status);
         goto respond;
     }
-    request = (struct http_request){
-        .line = line.request,
-        .headers = headers.headers,
-        .body = {body.data, body.length}};
-    response = app_handle_request(&request);
+    request.body = (struct http_slice){body.data, body.length};
+    if (route.handler == ROUTER_ECHO)
+        app_response = app_handle_request(&request, route);
+
+app_respond:
+    send_application_response(client_fd, &app_response, head);
+    goto cleanup;
 
 respond:
     send_response(client_fd, response);
 cleanup:
+    if (app_response.file_fd >= 0)
+        close(app_response.file_fd);
     http_body_destroy(&body);
 }
 
 static int send_response(int client_fd, const char *response)
 {
-    size_t response_length = strlen(response);
+    return send_bytes(client_fd, response, strlen(response));
+}
+
+static int send_bytes(int client_fd, const char *data, size_t length)
+{
     size_t total_sent = 0;
-    while (total_sent < response_length)
+    while (total_sent < length)
     {
-        ssize_t bytes_sent = send(client_fd, response + total_sent, response_length - total_sent, MSG_NOSIGNAL);
+        ssize_t bytes_sent = send(client_fd, data + total_sent, length - total_sent, MSG_NOSIGNAL);
         if (bytes_sent == -1)
         {
             if (errno == EINTR)
@@ -242,6 +276,37 @@ static int send_response(int client_fd, const char *response)
             return -1;
         }
         total_sent += (size_t)bytes_sent;
+    }
+    return 0;
+}
+
+static int send_application_response(int client_fd, const struct http_response *response, int head)
+{
+    char header[512];
+    size_t length = http_format_response_head(response, header, sizeof(header));
+    if (!length || send_bytes(client_fd, header, length) < 0)
+        return -1;
+    if (head)
+        return 0;
+    if (response->file_fd < 0)
+        return send_bytes(client_fd, response->body.data, response->body.length);
+
+    char buffer[BUF_SIZE];
+    size_t remaining = response->body.length;
+    while (remaining)
+    {
+        size_t count = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+        ssize_t received = read(response->file_fd, buffer, count);
+        if (received < 0 && errno == EINTR)
+            continue;
+        if (received <= 0)
+        {
+            fputs("Reading Response File Failed.\n", stderr);
+            return -1;
+        }
+        if (send_bytes(client_fd, buffer, (size_t)received) < 0)
+            return -1;
+        remaining -= (size_t)received;
     }
     return 0;
 }
