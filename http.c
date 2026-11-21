@@ -781,7 +781,14 @@ const char *http_reason_phrase(int status)
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 408: return "Request Timeout";
+    case 413: return "Content Too Large";
+    case 414: return "URI Too Long";
+    case 417: return "Expectation Failed";
+    case 431: return "Request Header Fields Too Large";
+    case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
+    case 505: return "HTTP Version Not Supported";
     default: return "Internal Server Error";
     }
 }
@@ -809,47 +816,5 @@ size_t http_format_response_head(const struct http_response *response, char *buf
         response->allow ? "\r\n" : "");
     return length > 0 && (size_t)length < capacity ? (size_t)length : 0;
 }
-
-const char HTTP_OK_RESPONSE[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Length: 0\r\n"
-    "Connection: close\r\n"
-    "\r\n";
-
-const char HTTP_BAD_REQUEST_RESPONSE[] =
-    "HTTP/1.1 400 Bad Request\r\n"
-    "Content-Length: 0\r\n"
-    "Connection: close\r\n"
-    "\r\n";
-
-const char HTTP_URI_TOO_LONG_RESPONSE[] =
-    "HTTP/1.1 414 URI Too Long\r\n"
-    "Content-Length: 0\r\n"
-    "Connection: close\r\n"
-    "\r\n";
-
-const char HTTP_CONTENT_TOO_LARGE_RESPONSE[] =
-    "HTTP/1.1 413 Content Too Large\r\n"
-    "Content-Length: 0\r\nConnection: close\r\n\r\n";
-
-const char HTTP_HEADERS_TOO_LARGE_RESPONSE[] =
-    "HTTP/1.1 431 Request Header Fields Too Large\r\n"
-    "Content-Length: 0\r\nConnection: close\r\n\r\n";
-
-const char HTTP_EXPECTATION_FAILED_RESPONSE[] =
-    "HTTP/1.1 417 Expectation Failed\r\n"
-    "Content-Length: 0\r\nConnection: close\r\n\r\n";
-
-const char HTTP_NOT_IMPLEMENTED_RESPONSE[] =
-    "HTTP/1.1 501 Not Implemented\r\n"
-    "Content-Length: 0\r\nConnection: close\r\n\r\n";
-
-const char HTTP_INTERNAL_ERROR_RESPONSE[] =
-    "HTTP/1.1 500 Internal Server Error\r\n"
-    "Content-Length: 0\r\nConnection: close\r\n\r\n";
-
-const char HTTP_VERSION_NOT_SUPPORTED_RESPONSE[] =
-    "HTTP/1.1 505 HTTP Version Not Supported\r\n"
-    "Content-Length: 0\r\nConnection: close\r\n\r\n";
 
 const char HTTP_CONTINUE_RESPONSE[] = "HTTP/1.1 100 Continue\r\n\r\n";

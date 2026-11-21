@@ -26,27 +26,15 @@ static int send_response(int client_fd, const char *response);
 static int send_bytes(int client_fd, const char *data, size_t length);
 static int send_application_response(int client_fd, const struct http_response *response, int head);
 
-static const char *error_response(int status)
+static int send_error_response(int client_fd, int status, int head)
 {
-    switch (status)
-    {
-    case 400:
-        return HTTP_BAD_REQUEST_RESPONSE;
-    case 413:
-        return HTTP_CONTENT_TOO_LARGE_RESPONSE;
-    case 414:
-        return HTTP_URI_TOO_LONG_RESPONSE;
-    case 417:
-        return HTTP_EXPECTATION_FAILED_RESPONSE;
-    case 431:
-        return HTTP_HEADERS_TOO_LARGE_RESPONSE;
-    case 501:
-        return HTTP_NOT_IMPLEMENTED_RESPONSE;
-    case 505:
-        return HTTP_VERSION_NOT_SUPPORTED_RESPONSE;
-    default:
-        return HTTP_INTERNAL_ERROR_RESPONSE;
-    }
+    const char *reason = http_reason_phrase(status);
+    struct http_response response = {
+        .status = status,
+        .content_type = "text/plain; charset=utf-8",
+        .body = {reason, strlen(reason)},
+        .file_fd = -1};
+    return send_application_response(client_fd, &response, head);
 }
 
 static ssize_t receive_data(int client_fd, char *buffer, size_t length)
@@ -148,9 +136,10 @@ static void handle_client(int client_fd)
     struct http_headers_result headers;
     struct http_body_parser body = {0};
     struct http_request request;
-    struct http_response app_response = {.file_fd = -1};
+    struct http_response app_response = {.status = 200, .file_fd = -1};
     int head = 0;
-    const char *response = HTTP_BAD_REQUEST_RESPONSE;
+    int error_status = 0;
+
     while (1)
     {
         size_t receive_length = sizeof(receive_buffer) - total_received;
@@ -160,7 +149,10 @@ static void handle_client(int client_fd)
         if (bytes_received < 0)
             goto cleanup;
         if (bytes_received == 0)
-            goto respond;
+        {
+            error_status = 400;
+            goto respond_error;
+        }
 
         total_received += (size_t)bytes_received;
         if (line.status == HTTP_PARSE_NEED_MORE)
@@ -169,17 +161,19 @@ static void handle_client(int client_fd)
             continue;
         if (line.status == HTTP_PARSE_ERROR)
         {
-            response = error_response(line.error_status);
-            goto respond;
+            error_status = line.error_status;
+            goto respond_error;
         }
+        head = line.request.method.length == 4 &&
+               memcmp(line.request.method.data, "HEAD", 4) == 0;
         headers = http_parse_headers(receive_buffer + line.consumed,
                                      total_received - line.consumed, line.consumed);
         if (headers.status == HTTP_PARSE_NEED_MORE)
             continue;
         if (headers.status == HTTP_PARSE_ERROR)
         {
-            response = error_response(headers.error_status);
-            goto respond;
+            error_status = headers.error_status;
+            goto respond_error;
         }
         break;
     }
@@ -188,27 +182,25 @@ static void handle_client(int client_fd)
     int error = http_validate_request_head(&line.request, &headers.headers, &target);
     if (error)
     {
-        response = error_response(error);
-        goto respond;
+        error_status = error;
+        goto respond_error;
     }
     error = http_body_init(&body, &headers.headers);
     if (error)
     {
-        response = error_response(error);
-        goto respond;
+        error_status = error;
+        goto respond_error;
     }
     request = (struct http_request){
         .line = line.request,
         .headers = headers.headers,
         .target = target};
-    head = line.request.method.length == 4 &&
-           memcmp(line.request.method.data, "HEAD", 4) == 0;
     struct router_result route = router_match_request(&request);
     if (route.handler != ROUTER_ECHO)
     {
         app_response = app_handle_request(&request, route);
         if (app_response.status != 200)
-            goto app_respond;
+            goto respond_app;
     }
     size_t body_offset = line.consumed + headers.consumed;
     struct http_body_result result =
@@ -227,24 +219,27 @@ static void handle_client(int client_fd)
         if (received < 0)
             goto cleanup;
         if (received == 0)
-            goto respond;
+        {
+            error_status = 400;
+            goto respond_error;
+        }
         result = http_parse_body(&body, buffer, (size_t)received);
     }
     if (result.status == HTTP_PARSE_ERROR)
     {
-        response = error_response(result.error_status);
-        goto respond;
+        error_status = result.error_status;
+        goto respond_error;
     }
     request.body = (struct http_slice){body.data, body.length};
     if (route.handler == ROUTER_ECHO)
         app_response = app_handle_request(&request, route);
 
-app_respond:
+respond_app:
     send_application_response(client_fd, &app_response, head);
     goto cleanup;
 
-respond:
-    send_response(client_fd, response);
+respond_error:
+    send_error_response(client_fd, error_status, head);
 cleanup:
     if (app_response.file_fd >= 0)
         close(app_response.file_fd);

@@ -18,7 +18,7 @@ test-unit:
 		"$$body_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
 		"$$server_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c $(LDLIBS) -o "$$router_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
 		"$$router_bin"
 
 test-integration: webserver

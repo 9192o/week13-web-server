@@ -42,13 +42,19 @@ struct http_response app_handle_request(const struct http_request *request, stru
                      errno == ENXIO || errno == ENODEV)
                 response.status = 403;
             else
+            {
+                perror("Opening index file failed");
                 response.status = 500;
+            }
         }
         else
         {
             struct stat info;
             if (fstat(fd, &info) < 0)
+            {
+                perror("Statting index file failed");
                 response.status = 500;
+            }
             else if (!S_ISREG(info.st_mode))
                 response.status = 403;
             else

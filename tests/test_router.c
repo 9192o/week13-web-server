@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,40 @@
 #define main app_main
 #include "../app.c"
 #undef main
+
+extern int __real_open(const char *pathname, int flags, ...);
+extern int __real_fstat(int fd, struct stat *statbuf);
+
+static int inject_open_failure = 0;
+static int inject_fstat_failure = 0;
+
+int __wrap_open(const char *pathname, int flags, ...)
+{
+    if (inject_open_failure && strcmp(pathname, "index.html") == 0)
+    {
+        errno = EIO;
+        return -1;
+    }
+    if (flags & O_CREAT)
+    {
+        va_list ap;
+        va_start(ap, flags);
+        mode_t mode = va_arg(ap, mode_t);
+        va_end(ap);
+        return __real_open(pathname, flags, mode);
+    }
+    return __real_open(pathname, flags);
+}
+
+int __wrap_fstat(int fd, struct stat *statbuf)
+{
+    if (inject_fstat_failure)
+    {
+        errno = EIO;
+        return -1;
+    }
+    return __real_fstat(fd, statbuf);
+}
 
 int webserver_run(void)
 {
@@ -139,11 +174,53 @@ static void test_index_files(void)
     assert(rmdir(directory) == 0);
 }
 
+static void test_internal_server_error(void)
+{
+    int previous = open(".", O_RDONLY | O_DIRECTORY);
+    assert(previous >= 0);
+    char directory[] = "/tmp/webserver-500-XXXXXX";
+    assert(mkdtemp(directory));
+    assert(chdir(directory) == 0);
+
+    FILE *file = fopen("index.html", "wb");
+    assert(file);
+    assert(fwrite("x", 1, 1, file) == 1);
+    assert(fclose(file) == 0);
+
+    struct http_request request = request_for("GET", "/");
+    struct router_result route = router_match_request(&request);
+
+    inject_open_failure = 1;
+    struct http_response response = app_handle_request(&request, route);
+    inject_open_failure = 0;
+    assert(response.status == 500);
+    assert(response.file_fd == -1);
+    assert(strcmp(response.content_type, "text/plain; charset=utf-8") == 0);
+    const char *reason = http_reason_phrase(response.status);
+    assert(strcmp(reason, "Internal Server Error") == 0);
+    assert(response.body.length == strlen(reason));
+    assert(memcmp(response.body.data, reason, response.body.length) == 0);
+
+    inject_fstat_failure = 1;
+    response = app_handle_request(&request, route);
+    inject_fstat_failure = 0;
+    assert(response.status == 500);
+    assert(response.file_fd == -1);
+    assert(response.body.length == strlen(reason));
+    assert(memcmp(response.body.data, reason, response.body.length) == 0);
+
+    assert(unlink("index.html") == 0);
+    assert(fchdir(previous) == 0);
+    assert(close(previous) == 0);
+    assert(rmdir(directory) == 0);
+}
+
 int main(void)
 {
     test_matches();
     test_echo();
     test_index_files();
+    test_internal_server_error();
     puts("ROUTER_TESTS_PASS");
     return 0;
 }

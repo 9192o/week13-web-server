@@ -182,15 +182,6 @@ int http_body_init(struct http_body_parser *parser, const struct http_headers *h
 struct http_body_result http_parse_body(struct http_body_parser *parser, const char *data, size_t length);
 void http_body_destroy(struct http_body_parser *parser);
 
-extern const char HTTP_OK_RESPONSE[];
-extern const char HTTP_BAD_REQUEST_RESPONSE[];
-extern const char HTTP_URI_TOO_LONG_RESPONSE[];
-extern const char HTTP_CONTENT_TOO_LARGE_RESPONSE[];
-extern const char HTTP_HEADERS_TOO_LARGE_RESPONSE[];
-extern const char HTTP_EXPECTATION_FAILED_RESPONSE[];
-extern const char HTTP_NOT_IMPLEMENTED_RESPONSE[];
-extern const char HTTP_INTERNAL_ERROR_RESPONSE[];
-extern const char HTTP_VERSION_NOT_SUPPORTED_RESPONSE[];
 extern const char HTTP_CONTINUE_RESPONSE[];
 
 #endif

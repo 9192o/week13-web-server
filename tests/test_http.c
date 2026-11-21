@@ -182,6 +182,17 @@ static void assert_headers_error(struct http_headers_result result, int status)
     assert(result.headers.fields[0].name.data == NULL);
 }
 
+static void assert_response_head_prefix(const char *buffer, const char *prefix)
+{
+    size_t len = strlen(prefix);
+    assert(memcmp(buffer, prefix, len) == 0);
+}
+
+static void assert_response_head_contains(const char *buffer, const char *needle)
+{
+    assert(strstr(buffer, needle) != NULL);
+}
+
 static void test_headers(void)
 {
     const char input[] =
@@ -454,6 +465,85 @@ static void test_request_head_semantics(void)
     }
 }
 
+static void test_reason_phrases(void)
+{
+    assert(strcmp(http_reason_phrase(200), "OK") == 0);
+    assert(strcmp(http_reason_phrase(400), "Bad Request") == 0);
+    assert(strcmp(http_reason_phrase(403), "Forbidden") == 0);
+    assert(strcmp(http_reason_phrase(404), "Not Found") == 0);
+    assert(strcmp(http_reason_phrase(405), "Method Not Allowed") == 0);
+    assert(strcmp(http_reason_phrase(408), "Request Timeout") == 0);
+    assert(strcmp(http_reason_phrase(413), "Content Too Large") == 0);
+    assert(strcmp(http_reason_phrase(414), "URI Too Long") == 0);
+    assert(strcmp(http_reason_phrase(417), "Expectation Failed") == 0);
+    assert(strcmp(http_reason_phrase(431), "Request Header Fields Too Large") == 0);
+    assert(strcmp(http_reason_phrase(500), "Internal Server Error") == 0);
+    assert(strcmp(http_reason_phrase(501), "Not Implemented") == 0);
+    assert(strcmp(http_reason_phrase(505), "HTTP Version Not Supported") == 0);
+}
+
+static void test_error_response_format(void)
+{
+    const char *body = http_reason_phrase(400);
+    struct http_response response = {
+        .status = 400,
+        .content_type = "text/plain; charset=utf-8",
+        .body = {body, strlen(body)},
+        .file_fd = -1};
+    char buffer[512];
+    size_t length = http_format_response_head(&response, buffer, sizeof(buffer));
+    assert(length > 0);
+    assert_response_head_prefix(buffer, "HTTP/1.1 400 Bad Request\r\n");
+    assert_response_head_contains(buffer, "Date: ");
+    assert_response_head_contains(buffer, "Content-Type: text/plain; charset=utf-8\r\n");
+    assert_response_head_contains(buffer, "Content-Length: 11\r\n");
+    assert_response_head_contains(buffer, "Connection: close\r\n");
+    assert_response_head_contains(buffer, "X-Content-Type-Options: nosniff\r\n");
+    char *end = strstr(buffer, "\r\n\r\n");
+    assert(end && (size_t)(end + 4 - buffer) == length);
+
+    body = http_reason_phrase(408);
+    response.status = 408;
+    response.body = (struct http_slice){body, strlen(body)};
+    length = http_format_response_head(&response, buffer, sizeof(buffer));
+    assert(length > 0);
+    assert_response_head_prefix(buffer, "HTTP/1.1 408 Request Timeout\r\n");
+    assert_response_head_contains(buffer, "Content-Length: 15\r\n");
+}
+
+static void test_method_not_allowed_format(void)
+{
+    const char *body = http_reason_phrase(405);
+    struct http_response response = {
+        .status = 405,
+        .content_type = "text/plain; charset=utf-8",
+        .allow = "GET, HEAD",
+        .body = {body, strlen(body)},
+        .file_fd = -1};
+    char buffer[512];
+    size_t length = http_format_response_head(&response, buffer, sizeof(buffer));
+    assert(length > 0);
+    assert_response_head_prefix(buffer, "HTTP/1.1 405 Method Not Allowed\r\n");
+    assert_response_head_contains(buffer, "Allow: GET, HEAD\r\n");
+    assert_response_head_contains(buffer, "Content-Length: 18\r\n");
+}
+
+static void test_internal_error_format(void)
+{
+    const char *body = http_reason_phrase(500);
+    struct http_response response = {
+        .status = 500,
+        .content_type = "text/plain; charset=utf-8",
+        .body = {body, strlen(body)},
+        .file_fd = -1};
+    char buffer[512];
+    size_t length = http_format_response_head(&response, buffer, sizeof(buffer));
+    assert(length > 0);
+    assert_response_head_prefix(buffer, "HTTP/1.1 500 Internal Server Error\r\n");
+    assert_response_head_contains(buffer, "Content-Type: text/plain; charset=utf-8\r\n");
+    assert_response_head_contains(buffer, "Content-Length: 21\r\n");
+}
+
 int main(void)
 {
     test_request_line();
@@ -471,5 +561,11 @@ int main(void)
     puts("HTTP_HEADERS_TESTS_PASS");
     test_request_head_semantics();
     puts("HTTP_HEAD_VALIDATION_TESTS_PASS");
+    test_reason_phrases();
+    puts("HTTP_REASON_PHRASE_TESTS_PASS");
+    test_error_response_format();
+    test_method_not_allowed_format();
+    test_internal_error_format();
+    puts("HTTP_RESPONSE_FORMAT_TESTS_PASS");
     return 0;
 }

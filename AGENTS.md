@@ -1,6 +1,6 @@
 # 프로젝트 지침과 Phase 1 진행 원장
 
-마지막 갱신: 2026-11-20
+마지막 갱신: 2026-11-21
 
 ## 1. 목적과 현재 작업 범위
 
@@ -24,7 +24,7 @@ Dockerfile·dev.sh·Makefile·환경 검사와 `webserver.c`의 기본 블로킹
 `app.c`는 main 진입점·고정 index 파일/바이너리 echo/Router 오류 응답 준비를,
 `app.h`는 서버가 호출할 앱 인터페이스를 담당한다. `router.c`·`router.h`가 경로와 메서드를 선택한다.
 `webserver.h`의 `webserver_run()`을 앱이 호출하며 서버가 소켓 수명을 관리한다.
-소켓 생성·수신·송신·연결 닫기는 `webserver.c`가 담당하며 HTTP 응답 헤더 생성과 기존 고정 오류 바이트는 `http.c`·`http.h`에 둔다.
+소켓 생성·수신·송신·연결 닫기는 `webserver.c`가 담당하며 HTTP 응답 헤더와 상태별 고정 오류 표현 생성은 `http.c`·`http.h`에 둔다.
 요청 라인·헤더를 최대 32,768바이트까지 누적 수신하고 `http.c`의 본문 상태 머신으로
 CL/chunked 본문을 디코딩하는 학습 예제다. 디코딩 본문은 최대 1 MiB다.
 헤더 완료 뒤 `http_validate_request_head()`로 버전·대상 구문·Host를 검증한 뒤 본문을 처리한다.
@@ -249,6 +249,16 @@ D-06의 JSON 키와 바이트 수 의미는 인터뷰에서 확정한 로그 항
 
 ### 변경 기록
 
+2026-11-21 HTTP 응답 생성 통합 (사용자 구현 요청에 따른 구현자 결정):
+기존 파싱/프레이밍의 빈 오류 응답을 앱 오류와 같은 `http_response` 생성·송신 경로로 통합한다.
+오류 본문은 상태별 영어 사유 구문(끝 개행 없음), `text/plain; charset=utf-8`이며,
+Date·표현의 Content-Length·Connection: close·nosniff를 공통 생성한다.
+405의 Allow와 별도 100 Continue는 유지한다. 정상 요청 라인 구문 완료 직후 HEAD를 기억해
+이후 헤더·head 의미·프레이밍·본문 오류에서도 본문을 억제한다.
+요청 라인 자체의 실패에서 메서드를 추정하지 않는다.
+408 표현은 생성하되 실제 시간 초과·송신/닫기 예산은 D-05의 후속 범위다.
+영향: P1-13·23·25, A-07, T-13·23·25. 실행 결과는 아래 HTTP 응답 통합 증빙에 기록한다.
+
 2026-11-20 본문·수신 연결 구현 계약 (구현자 결정, 설계 DECIDED, 하위 범위 검증 VERIFIED):
 `http.c`의 본문 구역은 CL/TE 프레이밍·Expect 해석과 새 바이트 기반 본문 상태 머신을 담당한다.
 서버는 요청 라인·헤더 누적 버퍼를 유지하고 본문은 증분 디코딩하며,
@@ -306,7 +316,7 @@ URI/Host 검증·Content-Encoding 정책·마감/종료 예산은 이 작업으�
 | P1-10 | 요청 라인·헤더의 줄/총량/개수 제한과 서버 연결 | 단위 경계·400/414/431 소켓 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
 | P1-11 | 청크 줄·확장 누적·trailer 한도/431 구현 | 메타데이터 단위·메모리 PASS | 아래 본문·수신 연결 증빙 | 개발 컨테이너 |
 | P1-12 | NOT_STARTED | NOT_RUN | - | - |
-| P1-13 | PARTIAL: 상태별 빈 최종 응답·100·CL=0·close | PARTIAL: 오류 응답·부분 송신·100 검사, Date/표현 응답 없음 | 하위 응답 PASS, 전체 T-13 NOT_RUN | 아래 본문·수신 연결 증빙 |
+| P1-13 | 현재 200/4xx/5xx 공통 헤더·고정 오류 표현·100·부분 송신 구현 | 단위·실제 소켓 PASS. 3xx 자원 기능은 후속 범위 | HTTP 응답 통합 증빙 | 아래 2026-11-21 증빙 |
 | P1-14 | NOT_STARTED | NOT_RUN | - | - |
 | P1-15 | NOT_STARTED | NOT_RUN | - | - |
 | P1-16 | NOT_STARTED | NOT_RUN | - | - |
@@ -316,9 +326,9 @@ URI/Host 검증·Content-Encoding 정책·마감/종료 예산은 이 작업으�
 | P1-20 | NOT_STARTED | NOT_RUN | - | - |
 | P1-21 | NOT_STARTED | NOT_RUN | - | - |
 | P1-22 | NOT_STARTED | NOT_RUN | - | - |
-| P1-23 | NOT_STARTED | NOT_RUN | - | - |
+| P1-23 | PARTIAL: 상태별 고정 text/plain·공통 헤더 구현. 실제 408 발생/송신 제한은 P1-12 후속 | 파싱/Router 오류 소켓·통제된 open/fstat 500 C 단위 PASS | HTTP 응답 통합 증빙 | 아래 2026-11-21 증빙 |
 | P1-24 | PARTIAL: 100-continue·417/400·빈/완료 본문 생략 | 기본 단위·실제 100 왕복 PASS, 버전/마감 미검증 | 아래 본문·수신 연결 증빙 | 개발 컨테이너·격리 검사 컨테이너 |
-| P1-25 | NOT_STARTED | NOT_RUN | - | - |
+| P1-25 | 정상 요청 라인에서 HEAD 판별 후 성공·오류 본문 억제. 3xx 기능은 후속 | 단위·오류/미완성 EOF 실제 소켓 PASS | HTTP 응답 통합 증빙 | 아래 2026-11-21 증빙 |
 | P1-26 | PARTIAL: send 반복·EINTR·MSG_NOSIGNAL·FD 정리 | PARTIAL: reset·부분 송신·EPIPE 경로 | 하위 예제 PASS, 전체 T-26 NOT_RUN | 아래 최소 200 응답 예제 증빙 |
 | P1-27 | PHASE_2: 시작 시 구현 | NOT_RUN | Phase 1 게이트 제외 | - |
 | P1-28 | NOT_STARTED | NOT_RUN | - | - |
@@ -657,6 +667,43 @@ if command -v docker >/dev/null 2>&1; then docker version --format 'client={{.Cl
   clangd/basedpyright/biome 미설치로 LSP는 NOT_RUN이다.
   Bun.WebView의 Chrome 실행 실패로 브라우저 렌더는 NOT_RUN이며 설치하지 않았다.
   별도 결과 파일 없이 위 monitor 출력이 실행 증빙이다.
+
+### HTTP 응답 통합 검증 (2026-11-21)
+
+- 범위: 빈 고정 파싱/프레이밍 오류를 공통 표현 응답으로 교체했다.
+  `http.c`는 상태 사유와 헤더, `webserver.c`는 같은 최종 송신·HEAD 억제,
+  `app.c`는 파일 오류의 내부 진단을 담당한다. 100 Continue만 별도 고정 바이트다.
+- RED: 실제 소켓 `mon_6YQWCP6C1XQFY3Y3`, exit 1.
+  `test_head_parser_errors`의 잘못된 HEAD 헤더에서 Content-Type 누락을 재현했다.
+  C 보조 작업은 408 사유 미지원도 단위 테스트에서 먼저 재현했다.
+- 최종 생산 코드 검증: 읽기 전용 소스 bind mount·비특권 사용자·격리 루프백의
+  `week13-web-server-dev:trixie` 임시 컨테이너에서 `make test-unit`,
+  `gcc -std=c17 -Wall -Wextra -Wpedantic -Werror app.c webserver.c http.c router.c -o "$b"`,
+  `python3 tests/test_server.py "$b"`,
+  `make test-unit CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer"`
+  실행. `mon_P7SV3Z2ZXA7HENR6`, exit 0.
+  아홉 단위 그룹·`INTEGRATION_TESTS_PASS`·`HTTP_RESPONSE_FINAL_PASS`를 확인했다.
+  임시 실행 파일과 컨테이너는 종료 시 제거했다.
+- 408 헤더/500 본문 단위 검사를 보강한 뒤 같은 환경에서 일반·ASan/UBSan
+  `make test-unit`을 다시 실행하고, 네 C 단위 실행 파일을 디버그 빌드해
+  `valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1`
+  검사했다. 서버는 recv/send, Router는 open/fstat linker 래핑을 사용한다.
+  `mon_CWTJYKV8RAD8CHXY`, exit 0, `HTTP_RESPONSE_MEMORY_PASS`.
+  네 실행 모두 종료 시 0바이트/0블록·오류 0건이며, 실패 주입의 EIO/EPIPE 진단은 예상 결과다.
+- 실제 소켓 추가 범위: 파싱/프레이밍 오류의 Date·타입·정확한 길이·고정 본문,
+  HEAD의 헤더 구문/Host/버전/CL/TE/Expect/431/본문/EOF 오류에서 실제 본문 0바이트,
+  100 뒤 잘못된 chunk의 공통 400 최종 응답. 기존 index/echo·405 Allow·바이너리 회귀도 유지한다.
+- 통제된 500: Router C 테스트에서 GNU linker의 open/fstat 래핑으로 EIO를 주입한다.
+  생산 코드에 테스트 분기를 넣지 않으며 상태·타입·고정 본문을 검사한다.
+  실제 소켓에서 OS 자원 실패를 유발한 500 검사는 이 증빙에 포함하지 않는다.
+- 구현 보조: implementation, 실제 모델 `Kimi K2.7 Code`, `st_01a1fbf7`, COMPLETED.
+  C 코드·단위·실패 주입을 작성했고 주 담당자가 직접 읽고 소켓 테스트·408 헤더/500 본문 검사를 보강했다.
+- 독립 검토: explore, 실제 모델 `DeepSeek V4.1 Flash`, `st_01a1fc03`, COMPLETED.
+  공통 응답·HEAD·중복 최종 송신·FD 정리 경로에서 구체적인 생산 코드 결함을 발견하지 않았다.
+  408의 실제 마감 경로는 의도한 미구현 범위로 구분했다.
+- 제약: clangd/basedpyright 미설치로 LSP는 NOT_RUN이며 설치하지 않았다.
+  실제 시간 초과/408·송신/닫기 예산, 일반 root·CLI·접근 로그·전체 FD/부하 검사는 별도 범위다.
+  현재 응답 생성의 완료를 전체 Phase 1 완료로 간주하지 않는다.
 
 ## 9. 다음 작업과 재개 지점
 

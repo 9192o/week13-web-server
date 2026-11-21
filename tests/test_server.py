@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import http.client
+import io
 import os
 import queue
 import socket
@@ -32,6 +33,7 @@ REASON_PHRASES: Final = {
     414: b"URI Too Long",
     417: b"Expectation Failed",
     431: b"Request Header Fields Too Large",
+    500: b"Internal Server Error",
     501: b"Not Implemented",
     505: b"HTTP Version Not Supported",
 }
@@ -158,11 +160,8 @@ def expect_status(response: Response, status: int) -> None:
     assert response.status == status, (response.status, status)
 
 
-def expect_legacy_error(response: Response, status: int) -> None:
-    expect_status(response, status)
-    assert response.headers.get("Content-Length") == "0"
-    assert response.headers.get("Connection") == "close"
-    assert response.body == b""
+def expect_parser_error(response: Response, status: int) -> None:
+    expect_route_error(response, status)
 
 
 def expect_routed_common(
@@ -255,6 +254,11 @@ def expect_continue_then_final(
             assert response.status == expected_status, response.status
             body = response.read()
             assert body == expected_body, (len(body), len(expected_body))
+            final = Response(response.status, response.msg, body)
+            if expected_status == 200:
+                expect_echo(final, expected_body)
+            else:
+                expect_route_error(final, expected_status)
 
 
 def expect_final_without_continue(
@@ -271,7 +275,28 @@ def expect_final_without_continue(
         if line.lower().startswith(b"content-length:"):
             cl = int(line.split(b":", 1)[1].strip())
             break
-    assert body == REASON_PHRASES[expected_status][:cl]
+    assert cl == len(REASON_PHRASES[expected_status])
+    assert body == REASON_PHRASES[expected_status]
+
+
+def test_head_parser_errors() -> None:
+    for request, status, shutdown_write in [
+        (b"HEAD / HTTP/1.1\r\nBad(Name: x\r\n\r\n", 400, False),
+        (b"HEAD / HTTP/1.1\r\n\r\n", 400, False),
+        (b"HEAD / HTTP/1.0\r\nHost: x\r\n\r\n", 505, False),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\nContent-Length: +1\r\n\r\n", 400, False),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\nContent-Length: 1048577\r\n\r\n", 413, False),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\nExpect: unknown\r\n\r\n", 417, False),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", 501, False),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\n" + b"X: a\r\n" * 101 + b"\r\n", 431, False),
+        (b"HEAD / HTTP/1.1\r\nHost: x", 400, True),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab", 400, True),
+        (b"HEAD / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\n", 400, False),
+    ]:
+        head, trailing = raw_headers_only(request, shutdown_write=shutdown_write)
+        assert head.startswith(f"HTTP/1.1 {status} ".encode()), head
+        headers = http.client.parse_headers(io.BytesIO(head.split(b"\r\n", 1)[1]))
+        expect_route_error(Response(status, headers, trailing), status, head=True)
 
 
 def test_index_routes() -> None:
@@ -328,13 +353,13 @@ def test_percent_decoding_and_traversal() -> None:
     expect_route_error(
         raw_request(b"GET /..%2findex.html HTTP/1.1\r\nHost: x\r\n\r\n"), 404
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(b"GET /index%00.html HTTP/1.1\r\nHost: x\r\n\r\n"), 400
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(b"GET /index%ZZ HTTP/1.1\r\nHost: x\r\n\r\n"), 400
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(b"GET /index%2 HTTP/1.1\r\nHost: x\r\n\r\n"), 400
     )
     expect_echo(raw_request(b"POST /%65cho HTTP/1.1\r\nHost: x\r\n\r\n"), b"")
@@ -416,6 +441,13 @@ def test_echo() -> None:
         200,
         body,
     )
+    expect_continue_then_final(
+        b"POST /echo HTTP/1.1\r\nHost: x\r\n"
+        b"Transfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
+        b"Z\r\n",
+        400,
+        REASON_PHRASES[400],
+    )
 
 
 def test_get_head_with_body() -> None:
@@ -440,17 +472,17 @@ def test_get_head_with_body() -> None:
     )
 
 
-def test_legacy_parser_framing_errors() -> None:
-    expect_legacy_error(raw_request(b"GET / HTTP/1.1\r\n\r\n"), 400)
-    expect_legacy_error(
+def test_parser_framing_errors() -> None:
+    expect_parser_error(raw_request(b"GET / HTTP/1.1\r\n\r\n"), 400)
+    expect_parser_error(
         raw_request(b"GET / HTTP/1.1\r\nHost: x\r\nHOST: x\r\n\r\n"), 400
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(b"GET / HTTP/1.1\r\nHost: [bad]\r\n\r\n"), 400
     )
-    expect_legacy_error(raw_request(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n"), 505)
-    expect_legacy_error(raw_request(b"GET / HTTP/2.0\r\nHost: x\r\n\r\n"), 505)
-    expect_legacy_error(raw_request(b"GET / HTTP/1.1 extra\r\n\r\n"), 400)
+    expect_parser_error(raw_request(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n"), 505)
+    expect_parser_error(raw_request(b"GET / HTTP/2.0\r\nHost: x\r\n\r\n"), 505)
+    expect_parser_error(raw_request(b"GET / HTTP/1.1 extra\r\n\r\n"), 400)
 
     target_len = 8192 - len(b"GET /") - len(b" HTTP/1.1\r\n")
     exact = b"GET /" + b"A" * target_len + b" HTTP/1.1\r\n"
@@ -459,10 +491,10 @@ def test_legacy_parser_framing_errors() -> None:
 
     too_long = b"GET /" + b"A" * (target_len + 1) + b" HTTP/1.1\r\n"
     assert len(too_long) == 8193
-    expect_legacy_error(raw_request(too_long), 414)
-    expect_legacy_error(raw_request(b"GET / HTTP/1.1\r", shutdown_write=True), 400)
-    expect_legacy_error(raw_request(b"", shutdown_write=True), 400)
-    expect_legacy_error(
+    expect_parser_error(raw_request(too_long), 414)
+    expect_parser_error(raw_request(b"GET / HTTP/1.1\r", shutdown_write=True), 400)
+    expect_parser_error(raw_request(b"", shutdown_write=True), 400)
+    expect_parser_error(
         raw_request(b"GET / HTTP/1.1\r\nHost: x", shutdown_write=True), 400
     )
 
@@ -481,26 +513,26 @@ def test_legacy_parser_framing_errors() -> None:
         (b"Expect: bad value", 400),
         (b"Bad(Name: x", 400),
     ]:
-        expect_legacy_error(raw_request(prefix + fields + b"\r\n\r\n"), status)
-    expect_legacy_error(raw_request(prefix + b"X: a\r\n" * 101 + b"\r\n"), 431)
-    expect_legacy_error(
+        expect_parser_error(raw_request(prefix + fields + b"\r\n\r\n"), status)
+    expect_parser_error(raw_request(prefix + b"X: a\r\n" * 101 + b"\r\n"), 431)
+    expect_parser_error(
         raw_request(prefix + b"Content-Length: 5\r\n\r\nab", shutdown_write=True), 400
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(
             prefix + b"Transfer-Encoding: chunked\r\n\r\n5\r\nab",
             shutdown_write=True,
         ),
         400,
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(
             prefix + b"Transfer-Encoding: chunked\r\n\r\n0\r\nX: a\r",
             shutdown_write=True,
         ),
         400,
     )
-    expect_legacy_error(
+    expect_parser_error(
         raw_request(prefix + b"Transfer-Encoding: chunked\r\n\r\n100001\r\n"), 413
     )
 
@@ -626,11 +658,12 @@ def main() -> None:
         try:
             test_index_routes()
             test_head_routes()
+            test_head_parser_errors()
             test_method_errors()
             test_unknown_paths()
             test_percent_decoding_and_traversal()
             test_get_head_with_body()
-            test_legacy_parser_framing_errors()
+            test_parser_framing_errors()
             test_expect_route_errors_before_100()
             test_echo()
             test_file_errors_before_body(index_path)
