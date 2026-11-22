@@ -33,6 +33,6 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
 
     fprintf(stderr, "listening on 0.0.0.0:%d, root=%s\n", cfg.port, cfg.root);
-    server_run(listen_fd);
+    server_run(listen_fd, cfg.root);
     return EXIT_SUCCESS;
 }

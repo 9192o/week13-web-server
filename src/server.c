@@ -1,6 +1,7 @@
 #include "server.h"
 #include "http_parser.h"
 #include "http_response.h"
+#include "static.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -169,11 +170,12 @@ static void lingering_close(int fd)
 
 /*
  * 에러 페이지(헤더 + HTML 본문)를 보낸다.
+ * extra 는 NULL 또는 추가 헤더 줄들 (301 의 Location, 405 의 Allow).
  * 반환: 보낸 본문 바이트 수, 생성기 버그나 쓰기 실패면 -1 (호출자는 응답 없이 닫음).
  */
-static int send_error(int fd, int status)
+static int send_error(int fd, int status, const char *extra)
 {
-    char head[512], body[512];
+    char head[HTTP_URI_MAX + 512], body[512];   /* Location 에 URI 가 통째로 들어갈 수 있음 */
     int hl, bl;
 
     bl = http_format_error_body(body, sizeof body, status);
@@ -182,7 +184,7 @@ static int send_error(int fd, int status)
         return -1;
     }
     hl = http_format_head(head, sizeof head, status,
-                          "text/html; charset=utf-8", bl, time(NULL));
+                          "text/html; charset=utf-8", bl, extra, time(NULL));
     if (hl < 0)
         return -1;
     if (write_all(fd, head, (size_t)hl) < 0 ||
@@ -193,38 +195,67 @@ static int send_error(int fd, int status)
     return bl;
 }
 
+/*
+ * 로그용으로 원문 요청의 첫 줄을 복사한다 (파싱이 버퍼를 바꾸기 전에 호출).
+ * CR/LF 앞까지 최대 REQLINE_LOG_MAX 바이트, 출력 불가 문자는 '?', 넘치면 "...".
+ * 받은 바이트가 없으면 "-".
+ */
+static void copy_reqline(const char *buf, size_t len, char *out, size_t cap)
+{
+    size_t i, o = 0;
+
+    if (len == 0) {
+        snprintf(out, cap, "-");
+        return;
+    }
+    for (i = 0; i < len && buf[i] != '\r' && buf[i] != '\n'; i++) {
+        unsigned char c = (unsigned char)buf[i];
+        if (o == REQLINE_LOG_MAX) {
+            memcpy(out + o, "...", 3);
+            o += 3;
+            break;
+        }
+        /* '"' 도 바꿔서 로그의 "요청 라인" 따옴표가 깨지지 않게 */
+        out[o++] = (c >= 0x20 && c <= 0x7e && c != '"') ? (char)c : '?';
+    }
+    out[o] = '\0';
+    (void)cap;   /* 호출자가 REQLINE_LOG_MAX + 4 이상을 보장 */
+}
+
 /* 접근 로그 한 줄: ip:port "요청 라인" 상태 본문바이트 [비고] */
 static void access_log(const char *peer, const char *reqline, int status,
-                       long body_len, const char *note)
+                       long long body_len, const char *note)
 {
     if (status > 0)
-        fprintf(stderr, "%s \"%s\" %d %ld%s%s\n", peer, reqline, status,
+        fprintf(stderr, "%s \"%s\" %d %lld%s%s\n", peer, reqline, status,
                 body_len, note ? " " : "", note ? note : "");
     else
         fprintf(stderr, "%s \"%s\" - 0%s%s\n", peer, reqline,
                 note ? " " : "", note ? note : "");
 }
 
-void server_handle(int conn_fd, const char *peer)
+void server_handle(int conn_fd, const char *peer, const char *root)
 {
     char buf[REQUEST_HEAD_MAX];
-    char reqline[HTTP_URI_MAX + 64] = "-";
+    char reqline[REQLINE_LOG_MAX + 4];
+    char location[HTTP_URI_MAX + 64];
+    const char *extra = NULL;
     struct http_request req;
+    struct static_target target;
+    enum read_head_result rr;
     const char *note = NULL;
     int status = 0;            /* 0 이면 응답 없이 닫는다 */
     int body_len;
     size_t len;
 
-    switch (read_request_head(conn_fd, buf, sizeof buf, HEADER_TIMEOUT_MS,
-                              &len)) {
+    rr = read_request_head(conn_fd, buf, sizeof buf, HEADER_TIMEOUT_MS, &len);
+    copy_reqline(buf, len, reqline, sizeof reqline);   /* 파서가 buf 를 바꾸기 전에 */
+
+    switch (rr) {
     case READ_HEAD_OK:
         status = http_parse_request(buf, len, &req);
-        if (status == 0) {
-            snprintf(reqline, sizeof reqline, "%s %s%s%s HTTP/1.%d",
-                     req.method_str, req.path, req.query ? "?" : "",
-                     req.query ? req.query : "", req.version_minor);
-            status = 404;      /* 정적 파일 서빙 전까지는 모두 404 (R4) */
-        }
+        if (status == 0)
+            status = static_resolve(root, req.path, req.method, &target);
         break;
     case READ_HEAD_TOO_LARGE:
         status = http_classify_overflow(buf, len);
@@ -249,8 +280,28 @@ void server_handle(int conn_fd, const char *peer)
         return;
     }
 
+    if (status == 200) {
+        long long sent;
+        int r = static_send(conn_fd, &target, &sent);
+
+        if (r <= 0) {          /* 완료, 또는 헤더를 보낸 뒤 실패 (S10: EPIPE) */
+            access_log(peer, reqline, 200, sent, r < 0 ? "(aborted)" : NULL);
+            close(conn_fd);
+            return;
+        }
+        status = r;            /* 아직 아무것도 안 보냄: 에러 응답으로 */
+    }
+
+    if (status == 301) {       /* 디렉터리: 원문 경로 + '/' (+ 쿼리 그대로) */
+        snprintf(location, sizeof location, "Location: %s/%s%s\r\n", req.path,
+                 req.query ? "?" : "", req.query ? req.query : "");
+        extra = location;
+    } else if (status == 405) {
+        extra = "Allow: GET\r\n";
+    }
+
     status = http_normalize_status(status);
-    body_len = send_error(conn_fd, status);
+    body_len = send_error(conn_fd, status, extra);
     if (body_len < 0) {
         access_log(peer, reqline, 0, 0, "(send failed)");
         close(conn_fd);
@@ -263,7 +314,7 @@ void server_handle(int conn_fd, const char *peer)
         close(conn_fd);
 }
 
-void server_run(int listen_fd)
+void server_run(int listen_fd, const char *root)
 {
     for (;;) {
         struct sockaddr_in peer;
@@ -284,6 +335,6 @@ void server_run(int listen_fd)
             strcpy(ip, "?");
         snprintf(peer_str, sizeof peer_str, "%s:%u", ip, ntohs(peer.sin_port));
 
-        server_handle(conn_fd, peer_str);
+        server_handle(conn_fd, peer_str, root);
     }
 }

@@ -7,9 +7,11 @@ static const struct {
     const char *reason;
 } reasons[] = {
     {200, "OK"},
+    {301, "Moved Permanently"},
     {400, "Bad Request"},
     {403, "Forbidden"},
     {404, "Not Found"},
+    {405, "Method Not Allowed"},
     {408, "Request Timeout"},
     {411, "Length Required"},
     {413, "Content Too Large"},
@@ -40,7 +42,7 @@ int http_normalize_status(int status)
 
 int http_format_head(char *buf, size_t cap, int status,
                      const char *content_type, long long content_length,
-                     time_t now)
+                     const char *extra, time_t now)
 {
     char date[64];
     struct tm tm;
@@ -59,10 +61,11 @@ int http_format_head(char *buf, size_t cap, int status,
                  "Server: " HTTP_SERVER_NAME "\r\n"
                  "Content-Type: %s\r\n"
                  "Content-Length: %lld\r\n"
+                 "%s"
                  "Connection: close\r\n"
                  "\r\n",
                  status, http_reason(status), date, content_type,
-                 content_length);
+                 content_length, extra ? extra : "");
     if (n < 0 || (size_t)n >= cap) {
         fprintf(stderr, "BUG: response head overflow\n");
         return -1;

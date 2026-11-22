@@ -14,6 +14,9 @@
 #define LINGER_MAX_BYTES  (64 * 1024)
 #define LINGER_TIMEOUT_MS 1000
 
+/* 접근 로그에 남길 요청 첫 줄의 최대 바이트 (넘으면 "...") */
+#define REQLINE_LOG_MAX 200
+
 enum read_head_result {
     READ_HEAD_OK,        /* \r\n\r\n 까지 받음 */
     READ_HEAD_CLOSED,    /* 헤더 끝 전에 클라이언트가 끊음 (read == 0) */
@@ -29,13 +32,13 @@ enum read_head_result {
 int server_listen(int port);
 
 /* accept 루프. 연결을 하나씩 순차 처리한다 (Phase 1). */
-void server_run(int listen_fd);
+void server_run(int listen_fd, const char *root);
 
 /*
  * 연결 하나 처리: 헤더를 읽고 파싱한 뒤 응답하고 닫는다.
- * peer 는 접근 로그에 찍을 "ip:port" 문자열.
+ * peer 는 접근 로그에 찍을 "ip:port" 문자열, root 는 정적 파일 루트(realpath).
  */
-void server_handle(int conn_fd, const char *peer);
+void server_handle(int conn_fd, const char *peer, const char *root);
 
 /*
  * buf[0..len) 에서 "\r\n\r\n" 을 찾아 그 다음 위치(본문 시작)를 돌려준다.
