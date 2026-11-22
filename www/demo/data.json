@@ -1,0 +1,5 @@
+{
+  "name": "week13-web-server",
+  "phase": 1,
+  "features": ["static", "range", "cgi", "keep-alive"]
+}

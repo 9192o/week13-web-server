@@ -1,0 +1,186 @@
+#include "http.h"
+#include "util.h"
+
+#include <stdio.h>
+#include <string.h>
+
+const char *http_status_reason(int status) {
+    switch (status) {
+    case 200: return "OK";
+    case 206: return "Partial Content";
+    case 301: return "Moved Permanently";
+    case 304: return "Not Modified";
+    case 400: return "Bad Request";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 408: return "Request Timeout";
+    case 411: return "Length Required";
+    case 413: return "Payload Too Large";
+    case 414: return "URI Too Long";
+    case 416: return "Range Not Satisfiable";
+    case 431: return "Request Header Fields Too Large";
+    case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
+    case 504: return "Gateway Timeout";
+    case 505: return "HTTP Version Not Supported";
+    default:  return "Unknown";
+    }
+}
+
+void http_response_init(http_response_t *res) {
+    memset(res, 0, sizeof *res);
+}
+
+int http_response_set_status(http_response_t *res, int status) {
+    res->status = status;
+    return 0;
+}
+
+int http_response_add_header(http_response_t *res,
+                             const char *name, const char *value) {
+    if (res == NULL || name == NULL || value == NULL)
+        return -1;
+
+    size_t remaining = sizeof res->headers - res->headers_len;
+    if (remaining == 0)
+        return -1;
+
+    int n = snprintf(res->headers + res->headers_len, remaining,
+                     "%s: %s\r\n", name, value);
+    if (n < 0 || (size_t)n >= remaining)
+        return -1;
+
+    res->headers_len += (size_t)n;
+    return 0;
+}
+
+int http_response_send_headers(int fd, const http_response_t *res) {
+    if (res == NULL)
+        return -1;
+
+    char status_line[128];
+    int n = snprintf(status_line, sizeof status_line,
+                     "HTTP/1.1 %d %s\r\n",
+                     res->status, http_status_reason(res->status));
+    if (n < 0 || (size_t)n >= sizeof status_line)
+        return -1;
+
+    if (writen(fd, status_line, (size_t)n) < 0)
+        return -1;
+    if (res->headers_len > 0 &&
+        writen(fd, res->headers, res->headers_len) < 0)
+        return -1;
+    if (writen(fd, "\r\n", 2) < 0)
+        return -1;
+
+    return 0;
+}
+
+int http_response_send_redirect(int fd, const char *location,
+                                int close_connection) {
+    if (location == NULL)
+        return -1;
+
+    http_response_t res;
+    http_response_init(&res);
+    res.status = 301;
+    res.close_connection = close_connection;
+
+    if (http_response_add_header(&res, "Location", location) < 0)
+        return -1;
+    if (http_response_add_header(&res, "Content-Length", "0") < 0)
+        return -1;
+    if (http_response_add_header(&res, "Connection",
+                                 close_connection ? "close" : "keep-alive") < 0)
+        return -1;
+
+    return http_response_send_headers(fd, &res);
+}
+
+int http_response_send_options(int fd, int close_connection) {
+    http_response_t res;
+    http_response_init(&res);
+    res.status = 200;
+    res.close_connection = close_connection;
+
+    if (http_response_add_header(&res, "Allow",
+                                 "GET, POST, HEAD, OPTIONS") < 0)
+        return -1;
+    if (http_response_add_header(&res, "Content-Length", "0") < 0)
+        return -1;
+    if (http_response_add_header(&res, "Connection",
+                                 close_connection ? "close" : "keep-alive") < 0)
+        return -1;
+
+    return http_response_send_headers(fd, &res);
+}
+
+int http_response_send_memory(int fd, int status, const char *content_type,
+                              const char *body, size_t len) {
+    if (content_type == NULL || (body == NULL && len > 0))
+        return -1;
+
+    http_response_t res;
+    http_response_init(&res);
+    res.status = status;
+    res.close_connection = 1;
+
+    char lenbuf[32];
+    int n = snprintf(lenbuf, sizeof lenbuf, "%zu", len);
+    if (n < 0 || (size_t)n >= sizeof lenbuf)
+        return -1;
+
+    if (http_response_add_header(&res, "Content-Type", content_type) < 0)
+        return -1;
+    if (http_response_add_header(&res, "Content-Length", lenbuf) < 0)
+        return -1;
+    if (http_response_add_header(&res, "Connection", "close") < 0)
+        return -1;
+
+    if (http_response_send_headers(fd, &res) < 0)
+        return -1;
+    if (len > 0 && writen(fd, body, len) < 0)
+        return -1;
+
+    return 0;
+}
+
+int http_response_send_error(int fd, int status, int close_connection) {
+    const char *reason = http_status_reason(status);
+
+    char body[512];
+    int n = snprintf(body, sizeof body,
+                     "<!DOCTYPE html>\n"
+                     "<html><head><title>%d %s</title></head>"
+                     "<body><h1>%d %s</h1></body></html>\n",
+                     status, reason, status, reason);
+    if (n < 0 || (size_t)n >= sizeof body)
+        return -1;
+
+    http_response_t res;
+    http_response_init(&res);
+    res.status = status;
+    res.close_connection = close_connection;
+
+    char lenbuf[32];
+    int m = snprintf(lenbuf, sizeof lenbuf, "%d", n);
+    if (m < 0 || (size_t)m >= sizeof lenbuf)
+        return -1;
+
+    if (http_response_add_header(&res, "Content-Type",
+                                 "text/html; charset=utf-8") < 0)
+        return -1;
+    if (http_response_add_header(&res, "Content-Length", lenbuf) < 0)
+        return -1;
+    if (http_response_add_header(&res, "Connection",
+                                 close_connection ? "close" : "keep-alive") < 0)
+        return -1;
+
+    if (http_response_send_headers(fd, &res) < 0)
+        return -1;
+    if (writen(fd, body, (size_t)n) < 0)
+        return -1;
+
+    return 0;
+}

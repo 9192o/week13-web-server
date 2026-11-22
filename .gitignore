@@ -1,0 +1,10 @@
+*.o
+*.d
+*.dSYM/
+server
+run_tests
+cgi-bin/echo
+cgi-bin/sleep
+cgi-bin/crash
+cgi-bin/time
+.DS_Store

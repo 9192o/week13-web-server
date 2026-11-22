@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phase 1 test console — week13 web server</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <p class="eyebrow">week13-web-server</p>
+      <h1>Phase 1 test console</h1>
+      <p class="lede">
+        C와 POSIX 소켓으로 만든 HTTP/1.1 서버를 브라우저에서 직접 확인합니다.
+        버튼을 누르면 실제 요청이 나가고, 상태 코드·헤더·본문이 아래에 표시됩니다.
+      </p>
+      <div class="pills">
+        <span class="pill">static files</span>
+        <span class="pill">Range / 206</span>
+        <span class="pill">CGI</span>
+        <span class="pill">keep-alive</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>테스트</h2>
+            <p class="hint">각 버튼은 실제 HTTP 요청을 보냅니다.</p>
+          </div>
+          <button id="run-all" class="btn btn-primary" type="button">전체 실행</button>
+        </div>
+        <div id="tests" class="test-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>결과</h2>
+          <span id="result-title" class="hint">아직 실행하지 않음</span>
+        </div>
+        <div id="result" class="result empty" aria-live="polite">
+          <p class="empty">왼쪽 버튼을 눌러 시작하세요.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>브라우저로 확인할 수 없는 것</h2>
+        <p class="hint">
+          malformed 요청은 브라우저가 막거나 자동으로 고칩니다. 프로젝트 루트에서
+          <code>sh tests/raw.sh 8080</code>을 실행하면 요청 줄을 직접 입력할 수 있습니다.
+        </p>
+        <pre class="snippet"><code>sh tests/raw.sh 8080
+curl -i http://localhost:8080/demo
+curl -i -H 'Range: bytes=0-4' http://localhost:8080/demo/index.html
+printf 'GET / HTTP/1.1\r\n\r\n' | nc -w 3 127.0.0.1 8080</code></pre>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>서버 실행: <code>./server 8080 ./www ./cgi-bin</code></p>
+      <p>504를 보려면 <code>--timeout 1</code>로 실행하세요.</p>
+    </footer>
+  </div>
+</body>
+</html>
