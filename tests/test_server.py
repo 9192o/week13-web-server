@@ -366,10 +366,10 @@ def test_unknown_paths() -> None:
 def test_percent_decoding_and_traversal() -> None:
     expect_index(raw_request(b"GET /index%2ehtml HTTP/1.1\r\nHost: x\r\n\r\n"))
     expect_route_error(
-        raw_request(b"GET /%2e%2e/index.html HTTP/1.1\r\nHost: x\r\n\r\n"), 404
+        raw_request(b"GET /%2e%2e/index.html HTTP/1.1\r\nHost: x\r\n\r\n"), 403
     )
     expect_route_error(
-        raw_request(b"GET /..%2findex.html HTTP/1.1\r\nHost: x\r\n\r\n"), 404
+        raw_request(b"GET /..%2findex.html HTTP/1.1\r\nHost: x\r\n\r\n"), 400
     )
     expect_parser_error(
         raw_request(b"GET /index%00.html HTTP/1.1\r\nHost: x\r\n\r\n"), 400

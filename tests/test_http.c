@@ -528,6 +528,20 @@ static void test_method_not_allowed_format(void)
     assert_response_head_contains(buffer, "Content-Length: 18\r\n");
 }
 
+static void test_directory_redirect_format(void)
+{
+    struct http_response response = {
+        .status = 308,
+        .content_type = "text/plain; charset=utf-8",
+        .location = "/assets/",
+        .file_fd = -1};
+    char buffer[512];
+    assert(http_format_response_head(&response, buffer, sizeof(buffer)) > 0);
+    assert_response_head_prefix(buffer, "HTTP/1.1 308 Permanent Redirect\r\n");
+    assert_response_head_contains(buffer, "Location: /assets/\r\n");
+    assert_response_head_contains(buffer, "Content-Length: 0\r\n");
+}
+
 static void test_internal_error_format(void)
 {
     const char *body = http_reason_phrase(500);
@@ -565,6 +579,7 @@ int main(void)
     puts("HTTP_REASON_PHRASE_TESTS_PASS");
     test_error_response_format();
     test_method_not_allowed_format();
+    test_directory_redirect_format();
     test_internal_error_format();
     puts("HTTP_RESPONSE_FORMAT_TESTS_PASS");
     return 0;

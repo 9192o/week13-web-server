@@ -17,15 +17,15 @@
 #include "../app.c"
 #undef main
 
-extern int __real_openat(int dirfd, const char *pathname, int flags, ...);
+extern int __real_open(const char *pathname, int flags, ...);
 extern int __real_fstat(int fd, struct stat *statbuf);
 
 static int inject_open_failure = 0;
 static int inject_fstat_failure = 0;
 
-int __wrap_openat(int dirfd, const char *pathname, int flags, ...)
+int __wrap_open(const char *pathname, int flags, ...)
 {
-    if (inject_open_failure && strcmp(pathname, "index.html") == 0)
+    if (inject_open_failure && strncmp(pathname, "/proc/self/fd/", 14) == 0)
     {
         errno = EIO;
         return -1;
@@ -36,9 +36,9 @@ int __wrap_openat(int dirfd, const char *pathname, int flags, ...)
         va_start(ap, flags);
         mode_t mode = va_arg(ap, mode_t);
         va_end(ap);
-        return __real_openat(dirfd, pathname, flags, mode);
+        return __real_open(pathname, flags, mode);
     }
-    return __real_openat(dirfd, pathname, flags);
+    return __real_open(pathname, flags);
 }
 
 int __wrap_fstat(int fd, struct stat *statbuf)
@@ -65,6 +65,15 @@ static struct http_request request_for(const char *method, const char *path)
         .target = {.form = HTTP_TARGET_ORIGIN, .path = {path, strlen(path)}}};
 }
 
+static struct http_response prepare(int root_fd, const struct http_request *request)
+{
+    struct router_result route = router_match_request(request);
+    char unused_location[HTTP_REQUEST_LINE_MAX + 2];
+    struct http_response response = app_handle_request(root_fd, request, &route, unused_location);
+    assert(response.location == NULL);
+    return response;
+}
+
 static void test_matches(void)
 {
     const struct
@@ -75,22 +84,24 @@ static void test_matches(void)
         enum router_handler handler;
         const char *allow;
     } cases[] = {
-        {"GET", "/", 200, ROUTER_INDEX, NULL},
-        {"HEAD", "/index.html", 200, ROUTER_INDEX, NULL},
-        {"GET", "/ind%65x.html", 200, ROUTER_INDEX, NULL},
+        {"GET", "/", 200, ROUTER_STATIC, NULL},
+        {"HEAD", "/index.html", 200, ROUTER_STATIC, NULL},
+        {"GET", "/ind%65x.html", 200, ROUTER_STATIC, NULL},
         {"POST", "/%65cho", 200, ROUTER_ECHO, NULL},
         {"GET", "/echo", 405, ROUTER_ERROR, "POST"},
         {"HEAD", "/echo", 405, ROUTER_ERROR, "POST"},
-        {"POST", "/", 405, ROUTER_ERROR, "GET, HEAD"},
-        {"GET", "/missing", 404, ROUTER_ERROR, NULL},
-        {"POST", "/missing", 404, ROUTER_ERROR, NULL},
+        {"POST", "/", 200, ROUTER_STATIC, NULL},
+        {"GET", "/missing", 200, ROUTER_STATIC, NULL},
+        {"POST", "/missing", 200, ROUTER_STATIC, NULL},
         {"PUT", "/echo", 501, ROUTER_ERROR, NULL},
         {"get", "/", 501, ROUTER_ERROR, NULL},
-        {"GET", "/../index.html", 404, ROUTER_ERROR, NULL},
-        {"GET", "/%2e%2e/index.html", 404, ROUTER_ERROR, NULL},
-        {"GET", "//index.html", 404, ROUTER_ERROR, NULL},
-        {"GET", "/echo/", 404, ROUTER_ERROR, NULL},
-        {"GET", "/%2565cho", 404, ROUTER_ERROR, NULL},
+        {"GET", "/../index.html", 403, ROUTER_ERROR, NULL},
+        {"GET", "/%2e%2e/index.html", 403, ROUTER_ERROR, NULL},
+        {"GET", "//index.html", 403, ROUTER_ERROR, NULL},
+        {"GET", "/echo/", 200, ROUTER_STATIC, NULL},
+        {"GET", "/%2565cho", 200, ROUTER_STATIC, NULL},
+        {"GET", "/%ed%95%9c%20file.CSS", 200, ROUTER_STATIC, NULL},
+        {"GET", "/%ed%a0%80.png", 400, ROUTER_ERROR, NULL},
         {"GET", "/%00", 400, ROUTER_ERROR, NULL},
         {"GET", "/bad%", 400, ROUTER_ERROR, NULL},
     };
@@ -106,6 +117,9 @@ static void test_matches(void)
         else
             assert(result.allow == NULL);
     }
+    struct http_request request = request_for("GET", "/%2565cho");
+    struct router_result result = router_match_request(&request);
+    assert(strcmp(result.path, "/%65cho") == 0);
 }
 
 static void test_echo(void)
@@ -114,7 +128,7 @@ static void test_echo(void)
     struct http_request request = request_for("POST", "/echo");
     request.body = (struct http_slice){bytes, sizeof(bytes) - 1};
     struct http_response response =
-        app_handle_request(-1, &request, router_match_request(&request));
+        prepare(-1, &request);
     assert(response.status == 200);
     assert(response.file_fd == -1);
     assert(strcmp(response.content_type, "application/octet-stream") == 0);
@@ -134,8 +148,7 @@ static void test_index_files(void)
     assert(root_fd >= 0);
 
     struct http_request request = request_for("GET", "/");
-    struct router_result route = router_match_request(&request);
-    struct http_response response = app_handle_request(root_fd, &request, route);
+    struct http_response response = prepare(root_fd, &request);
     assert(response.status == 404 && response.file_fd == -1);
 
     const char bytes[] = "<html>index\0bytes</html>";
@@ -143,7 +156,7 @@ static void test_index_files(void)
     assert(file);
     assert(fwrite(bytes, 1, sizeof(bytes) - 1, file) == sizeof(bytes) - 1);
     assert(fclose(file) == 0);
-    response = app_handle_request(root_fd, &request, route);
+    response = prepare(root_fd, &request);
     assert(response.status == 200 && response.file_fd >= 0);
     assert(response.body.length == sizeof(bytes) - 1);
     assert(strcmp(response.content_type, "text/html; charset=utf-8") == 0);
@@ -153,24 +166,24 @@ static void test_index_files(void)
     assert(close(response.file_fd) == 0);
     assert(unlink("index.html") == 0);
 
-    assert(symlink("/etc/passwd", "index.html") == 0);
-    response = app_handle_request(root_fd, &request, route);
-    assert(response.status == 403 && response.file_fd == -1);
+    assert(symlink("missing.html", "index.html") == 0);
+    response = prepare(root_fd, &request);
+    assert(response.status == 404 && response.file_fd == -1);
     assert(unlink("index.html") == 0);
     assert(mkfifo("index.html", 0600) == 0);
-    response = app_handle_request(root_fd, &request, route);
+    response = prepare(root_fd, &request);
     assert(response.status == 403 && response.file_fd == -1);
     assert(unlink("index.html") == 0);
     assert(mkdir("index.html", 0700) == 0);
-    response = app_handle_request(root_fd, &request, route);
-    assert(response.status == 403 && response.file_fd == -1);
+    response = prepare(root_fd, &request);
+    assert(response.status == 404 && response.file_fd == -1);
     assert(rmdir("index.html") == 0);
     int socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     assert(socket_fd >= 0);
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     memcpy(address.sun_path, "index.html", sizeof("index.html"));
     assert(bind(socket_fd, (struct sockaddr *)&address, sizeof(address)) == 0);
-    response = app_handle_request(root_fd, &request, route);
+    response = prepare(root_fd, &request);
     assert(response.status == 403 && response.file_fd == -1);
     assert(close(socket_fd) == 0);
     assert(unlink("index.html") == 0);
@@ -197,10 +210,8 @@ static void test_internal_server_error(void)
     assert(fclose(file) == 0);
 
     struct http_request request = request_for("GET", "/");
-    struct router_result route = router_match_request(&request);
-
     inject_open_failure = 1;
-    struct http_response response = app_handle_request(root_fd, &request, route);
+    struct http_response response = prepare(root_fd, &request);
     inject_open_failure = 0;
     assert(response.status == 500);
     assert(response.file_fd == -1);
@@ -211,7 +222,7 @@ static void test_internal_server_error(void)
     assert(memcmp(response.body.data, reason, response.body.length) == 0);
 
     inject_fstat_failure = 1;
-    response = app_handle_request(root_fd, &request, route);
+    response = prepare(root_fd, &request);
     inject_fstat_failure = 0;
     assert(response.status == 500);
     assert(response.file_fd == -1);

@@ -226,6 +226,9 @@ path/query의 percent encoding은 그대로다. Router는 원문 target 전체�
 
 ## A-06 파일 시스템 경계
 
+[Phase 1 마무리 계획](PHASE_1_FINISH_PLAN.md)의 D-02에 일반 공개 루트의
+파일 열기 경계와 지원 배치 조건을 추가했다. 아래 고정 Router 모델과 구분한다.
+
 관련 요구사항: P1-16~18, P1-21~22, P1-26, P1-31.
 
 현재 고정 Router의 제한된 파일 열기는 실행 시 신뢰한 cwd 아래의 리터럴 `index.html` 하나다.

@@ -3,6 +3,8 @@
 
 #include "app.h"
 #include "http.h"
+#include "static_file.h"
+#include "static_response.h"
 #include "webserver.h"
 
 #include <stdio.h>
@@ -10,7 +12,6 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 static void print_usage(void)
@@ -93,6 +94,16 @@ int main(int argc, char **argv)
     if (cli_parse(argc, argv, &port, &root_fd) < 0)
         return EXIT_FAILURE;
 
+    struct stat root_info;
+    char resolved[2];
+    int probe_fd = static_file_open(root_fd, ".", &root_info, resolved, sizeof(resolved));
+    if (probe_fd < 0)
+    {
+        perror("Static root capability check failed");
+        close(root_fd);
+        return EXIT_FAILURE;
+    }
+    close(probe_fd);
     int status = webserver_run(port, root_fd);
     close(root_fd);
     return status;
@@ -100,56 +111,24 @@ int main(int argc, char **argv)
 
 struct http_response app_handle_request(int root_fd,
                                         const struct http_request *request,
-                                        struct router_result route)
+                                        const struct router_result *route,
+                                        char location[HTTP_REQUEST_LINE_MAX + 2])
 {
     struct http_response response = {
-        .status = route.status,
+        .status = route->status,
         .content_type = "text/plain; charset=utf-8",
-        .allow = route.allow,
+        .allow = route->allow,
         .file_fd = -1};
-    if (route.handler == ROUTER_ECHO)
+    if (route->handler == ROUTER_ECHO)
     {
         response.content_type = "application/octet-stream";
         response.body = request->body;
         return response;
     }
-    if (route.handler == ROUTER_INDEX)
-    {
-        int fd = openat(root_fd, "index.html",
-                        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-        if (fd < 0)
-        {
-            if (errno == ENOENT)
-                response.status = 404;
-            else if (errno == EACCES || errno == EPERM || errno == ELOOP ||
-                     errno == ENXIO || errno == ENODEV)
-                response.status = 403;
-            else
-            {
-                perror("Opening index file failed");
-                response.status = 500;
-            }
-        }
-        else
-        {
-            struct stat info;
-            if (fstat(fd, &info) < 0)
-            {
-                perror("Statting index file failed");
-                response.status = 500;
-            }
-            else if (!S_ISREG(info.st_mode))
-                response.status = 403;
-            else
-            {
-                response.content_type = "text/html; charset=utf-8";
-                response.body.length = (size_t)info.st_size;
-                response.file_fd = fd;
-                return response;
-            }
-            close(fd);
-        }
-    }
+    if (route->handler == ROUTER_STATIC)
+        response = static_response(root_fd, request, route->path, location);
+    if (response.status < 400)
+        return response;
     const char *message = http_reason_phrase(response.status);
     response.body = (struct http_slice){message, strlen(message)};
     return response;

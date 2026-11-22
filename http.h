@@ -91,6 +91,7 @@ struct http_response
     int status;
     const char *content_type;
     const char *allow;
+    const char *location; /* Validated origin path for directory redirects. */
     /* Borrowed bytes, or a file's snapshot length when file_fd >= 0. */
     struct http_slice body;
     int file_fd;

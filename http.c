@@ -777,6 +777,7 @@ const char *http_reason_phrase(int status)
     switch (status)
     {
     case 200: return "OK";
+    case 308: return "Permanent Redirect";
     case 400: return "Bad Request";
     case 403: return "Forbidden";
     case 404: return "Not Found";
@@ -808,12 +809,15 @@ size_t http_format_response_head(const struct http_response *response, char *buf
         "Content-Length: %zu\r\n"
         "Connection: close\r\n"
         "X-Content-Type-Options: nosniff\r\n"
-        "%s%s%s\r\n",
+        "%s%s%s%s%s%s\r\n",
         response->status, http_reason_phrase(response->status), date,
         response->content_type, response->body.length,
         response->allow ? "Allow: " : "",
         response->allow ? response->allow : "",
-        response->allow ? "\r\n" : "");
+        response->allow ? "\r\n" : "",
+        response->location ? "Location: " : "",
+        response->location ? response->location : "",
+        response->location ? "\r\n" : "");
     return length > 0 && (size_t)length < capacity ? (size_t)length : 0;
 }
 

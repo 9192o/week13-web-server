@@ -138,15 +138,18 @@ ssize_t __wrap_send(int sockfd, const void *buf, size_t len, int flags)
 struct router_result router_match_request(const struct http_request *request)
 {
     (void)request;
-    return (struct router_result){index_fd >= 0 ? ROUTER_INDEX : ROUTER_ECHO, 200, NULL};
+    return (struct router_result){.handler = index_fd >= 0 ? ROUTER_STATIC : ROUTER_ECHO,
+                                  .status = 200};
 }
 
 struct http_response app_handle_request(int root_fd,
                                         const struct http_request *request,
-                                        struct router_result route)
+                                        const struct router_result *route,
+                                        char location[HTTP_REQUEST_LINE_MAX + 2])
 {
     (void)root_fd;
     (void)route;
+    (void)location;
     app_stub.called++;
     assert(request->line.method.length < sizeof(app_stub.method));
     memcpy(app_stub.method, request->line.method.data, request->line.method.length);

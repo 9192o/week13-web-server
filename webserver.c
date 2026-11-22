@@ -143,6 +143,7 @@ static void handle_client(int client_fd, int root_fd)
     struct http_body_parser body = {0};
     struct http_request request;
     struct http_response app_response = {.status = 200, .file_fd = -1};
+    char location[HTTP_REQUEST_LINE_MAX + 2];
     int head = 0;
     int error_status = 0;
 
@@ -204,7 +205,7 @@ static void handle_client(int client_fd, int root_fd)
     struct router_result route = router_match_request(&request);
     if (route.handler != ROUTER_ECHO)
     {
-        app_response = app_handle_request(root_fd, &request, route);
+        app_response = app_handle_request(root_fd, &request, &route, location);
         if (app_response.status != 200)
             goto respond_app;
     }
@@ -238,7 +239,7 @@ static void handle_client(int client_fd, int root_fd)
     }
     request.body = (struct http_slice){body.data, body.length};
     if (route.handler == ROUTER_ECHO)
-        app_response = app_handle_request(root_fd, &request, route);
+        app_response = app_handle_request(root_fd, &request, &route, location);
 
 respond_app:
     send_application_response(client_fd, &app_response, head);
@@ -283,7 +284,7 @@ static int send_bytes(int client_fd, const char *data, size_t length)
 
 static int send_application_response(int client_fd, const struct http_response *response, int head)
 {
-    char header[512];
+    char header[HTTP_REQUEST_LINE_MAX + 512];
     size_t length = http_format_response_head(response, header, sizeof(header));
     if (!length || send_bytes(client_fd, header, length) < 0)
         return -1;
