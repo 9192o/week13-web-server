@@ -12,6 +12,19 @@
 
 #include "webserver.c"
 
+#define handle_client(fd, root) handle_client(fd, root, -1)
+#define send_application_response(fd, response, head) \
+    send_application_response(fd, response, head, &(conn_access_record_t){0})
+
+int __wrap_setsockopt(int fd, int level, int option, const void *value, socklen_t size)
+{
+    (void)fd;
+    (void)value;
+    assert(level == SOL_SOCKET && (option == SO_RCVTIMEO || option == SO_SNDTIMEO));
+    assert(size > 0);
+    return 0;
+}
+
 #define MAX_RECV_CALLS 64
 static int index_fd = -1;
 
