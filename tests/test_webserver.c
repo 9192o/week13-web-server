@@ -862,7 +862,9 @@ static void test_prepared_file_cleanup(void)
         if (i == 3 || i == 4)
             mock.send_next_errno = EPIPE;
         handle_client(0, -1);
-        assert(fcntl(index_fd, F_GETFD) == -1 && errno == EBADF);
+        char fd_path[64], destination;
+        assert(snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", index_fd) > 0);
+        assert(readlink(fd_path, &destination, 1) == -1 && errno == ENOENT);
         if (i == 1 || i == 5)
             assert_error_response(400, "Bad Request", 0);
         if (i == 2 || i == 3 || i == 4)

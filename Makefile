@@ -15,17 +15,17 @@ test-unit:
 		http_bin=$$(mktemp); body_bin=$$(mktemp); server_bin=$$(mktemp); router_bin=$$(mktemp); static_bin=$$(mktemp); conn_bin=$$(mktemp); \
 		trap 'rm -f "$$http_bin" "$$body_bin" "$$server_bin" "$$router_bin" "$$static_bin" "$$conn_bin"' EXIT HUP INT TERM; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_http.c http.c $(LDLIBS) -o "$$http_bin"; \
-		"$$http_bin"; \
+		$(UNIT_RUNNER) "$$http_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c http.c $(LDLIBS) -o "$$body_bin"; \
-		"$$body_bin"; \
+		$(UNIT_RUNNER) "$$body_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c connection.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -Wl,--wrap=setsockopt -o "$$server_bin"; \
-		"$$server_bin"; \
+		$(UNIT_RUNNER) "$$server_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c static_response.c static_file.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
-		"$$router_bin"; \
+		$(UNIT_RUNNER) "$$router_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_static_file.c static_file.c $(LDLIBS) -o "$$static_bin"; \
-		"$$static_bin"; \
+		$(UNIT_RUNNER) "$$static_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -DCONNECTION_TESTABLE -I. $(LDFLAGS) tests/test_connection.c connection.c $(LDLIBS) -o "$$conn_bin"; \
-		"$$conn_bin"
+		$(UNIT_RUNNER) "$$conn_bin"
 
 test-integration: webserver
 	python3 tests/test_server.py ./webserver
@@ -45,6 +45,8 @@ help:
 		'Container: make | make dev-check' \
 		'Unit tests: make test-unit' \
 		'Integration tests: make test-integration' \
+		'Full gate: make test; memory checks: make sanitize | valgrind' \
+		'Performance baseline: make benchmark' \
 		'Run the server: ./webserver --port 8080 --root .'
 
 dev-build:
@@ -55,3 +57,5 @@ dev-shell:
 
 dev-check:
 	timeout --kill-after=5s 120s sh tests/environment/check.sh
+
+include tests/phase1.mk
