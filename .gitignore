@@ -1,2 +1,4 @@
 /build/
+/build-asan/
 /server
+/server-asan

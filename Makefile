@@ -2,11 +2,11 @@ CC      ?= cc
 CFLAGS  ?= -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -O2 -g
 CPPFLAGS = -Iinclude
 
-BUILD   = build
-TARGET  = server
+BUILD   ?= build
+TARGET  ?= server
 
 # main.c 를 제외한 모듈은 테스트에서도 링크한다.
-LIB_SRCS  = src/config.c src/server.c src/http_parser.c
+LIB_SRCS  = src/config.c src/server.c src/http_parser.c src/http_response.c
 MAIN_SRC  = src/main.c
 TEST_SRCS = $(wildcard tests/test_*.c)
 
@@ -32,10 +32,12 @@ $(BUILD)/tests/%: tests/%.c $(LIB_OBJS) tests/test.h
 test: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do echo "== $$t"; ./$$t; done
 
-# AddressSanitizer + LeakSanitizer 빌드: make asan && ./server
+# AddressSanitizer + LeakSanitizer + UBSan 빌드: make asan && ./server-asan
+# 일반 빌드와 오브젝트가 섞이지 않도록 별도 디렉터리(build-asan)를 쓴다.
 asan:
-	$(MAKE) clean
-	$(MAKE) CFLAGS="-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" all test
+	$(MAKE) BUILD=build-asan TARGET=server-asan \
+		CFLAGS="-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" \
+		all test
 
 clean:
-	rm -rf $(BUILD) $(TARGET)
+	rm -rf build build-asan server server-asan

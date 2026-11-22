@@ -38,7 +38,7 @@ static void test_read_head_ok(void)
     size_t len;
     int fd = pipe_with(req, strlen(req));
 
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, &len), READ_HEAD_OK);
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len), READ_HEAD_OK);
     CHECK_EQ_INT(len, strlen(req));
     close(fd);
 }
@@ -65,7 +65,7 @@ static void test_read_head_split_across_reads(void)
         _exit(0);
     }
     close(p[1]);
-    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, &len), READ_HEAD_OK);
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 1000, &len), READ_HEAD_OK);
     CHECK_EQ_INT(len, strlen(part1) + strlen(part2));
     close(p[0]);
     waitpid(pid, NULL, 0);
@@ -78,7 +78,7 @@ static void test_read_head_closed_early(void)
     size_t len;
     int fd = pipe_with(req, strlen(req));
 
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, &len),
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len),
                  READ_HEAD_CLOSED);
     CHECK_EQ_INT(len, strlen(req));
     close(fd);
@@ -90,7 +90,7 @@ static void test_read_head_empty_connection(void)
     size_t len;
     int fd = pipe_with("", 0);
 
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, &len),
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len),
                  READ_HEAD_CLOSED);
     CHECK_EQ_INT(len, 0);
     close(fd);
@@ -106,7 +106,7 @@ static void test_read_head_too_large(void)
 
     memset(junk, 'a', n);
     fd = pipe_with(junk, n);
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, &len),
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len),
                  READ_HEAD_TOO_LARGE);
     CHECK_EQ_INT(len, REQUEST_HEAD_MAX);
     close(fd);
@@ -124,14 +124,80 @@ static void test_read_head_exactly_fills_buffer(void)
     memset(req, 'a', REQUEST_HEAD_MAX);
     memcpy(req + REQUEST_HEAD_MAX - 4, "\r\n\r\n", 4);
     fd = pipe_with(req, REQUEST_HEAD_MAX);
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, &len), READ_HEAD_OK);
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len), READ_HEAD_OK);
     close(fd);
     free(req);
+}
+
+/* 쓰기 끝을 열어 둔 채(EOF 없이) 데이터만 미리 넣어 둔다 → 시간 초과 유도 */
+static void test_read_head_timeout_no_data(void)
+{
+    char buf[REQUEST_HEAD_MAX];
+    size_t len;
+    int p[2];
+
+    if (pipe(p) < 0)
+        abort();
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 100, &len),
+                 READ_HEAD_TIMEOUT);
+    CHECK_EQ_INT(len, 0);                          /* 무응답으로 닫을 경우 */
+    close(p[0]);
+    close(p[1]);
+}
+
+static void test_read_head_timeout_partial(void)
+{
+    const char *part = "GET / HTTP/1.1\r\nHo";
+    char buf[REQUEST_HEAD_MAX];
+    size_t len;
+    int p[2];
+
+    if (pipe(p) < 0)
+        abort();
+    write_all(p[1], part, strlen(part));
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 100, &len),
+                 READ_HEAD_TIMEOUT);
+    CHECK_EQ_INT(len, strlen(part));               /* 408 로 응답할 경우 */
+    close(p[0]);
+    close(p[1]);
+}
+
+/* 데드라인은 read 한 번이 아니라 헤더 전체 기준: 조금씩 계속 보내도 시간이 끝나면 TIMEOUT */
+static void test_read_head_deadline_is_total(void)
+{
+    struct timespec tick = {0, 40 * 1000 * 1000};  /* 40ms 마다 1바이트 */
+    char buf[REQUEST_HEAD_MAX];
+    size_t len;
+    int p[2];
+    pid_t pid;
+
+    if (pipe(p) < 0)
+        abort();
+    pid = fork();
+    if (pid == 0) {
+        int i;
+        close(p[0]);
+        for (i = 0; i < 20; i++) {                 /* 총 ~800ms 동안 조금씩 */
+            if (write_all(p[1], "a", 1) < 0)
+                break;
+            nanosleep(&tick, NULL);
+        }
+        _exit(0);
+    }
+    close(p[1]);
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 200, &len),
+                 READ_HEAD_TIMEOUT);
+    CHECK(len > 0 && len < 20);
+    close(p[0]);
+    waitpid(pid, NULL, 0);
 }
 
 int main(void)
 {
     RUN_TEST(test_find_header_end);
+    RUN_TEST(test_read_head_timeout_no_data);
+    RUN_TEST(test_read_head_timeout_partial);
+    RUN_TEST(test_read_head_deadline_is_total);
     RUN_TEST(test_read_head_ok);
     RUN_TEST(test_read_head_split_across_reads);
     RUN_TEST(test_read_head_closed_early);
