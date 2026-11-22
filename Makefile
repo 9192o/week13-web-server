@@ -6,7 +6,8 @@ BUILD   ?= build
 TARGET  ?= server
 
 # main.c 를 제외한 모듈은 테스트에서도 링크한다.
-LIB_SRCS  = src/config.c src/server.c src/http_parser.c src/http_response.c
+LIB_SRCS  = src/config.c src/server.c src/http_parser.c src/http_response.c \
+            src/url.c src/static.c
 MAIN_SRC  = src/main.c
 TEST_SRCS = $(wildcard tests/test_*.c)
 
