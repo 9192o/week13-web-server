@@ -7,23 +7,25 @@
 ```bash
 make test          # 단위 테스트
 make integration   # 실제 서버 + curl/nc 통합 테스트
-make sanitize      # ASan/UBSan 빌드로 test + integration
+make shutdown-test # SIGINT/SIGTERM/keep-alive/CGI 종료 테스트
+make sanitize      # ASan/UBSan 빌드로 test + integration + shutdown-test
 make fdtest        # fd 누수 검사
 make load          # ab 부하 테스트
 ```
 
 > `make sanitize`는 clean 후 sanitizer 빌드로 실행한다. 끝나면 `make clean && make`로 일반 빌드로 돌아온다.
 
-## 현재 결과 (2026-11-20, macOS)
+## 현재 결과 (2026-11-20 ~ 11-22, macOS)
 
 | 항목 | 명령 | 결과 |
 |---|---|---|
 | 단위 테스트 | `make test` | **67 assertions, 0 failed** |
 | 통합 테스트 | `make integration` | **전체 PASS** (정적/D12/D10/D11/CGI/keep-alive/큰 파일/끊김) |
-| ASan/UBSan | `make sanitize` | **PASS** (test + integration) |
+| ASan/UBSan | `make sanitize` | **PASS** (test + integration + shutdown-test) |
 | fd 누수 | `make fdtest` | **PASS** (`before=4, after=4`) |
 | 부하 (close) | `make load` | **PASS** (`failed=0`, 약 2,131 RPS) |
 | 부하 (keep-alive) | `make load` | **PASS** (`failed=0`, 약 2,409 RPS) |
+| 종료 처리 | `make shutdown-test` | **PASS** (idle SIGINT/SIGTERM, keep-alive SIGINT, 두 번째 SIGINT) |
 | macOS 빌드 | `make` | **PASS** |
 | Linux 빌드 | `make linux-test` / CI | **TODO** (Docker 데몬 미실행, CI 워크플로 추가) |
 | 아키텍처 | `docs/architecture.md` | **PASS** |
@@ -50,6 +52,7 @@ make load          # ab 부하 테스트
 
 - README 작성 (사용자가 나중에 한 번에 작성)
 - Linux 빌드/테스트 (`make linux-test` 또는 GitHub Actions CI)
+- 느린 클라이언트에 대한 `SO_SNDTIMEO` 동작 테스트
 - CGI 큰 POST 교착 테스트
 - CGI fd 상속 테스트
 - bind 실패/EMFILE 같은 운영 엣지 테스트

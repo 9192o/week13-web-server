@@ -44,7 +44,7 @@ accept()
 - `header_len`은 헤더 블록이 끝난 위치(본문 시작)를 나타낸다.
 - `http_request_read_body`는:
   1. 버퍼에 이미 들어온 본문 바이트를 복사하고
-  2. 모자란 만큼 `readn`으로 읽는다.
+  2. 모자란 만큼 `readn_stop`으로 읽는다. 종료 플래그가 세워지면 중단한다.
 - keep-alive에서 본문 뒤에 남은 바이트는 `memmove`로 버퍼 앞으로 옮겨 다음 요청으로 넘긴다.
 
 ## keep-alive
@@ -52,6 +52,7 @@ accept()
 - HTTP/1.1 기본 keep-alive, HTTP/1.0 기본 close.
 - `Connection: close`면 응답 후 종료.
 - `keepalive_max_requests`에 도달하면 `Connection: close`.
+- 종료 중(`g_stop`)이면 `Connection: close`로 응답하고 다음 요청을 읽지 않는다.
 - 다음 요청을 기다릴 때는 `keepalive_idle_sec`, 요청이 시작되면 `request_timeout_sec` 타임아웃을 사용한다.
 - idle timeout은 응답 없이 close, 부분 요청 timeout은 `408`.
 - 에러 응답은 항상 close.
@@ -81,7 +82,10 @@ accept()
 ## 시그널 / 자원
 
 - `SIGPIPE` 무시 → 쓰기 중 클라이언트가 끊겨도 서버 생존.
-- `SIGINT`/`SIGTERM` → `g_stop` 플래그, `accept` 루프 종료.
+- `SIGINT`/`SIGTERM` → 첫 시그널은 `g_stop` 플래그, 두 번째 시그널은 `_exit(1)` 강제 종료.
+- 종료 시 헤더/본문을 읽는 중인 요청은 중단하고, 이미 파싱된 요청의 응답은 마무리한다. keep-alive 응답에는 `Connection: close`를 붙인다.
+- `SO_RCVTIMEO`/`SO_SNDTIMEO`으로 읽기/쓰기 대기 시간을 제한한다.
+- Phase 1은 요청 처리 중 `listenfd`를 즉시 닫을 수 없어 backlog 연결이 RST될 수 있다 (Phase 2에서 개선).
 - `listenfd`에 `FD_CLOEXEC`.
 - 연결마다 `connfd`, 정적 파일 fd, CGI 파이프/임시 파일을 모든 경로에서 닫는다.
 - fd 누수는 `make fdtest`로 확인한다.

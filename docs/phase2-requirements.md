@@ -56,6 +56,8 @@
 - **FR-30**
   - SIGTERM/SIGINT 시 새 연결 중단, 활성 연결은 제한 시간 내 마무리.
   - 강제 종료 시 fd/메모리 정리.
+  - **Phase 1 현황**: 단일 스레드라 요청 처리 중 `listenfd`가 열려 있어 backlog 연결이 RST될 수 있다. keep-alive는 `g_stop`으로 끊고, 두 번째 시그널은 `_exit`로 강제 종료한다.
+  - **Phase 2**: accept 담당 주체가 `listenfd`를 먼저 닫고, 활성 연결/워커를 추적해 유예 시간 후 종료한다.
 - **FR-31**
   - 느린 클라이언트, 느린 CGI, 느린 백엔드(추후)에 대한 타임아웃.
   - Phase 1의 요청 타임아웃/keep-alive idle을 동시성 모델에 맞게 조정.

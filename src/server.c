@@ -20,6 +20,8 @@ static volatile sig_atomic_t g_stop = 0;
 
 static void handle_signal(int sig) {
     (void)sig;
+    if (g_stop)
+        _exit(1); /* second SIGINT/SIGTERM: force exit */
     g_stop = 1;
 }
 
@@ -96,12 +98,24 @@ static void set_recv_timeout(int fd, int seconds) {
     (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
 }
 
+static void set_send_timeout(int fd, int seconds) {
+    if (seconds <= 0)
+        return;
+
+    struct timeval tv;
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+}
+
 static void handle_connection(int connfd, const struct sockaddr_in *peer,
                               const config_t *cfg) {
     char peer_ip[INET_ADDRSTRLEN];
     if (inet_ntop(AF_INET, &peer->sin_addr, peer_ip, sizeof peer_ip) == NULL)
         snprintf(peer_ip, sizeof peer_ip, "?");
     log_error("connection from %s:%u", peer_ip, ntohs(peer->sin_port));
+
+    set_send_timeout(connfd, cfg->request_timeout_sec);
 
     char buf[16384];
     size_t max_len = cfg->max_header_bytes;
@@ -178,7 +192,8 @@ static void handle_connection(int connfd, const struct sockaddr_in *peer,
 
         requests++;
         int keep = req.keep_alive &&
-                   (requests < cfg->keepalive_max_requests);
+                   (requests < cfg->keepalive_max_requests) &&
+                   !g_stop;
         int close_after = !keep;
 
         if (req.method == HTTP_OPTIONS) {
@@ -207,7 +222,7 @@ static void handle_connection(int connfd, const struct sockaddr_in *peer,
 
         http_request_free(&req);
 
-        if (!keep)
+        if (!keep || g_stop)
             return;
     }
 }

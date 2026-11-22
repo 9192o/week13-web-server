@@ -27,6 +27,7 @@ main
         ├─ accept
         └─ handle_connection
             ├─ has_header_end
+            ├─ set_send_timeout
             ├─ set_recv_timeout
             ├─ http_request_init
             ├─ http_request_parse_buffer
@@ -43,7 +44,7 @@ main
             │       │   └─ hexval
             │       └─ normalize_path
             ├─ http_request_read_body
-            │   └─ readn
+            │   └─ readn_stop
             ├─ 라우팅
             │   ├─ http_response_send_options
             │   ├─ cgi_handle
@@ -172,10 +173,10 @@ accept
 
 #### `util.c` — 전 구간에서 조금씩
 
-- **호출자는 거의 모든 모듈**이다. `server.c`(로그), `http_request.c`(`readn`), `http_response.c`(`writen`), `static_file.c`(MIME/날짜/`writen`), `cgi.c`(`writen`).
+- **호출자는 거의 모든 모듈**이다. `server.c`(로그/타임아웃), `http_request.c`(`readn_stop`), `http_response.c`(`writen`), `static_file.c`(MIME/날짜/`writen`), `cgi.c`(`writen`).
 - "여러 모듈이 똑같이 필요로 하는 바닥 지식"이다. 부분 읽기/쓰기 루프, IMF-fixdate 변환, 확장자→MIME.
 - 이게 없으면 `read`/`write` 루프가 모듈마다 복사되고, 한 곳의 버그를 고쳐도 다른 곳에 남는다.
-- `readn`/`writen`이 특히 중요하다. 소켓은 "한 번에 다 읽고 쓰는" 것을 보장하지 않는다.
+- `readn_stop`/`writen`이 특히 중요하다. 소켓은 "한 번에 다 읽고 쓰는" 것을 보장하지 않는다.
 
 #### `main.c` — 24줄짜리 지휘자
 
@@ -282,22 +283,23 @@ accept
 
 `src/server.c:21` · `static void` · ← 시그널 수신 시
 
-- **`g_stop = 1`만 설정한다.** 시그널 핸들러 안에서는 `printf`, `malloc`, `close` 같은 함수를 부르면 안 된다(async-signal-safe가 아니다).
+- **첫 시그널은 `g_stop = 1`만 설정한다.** 시그널 핸들러 안에서는 `printf`, `malloc`, `close` 같은 함수를 부르면 안 된다(async-signal-safe가 아니다).
+- **두 번째 시그널은 `_exit(1)`로 즉시 종료한다.** `_exit`는 async-signal-safe라 핸들러에서 안전하게 쓸 수 있다. 정리 없이 빠지는 강제 종료다.
 - **`volatile sig_atomic_t`라 컴파일러가 최적화로 접근을 없애지 않는다.** 메인 루프가 이 값을 폴링한다.
-- 실제 종료는 핸들러가 아니라 `server_run`의 루프가 한다.
+- 첫 시그널의 실제 종료는 핸들러가 아니라 `server_run`/`handle_connection`이 한다.
 
 ### `setup_signals()`
 
-`src/server.c:26` · `static int` · ← `server_run()`
+`src/server.c:28` · `static int` · ← `server_run()`
 
 - **SIGPIPE 무시**: 클라이언트가 응답 도중 끊겨도 서버가 죽지 않게 한다. `writen`이 `EPIPE`를 반환하고 호출자가 정리한다.
-- **SIGINT/SIGTERM 핸들러가 `g_stop = 1`만 설정**: Ctrl-C나 `kill`로 우아하게 루프를 빠져나온다.
+- **SIGINT/SIGTERM 핸들러**: 첫 시그널은 `g_stop = 1`, 두 번째 시그널은 `_exit(1)`로 강제 종료한다.
 - **`sigaction`에 `SA_RESTART`를 주지 않아서 `accept`/`read`가 `EINTR`로 깰 수 있게 한다.** 이게 없으면 시그널을 받아도 `accept`가 재시작되어 루프가 `g_stop`을 확인하지 못할 수 있다.
 - 실패 시 `-1`, 성공 시 `0`.
 
 ### `create_listen_socket()`
 
-`src/server.c:43` · `static int` · ← `server_run()`
+`src/server.c:45` · `static int` · ← `server_run()`
 
 - **`socket(AF_INET, SOCK_STREAM, 0)`으로 TCP 소켓을 만든다.** IPv4 스트림 소켓.
 - **`FD_CLOEXEC`를 설정한다.** CGI 자식 프로세스가 `execve` 후에도 listenfd를 들고 있으면, 서버를 재시작해도 포트가 붙잡혀 있을 수 있다.
@@ -308,10 +310,11 @@ accept
 
 ### `server_run()`
 
-`src/server.c:208` · `int` · ← `main()`
+`src/server.c:230` · `int` · ← `main()`
 
 - **시그널을 먼저 등록하고 listen 소켓을 만든다.** 순서가 중요하다. 소켓을 만든 뒤 시그널을 등록하면 그 사이에 Ctrl-C가 들어와 기본 동작으로 죽을 수 있다.
 - **`while (!g_stop)`으로 `accept`를 반복한다.** Phase 1은 단일 스레드라 한 번에 연결 하나만 처리한다.
+- **종료 시 `handle_connection`은 진행 상태에 따라 중단하거나 응답을 마무리하고, `listenfd`는 그 뒤에 닫힌다.** 헤더/본문을 읽는 중이면 중단하고, 이미 파싱된 요청의 응답은 끝까지 보낸다. 그 사이 backlog에 들어온 연결은 RST될 수 있다 (Phase 2에서 개선).
 - **`EINTR`/`ECONNABORTED`는 `continue`.** 시그널이나 클라이언트의 연결 철회는 정상적인 사건이다.
 - **`EMFILE`이면 로그를 남기고 1초 쉰다.** fd가 고갈된 상태에서 바로 재시도하면 로그 폭풍과 CPU 낭비가 된다. 1초 쉬면 다른 연결이 정리될 시간이 생긴다.
 - **그 외 에러는 `break`.** listen 소켓 자체가 망가진 상황이라 루프를 돌 수 없다.
@@ -320,7 +323,7 @@ accept
 
 ### `server_request_stop()`
 
-`src/server.c:246` · `void` · 현재 미사용 (테스트/확장용 API)
+`src/server.c:268` · `void` · 현재 미사용 (테스트/확장용 API)
 
 - **외부에서 `g_stop`을 세울 수 있게 열어둔 함수다.** 지금은 시그널 핸들러가 직접 세우므로 호출되는 곳이 없다.
 - Phase 2에서 워커를 정리하거나, 테스트에서 서버를 프로그램적으로 멈출 때 쓸 수 있다.
@@ -329,11 +332,12 @@ accept
 
 ## 5. 연결 처리 흐름 — `handle_connection()`
 
-`src/server.c:99` · `static void` · ← `server_run()`
+`src/server.c:111` · `static void` · ← `server_run()`
 
 이 함수가 Phase 1의 심장이다. 한 연결에서 keep-alive 요청을 여러 개 처리한다.
 
 - **`peer_ip`를 문자열로 바꿔 로그와 CGI `REMOTE_ADDR`에 쓴다.** `inet_ntop` 실패 시 `"?"`.
+- **`set_send_timeout`으로 `SO_SNDTIMEO`을 건다.** 클라이언트가 응답을 안 읽어 송신 버퍼가 차도 `write`가 최대 `request_timeout_sec`까지만 기다린다.
 - **`char buf[16384]` 하나를 연결 내내 재사용한다.** 요청마다 malloc하지 않는다.
 - **`max_len`은 `cfg->max_header_bytes`와 버퍼 크기 중 작은 값.** CLI로 헤더 한계를 키워도 물리 버퍼를 넘을 수 없다.
 - **`pending`은 이전 요청 뒤에 남은 바이트 수.** 파이프라인/keep-alive에서 다음 요청이 이미 버퍼에 들어와 있을 수 있다.
@@ -347,7 +351,7 @@ accept
   - 첫 요청 대기(`len == 0 && requests == 0`) → `request_timeout_sec`
   - keep-alive로 다음 요청 대기(`len == 0 && requests > 0`) → `keepalive_idle_sec`
   - 요청이 일부 들어온 상태(`len > 0`) → 다시 `request_timeout_sec`
-- **`EINTR`은 재시도.** 시그널로 `read`가 깨진 것은 에러가 아니다.
+- **`EINTR`이면 `g_stop`을 확인한다.** 종료 중이면 바로 return하고, 아니면 재시도한다. 시그널로 `read`가 깨진 것은 에러가 아니다.
 - **`EAGAIN`/`EWOULDBLOCK`은 `SO_RCVTIMEO` 만료다.**
   - idle 대기 중이었으면 **응답 없이 조용히 close.** 클라이언트가 그냥 떠난 것과 같다.
   - 요청 도중이었으면 **`408 Request Timeout`.**
@@ -356,7 +360,7 @@ accept
 
 ### `has_header_end()`
 
-`src/server.c:80` · `static int` · ← `handle_connection()`
+`src/server.c:82` · `static int` · ← `handle_connection()`
 
 - **`buf[0..len)`에서 `\r\n\r\n` 4바이트를 찾는다.** 찾으면 `1`, 없으면 `0`.
 - **매 호출마다 처음부터 다시 훑는다.** "어디까지 스캔했는지"를 기억하지 않는 상태 없는 함수다.
@@ -388,9 +392,10 @@ for (size_t i = start; i + 3 < len; i++) {
 ### keep-alive 판단
 
 - **`requests++`를 먼저 한다.** "이번 요청까지 포함해서 몇 개인가"를 세야 최대 요청 수를 정확히 자를 수 있다.
-- **`keep = req.keep_alive && requests < keepalive_max_requests`.**
+- **`keep = req.keep_alive && requests < keepalive_max_requests && !g_stop`.**
   - `req.keep_alive`는 파서가 결정한다 (HTTP/1.1 기본 true, HTTP/1.0 기본 false, `Connection` 헤더로 조정).
   - 최대 요청 수에 도달하면 `keep`이 false가 되어 `Connection: close`로 응답한다.
+  - 종료 중(`g_stop`)이면 `keep`이 false가 되어, 이번 응답에 `Connection: close`를 붙인다. 클라이언트가 이 연결을 재사용하지 않게 하려는 것이다.
 - **`close_after`를 모든 응답 함수에 넘긴다.** 응답 헤더의 `Connection` 값이 이 값으로 결정된다.
 
 ### 라우팅
@@ -410,7 +415,25 @@ for (size_t i = start; i + 3 < len; i++) {
 ### 마무리
 
 - **`http_request_free`로 본문 malloc을 해제한다.** 헤더는 버퍼를 가리키는 포인터라 해제할 것이 없다.
-- **`keep`이 false면 return.** 호출자가 `connfd`를 닫는다.
+- **`keep`이 false이거나 `g_stop`이면 return.** 응답 도중에 시그널이 왔더라도 다음 요청은 읽지 않는다. 호출자가 `connfd`를 닫는다.
+
+### 종료 흐름
+
+```text
+SIGINT/SIGTERM (첫 번째)
+  → g_stop = 1
+  → accept/read가 EINTR로 깸
+  → 헤더/본문을 읽는 중이면 중단
+  → 이미 파싱된 요청이면 응답을 끝까지 전송
+  → keep 계산에 !g_stop이 들어가 Connection: close
+  → 루프 끝에서 g_stop 확인 후 return
+  → server_run이 connfd와 listenfd를 닫고 종료
+
+SIGINT/SIGTERM (두 번째)
+  → handle_signal이 _exit(1)로 즉시 종료
+```
+
+- **Phase 1 한계**: 요청 처리 중에는 `listenfd`가 열려 있어, backlog에 쌓인 연결은 종료 시 RST될 수 있다. Phase 2에서 accept 담당 주체가 `listenfd`를 먼저 닫는 구조로 해결한다.
 
 ---
 
@@ -420,7 +443,8 @@ for (size_t i = start; i + 3 < len; i++) {
 
 - **에러 응답은 거의 항상 연결을 닫는다.** `http_response_send_error(..., 1)`이 대부분이다. 파싱 실패 후 남은 바이트를 신뢰할 수 없기 때문이다.
 - **응답 상태 라인은 항상 `HTTP/1.1`이다.** HTTP/1.0 요청에도 1.1로 응답한다.
-- **`SO_RCVTIMEO`만 설정한다.** 느리게 읽는 클라이언트에 대한 쓰기 타임아웃(`SO_SNDTIMEO`)은 없다.
+- **`SO_RCVTIMEO`와 `SO_SNDTIMEO`을 모두 설정한다.** 읽기와 쓰기 모두 `request_timeout_sec`으로 bounded된다. `writen`은 타임아웃 시 `-1`을 반환하고 호출자가 연결을 닫는다.
+- **Phase 1 종료 시 backlog 연결은 RST될 수 있다.** 단일 스레드라 요청 처리 중 `listenfd`를 즉시 닫을 수 없어서다. Phase 2에서 accept 담당 주체가 먼저 `listenfd`를 닫는 구조로 해결한다.
 - **`has_header_end`는 매 read마다 버퍼 전체를 다시 훑는다.** 최악 O(n²)이지만 16KB 상한이라 실용 범위다. 비용 분석과 최적화 방향은 5절 `has_header_end()` 참고.
 - **CGI 타임아웃은 idle 기준이다.** 전체 실행 시간 제한이 아니다.
 - **`ci_contains`는 substring 검색이다.** 정식 토큰 파서가 아니다.

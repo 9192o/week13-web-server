@@ -25,8 +25,14 @@ jobs:
       - name: Integration tests
         run: make integration
 
+      - name: Shutdown tests
+        run: make shutdown-test
+
       - name: Sanitizers
         run: make sanitize
+
+      - name: Restore normal build
+        run: make clean && make
 
       - name: Load test
         run: make load

@@ -63,12 +63,14 @@ tests/fixtures/www/
 |---|---|---|---|---|---|
 | TCP-01 | FR-01 | 통합 | `curl` 접속 | 연결 수락, 응답 | PASS |
 | TCP-02 | NFR-05 | 통합 | 서버 재시작 | `SO_REUSEADDR`로 bind 성공 | TODO |
-| TCP-03 | NFR-10 | 통합 | `SIGINT` | 새 accept 중단, 정상 종료 | PASS (placeholder) |
-| TCP-04 | NFR-10 | 통합 | `SIGTERM` | 정상 종료 | TODO |
+| TCP-03 | NFR-10 | 통합 | `SIGINT` | 새 accept 중단, 정상 종료 | PASS (shutdown-test) |
+| TCP-04 | NFR-10 | 통합 | `SIGTERM` | 정상 종료 | PASS (shutdown-test) |
 | TCP-05 | NFR-10 | 통합 | 응답 중 클라이언트 끊기 | 서버 생존, `SIGPIPE` 무시 | PASS |
-| TCP-06 | FR-02 | 통합 | accept 중 시그널 | `EINTR` 후 루프 계속 | TODO |
+| TCP-06 | FR-02 | 통합 | accept 중 시그널 | `EINTR` 후 `g_stop` 확인, 정상 종료 | PASS (shutdown-test) |
 | TCP-07 | FR-02 | 통합 | 이미 사용 중인 포트 | 명확한 오류 | TODO |
 | TCP-08 | FR-02 | 통합 | 클라이언트 중간 끊기 | 크래시 없음, fd 회수 | PASS |
+| TCP-09 | NFR-10 | 통합 | keep-alive 중 `SIGINT` | 현재 응답 후 종료, 다음 요청 거부 | PASS (shutdown-test) |
+| TCP-10 | NFR-10 | 통합 | 두 번째 `SIGINT` | 즉시 종료 | PASS (shutdown-test) |
 
 ### C. HTTP 요청 파싱 (REQ)
 

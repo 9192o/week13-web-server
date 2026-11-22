@@ -179,14 +179,15 @@
 - **`Content-Length`가 없거나 0이면 즉시 `HTTP_OK`.** GET 대부분이 여기서 끝난다.
 - **`max_body`를 한 번 더 검사한다.** 파서를 거치지 않은 경로에 대한 방어다.
 - **버퍼에 이미 들어온 본문을 먼저 복사한다.** keep-alive에서 다음 요청과 함께 본문이 도착한 경우다.
-- **모자란 만큼만 `readn`으로 읽는다.** 이미 읽은 바이트를 다시 읽지 않는다.
+- **모자란 만큼만 `readn_stop`으로 읽는다.** 이미 읽은 바이트를 다시 읽지 않는다.
+- **`stop`이 세워지면 본문 읽기를 중단한다.** 시그널로 `read`가 `EINTR`로 깼을 때 `stop`을 확인하고 `-1`을 반환한다. 서버는 이때 에러 응답을 보내지 않고 연결을 닫는다.
 - **`EAGAIN`/`EWOULDBLOCK`이면 `408`.** `SO_RCVTIMEO` 만료다.
 - **short read면 `400`.** 클라이언트가 본문을 덜 보내고 끊은 경우다.
 - **`body_len = content_length`로 확정한다.**
 
 ### `http_request_get_header()`
 
-`src/http_request.c:452` · `const char *` · ← `static_file_handle`, `set_cgi_env`
+`src/http_request.c:453` · `const char *` · ← `static_file_handle`, `set_cgi_env`
 
 - **헤더 배열을 선형 탐색하며 대소문자 무시 비교한다.** 헤더가 100개 이하라 선형으로 충분하다.
 - **값 포인터와 길이를 함께 돌려준다.** zero-copy라 NUL-terminate가 없어서 길이가 필수다.
@@ -433,18 +434,26 @@
 
 ## 5. 공용 유틸 — `util.c`
 
-### `readn()`
+### `readn_stop()`
 
 `src/util.c:12` · `ssize_t` · ← `http_request_read_body`
 
 - **`n`바이트를 채울 때까지 `read`를 반복한다.** `read` 한 번이 요청한 만큼 다 읽는다는 보장이 없다.
-- **`EINTR`은 재시도, `0`이면 중단.** EOF다.
+- **`stop`이 `NULL`이 아니고 세워져 있으면 중단한다.** `EINTR`로 깼을 때 `stop`을 확인하고 `errno = EINTR`로 `-1`을 반환한다.
+- **`stop == NULL`이면 일반 `readn`처럼 동작한다.** 기존 호출자와의 호환을 위한 분기다.
 - **반환값은 실제로 읽은 바이트 수.** 짧게 읽었는지는 호출자가 `n`과 비교해서 판단한다.
 - **에러 시 `-1`.** `errno`는 그대로 보존된다.
 
+### `readn()`
+
+`src/util.c:37` · `ssize_t` · 현재 미사용 (호환용)
+
+- **`readn_stop(fd, buf, n, NULL)`을 부르는 얇은 래퍼다.** 종료 플래그가 필요 없는 곳에서 쓴다.
+- 동작은 `readn_stop`과 같다.
+
 ### `writen()`
 
-`src/util.c:31` · `ssize_t` · ← 모든 응답 전송
+`src/util.c:41` · `ssize_t` · ← 모든 응답 전송
 
 - **`write`가 부분 쓰기를 해도 남은 만큼 계속 쓴다.** 소켓은 요청한 크기만큼 한 번에 쓰지 않을 수 있다.
 - **`EINTR` 재시도, `0`이면 중단.**
@@ -452,7 +461,7 @@
 
 ### `log_error()`
 
-`src/util.c:50` · `void` · ← 서버 전반
+`src/util.c:60` · `void` · ← 서버 전반
 
 - **`va_list`로 printf 형식을 받아 stderr에 쓰고 개행을 붙인다.**
 - **로그 레벨/타임스탬프는 없다.** Phase 1은 최소 로깅만 한다.
@@ -460,7 +469,7 @@
 
 ### `mime_type()`
 
-`src/util.c:58` · `const char *` · ← `static_file_handle`
+`src/util.c:68` · `const char *` · ← `static_file_handle`
 
 - **마지막 `.` 이후 확장자로 MIME을 정한다.** 대소문자 무시.
 - **텍스트 계열은 `charset=utf-8`을 붙인다.** 브라우저의 인코딩 추측을 막는다.
@@ -469,7 +478,7 @@
 
 ### `days_from_civil()`
 
-`src/util.c:89` · `static int64_t` · ← `timegm_utc`
+`src/util.c:99` · `static int64_t` · ← `timegm_utc`
 
 - **그레고리력 날짜를 1970-01-01 기준 일수로 바꾼다.** Howard Hinnant의 알고리즘이다.
 - **`timegm`을 쓰지 않는 이유**: 플랫폼별 제공 여부가 갈리고, `TZ` 환경변수 영향을 받지 않는 구현이 필요했다.
@@ -477,21 +486,21 @@
 
 ### `timegm_utc()`
 
-`src/util.c:99` · `static time_t` · ← `http_date_parse`
+`src/util.c:109` · `static time_t` · ← `http_date_parse`
 
 - **일수 × 86400 + 시/분/초로 epoch 초를 만든다.**
 - **로컬 타임존을 전혀 거치지 않는다.** HTTP 날짜는 항상 GMT다.
 
 ### `month_index()`
 
-`src/util.c:105` · `static int` · ← `http_date_parse`
+`src/util.c:115` · `static int` · ← `http_date_parse`
 
 - **`Jan`~`Dec`을 1~12로 바꾼다.** 대소문자 무시.
 - **모르는 이름은 `-1`.**
 
 ### `http_date_format()`
 
-`src/util.c:118` · `int` · ← `static_file_handle`
+`src/util.c:128` · `int` · ← `static_file_handle`
 
 - **`gmtime_r`로 UTC를 구하고 IMF-fixdate로 포맷한다.** `Fri, 20 Nov 2026 10:47:19 GMT`.
 - **`gmtime_r`을 쓰는 이유**: `gmtime`은 정적 버퍼를 돌려줘 스레드 안전하지 않다. Phase 2에서 스레드를 붙일 때를 대비한 선택이다.
@@ -499,7 +508,7 @@
 
 ### `http_date_parse()`
 
-`src/util.c:139` · `int` · ← `static_file_handle`
+`src/util.c:149` · `int` · ← `static_file_handle`
 
 - **`sscanf`로 `Wdy, DD Mon YYYY HH:MM:SS GMT` 형식만 받는다.** `%n`으로 문자열 끝까지 소비됐는지 확인해 뒤에 쓰레기가 붙은 입력을 거절한다.
 - **요일(`%*3s`)은 검증하지 않는다.** 날짜 계산에 필요 없기 때문이다.
@@ -521,23 +530,25 @@
 | `parse_size_arg` | `src/config.c:40` | 엄격한 크기 파싱 |
 | `config_parse_cli` | `src/config.c:50` | `argv` 해석 |
 | `config_validate` | `src/config.c:110` | docroot/cgi_dir 검증 |
-| `handle_signal` | `src/server.c:21` | `g_stop = 1` |
-| `setup_signals` | `src/server.c:26` | SIGPIPE/SIGINT/SIGTERM 등록 |
-| `create_listen_socket` | `src/server.c:43` | socket/bind/listen |
-| `has_header_end` | `src/server.c:80` | `\r\n\r\n` 탐색 |
-| `set_recv_timeout` | `src/server.c:89` | `SO_RCVTIMEO` 설정 |
-| `handle_connection` | `src/server.c:99` | 연결별 요청 루프 |
-| `server_run` | `src/server.c:208` | accept 루프 |
-| `server_request_stop` | `src/server.c:246` | 외부 종료 API (미사용) |
-| `readn` | `src/util.c:12` | n바이트 읽기 |
-| `writen` | `src/util.c:31` | n바이트 쓰기 |
-| `log_error` | `src/util.c:50` | stderr 로그 |
-| `mime_type` | `src/util.c:58` | 확장자 → MIME |
-| `days_from_civil` | `src/util.c:89` | 날짜 → epoch 일수 |
-| `timegm_utc` | `src/util.c:99` | UTC epoch 초 |
-| `month_index` | `src/util.c:105` | 월 이름 → 숫자 |
-| `http_date_format` | `src/util.c:118` | IMF-fixdate 포맷 |
-| `http_date_parse` | `src/util.c:139` | IMF-fixdate 파싱 |
+| `handle_signal` | `src/server.c:21` | 첫 시그널 `g_stop`, 두 번째 `_exit` |
+| `setup_signals` | `src/server.c:28` | SIGPIPE/SIGINT/SIGTERM 등록 |
+| `create_listen_socket` | `src/server.c:45` | socket/bind/listen |
+| `has_header_end` | `src/server.c:82` | `\r\n\r\n` 탐색 |
+| `set_recv_timeout` | `src/server.c:91` | `SO_RCVTIMEO` 설정 |
+| `set_send_timeout` | `src/server.c:101` | `SO_SNDTIMEO` 설정 |
+| `handle_connection` | `src/server.c:111` | 연결별 요청 루프 |
+| `server_run` | `src/server.c:230` | accept 루프 |
+| `server_request_stop` | `src/server.c:268` | 외부 종료 API (미사용) |
+| `readn_stop` | `src/util.c:12` | 종료 플래그 지원 n바이트 읽기 |
+| `readn` | `src/util.c:37` | `readn_stop(..., NULL)` 래퍼 |
+| `writen` | `src/util.c:41` | n바이트 쓰기 |
+| `log_error` | `src/util.c:60` | stderr 로그 |
+| `mime_type` | `src/util.c:68` | 확장자 → MIME |
+| `days_from_civil` | `src/util.c:99` | 날짜 → epoch 일수 |
+| `timegm_utc` | `src/util.c:109` | UTC epoch 초 |
+| `month_index` | `src/util.c:115` | 월 이름 → 숫자 |
+| `http_date_format` | `src/util.c:128` | IMF-fixdate 포맷 |
+| `http_date_parse` | `src/util.c:149` | IMF-fixdate 파싱 |
 | `find_crlf` | `src/http_request.c:12` | CRLF 탐색 |
 | `trim_ows` | `src/http_request.c:21` | 앞뒤 공백 제거 |
 | `ci_equal` | `src/http_request.c:30` | 대소문자 무시 비교 |
@@ -556,7 +567,7 @@
 | `http_request_reset` | `src/http_request.c:353` | 재사용 초기화 (미사용) |
 | `http_request_parse_buffer` | `src/http_request.c:358` | 헤더 파싱 진입점 |
 | `http_request_read_body` | `src/http_request.c:403` | 본문 읽기 |
-| `http_request_get_header` | `src/http_request.c:452` | 헤더 조회 |
+| `http_request_get_header` | `src/http_request.c:453` | 헤더 조회 |
 | `http_status_reason` | `src/http_response.c:7` | 상태 → reason |
 | `http_response_init` | `src/http_response.c:31` | 응답 초기화 |
 | `http_response_set_status` | `src/http_response.c:35` | 상태 설정 (미사용) |

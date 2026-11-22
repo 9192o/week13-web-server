@@ -25,7 +25,7 @@ DEPS := $(SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)
 SAN_CFLAGS := -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -g -MMD -MP -fsanitize=address,undefined -fno-omit-frame-pointer
 SAN_LDFLAGS := -fsanitize=address,undefined
 
-.PHONY: all cgi test integration sanitize fdtest load linux-test clean
+.PHONY: all cgi test integration shutdown-test sanitize fdtest load linux-test clean
 
 all: $(SERVER_BIN) cgi
 
@@ -52,11 +52,14 @@ $(TEST_BIN): $(TEST_OBJS) $(TEST_SUPPORT_OBJS)
 integration: $(SERVER_BIN) cgi
 	sh tests/integration.sh
 
+shutdown-test: $(SERVER_BIN) cgi
+	sh tests/shutdown.sh
+
 sanitize:
 	$(MAKE) clean
 	ASAN_OPTIONS=halt_on_error=1 \
 	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-	$(MAKE) CFLAGS="$(SAN_CFLAGS)" LDFLAGS="$(SAN_LDFLAGS)" all test integration
+	$(MAKE) CFLAGS="$(SAN_CFLAGS)" LDFLAGS="$(SAN_LDFLAGS)" all test integration shutdown-test
 
 fdtest: $(SERVER_BIN) cgi
 	sh tests/fd_leak.sh
@@ -66,7 +69,7 @@ load: $(SERVER_BIN)
 
 linux-test:
 	docker run --rm -v "$(PWD)":/src -w /src gcc:13 \
-		sh -c "apt-get update && apt-get install -y curl netcat-openbsd && make test && make integration"
+		sh -c "apt-get update && apt-get install -y curl netcat-openbsd && make test && make integration && make shutdown-test"
 
 clean:
 	rm -f $(SERVER_OBJS) $(SERVER_BIN) $(CGI_BINS) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o
