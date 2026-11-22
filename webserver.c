@@ -16,12 +16,11 @@
 
 #define LISTEN_BACKLOG 5
 #define BUF_SIZE 1024
-#define DEFAULT_PORT 8080
-#define DEFAULT_IP "127.0.0.1"
+#define LISTEN_IP "127.0.0.1"
 
-static int create_listener(void);
-static int serve_clients(int listener_fd);
-static void handle_client(int client_fd);
+static int create_listener(unsigned short port);
+static int serve_clients(int listener_fd, unsigned short port, int root_fd);
+static void handle_client(int client_fd, int root_fd);
 static int send_response(int client_fd, const char *response);
 static int send_bytes(int client_fd, const char *data, size_t length);
 static int send_application_response(int client_fd, const struct http_response *response, int head);
@@ -49,15 +48,15 @@ static ssize_t receive_data(int client_fd, char *buffer, size_t length)
     return received;
 }
 
-int webserver_run(void)
+int webserver_run(unsigned short port, int root_fd)
 {
-    int listener_fd = create_listener();
+    int listener_fd = create_listener(port);
     if (listener_fd == -1)
     {
         return EXIT_FAILURE;
     }
 
-    int exit_status = serve_clients(listener_fd);
+    int exit_status = serve_clients(listener_fd, port, root_fd);
     if (close(listener_fd) == -1)
     {
         perror("Closing Server Socket Failed.");
@@ -67,7 +66,7 @@ int webserver_run(void)
     return exit_status;
 }
 
-static int create_listener(void)
+static int create_listener(unsigned short port)
 {
     int listener_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listener_fd == -1)
@@ -76,11 +75,18 @@ static int create_listener(void)
         return -1;
     }
 
+    int opt = 1;
+    if (setsockopt(listener_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1)
+    {
+        perror("Setting Socket Option Failed.");
+        goto fail;
+    }
+
     struct sockaddr_in listen_addr = {0};
     listen_addr.sin_family = AF_INET;
-    listen_addr.sin_port = htons(DEFAULT_PORT);
+    listen_addr.sin_port = htons(port);
 
-    if (inet_pton(AF_INET, DEFAULT_IP, &listen_addr.sin_addr) != 1)
+    if (inet_pton(AF_INET, LISTEN_IP, &listen_addr.sin_addr) != 1)
     {
         fputs("Invalid Listen Address.\n", stderr);
         goto fail;
@@ -105,9 +111,9 @@ fail:
     return -1;
 }
 
-static int serve_clients(int listener_fd)
+static int serve_clients(int listener_fd, unsigned short port, int root_fd)
 {
-    puts("Waiting for client...");
+    printf("READY %hu\n", port);
     fflush(stdout);
 
     while (1)
@@ -123,12 +129,12 @@ static int serve_clients(int listener_fd)
         }
 
         puts("Client Connected!");
-        handle_client(client_fd);
+        handle_client(client_fd, root_fd);
         close(client_fd);
     }
 }
 
-static void handle_client(int client_fd)
+static void handle_client(int client_fd, int root_fd)
 {
     char receive_buffer[HTTP_REQUEST_HEAD_MAX];
     size_t total_received = 0;
@@ -198,7 +204,7 @@ static void handle_client(int client_fd)
     struct router_result route = router_match_request(&request);
     if (route.handler != ROUTER_ECHO)
     {
-        app_response = app_handle_request(&request, route);
+        app_response = app_handle_request(root_fd, &request, route);
         if (app_response.status != 200)
             goto respond_app;
     }
@@ -232,7 +238,7 @@ static void handle_client(int client_fd)
     }
     request.body = (struct http_slice){body.data, body.length};
     if (route.handler == ROUTER_ECHO)
-        app_response = app_handle_request(&request, route);
+        app_response = app_handle_request(root_fd, &request, route);
 
 respond_app:
     send_application_response(client_fd, &app_response, head);

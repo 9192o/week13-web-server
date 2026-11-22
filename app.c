@@ -8,16 +8,99 @@
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-int main(void)
+static void print_usage(void)
 {
-    return webserver_run();
+    fputs("Usage: ./webserver --port <1-65535> --root <directory>\n", stderr);
 }
 
-struct http_response app_handle_request(const struct http_request *request, struct router_result route)
+static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd)
+{
+    const char *port_arg = NULL;
+    const char *root_arg = NULL;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (strcmp(argv[i], "--port") == 0)
+        {
+            if (++i >= argc || port_arg != NULL)
+            {
+                print_usage();
+                return -1;
+            }
+            port_arg = argv[i];
+        }
+        else if (strcmp(argv[i], "--root") == 0)
+        {
+            if (++i >= argc || root_arg != NULL)
+            {
+                print_usage();
+                return -1;
+            }
+            root_arg = argv[i];
+        }
+        else
+        {
+            fprintf(stderr, "Unknown argument: %s\n", argv[i]);
+            print_usage();
+            return -1;
+        }
+    }
+
+    if (port_arg == NULL || root_arg == NULL)
+    {
+        print_usage();
+        return -1;
+    }
+
+    for (const char *digit = port_arg; *digit; ++digit)
+    {
+        if (*digit < '0' || *digit > '9')
+        {
+            fputs("Port must contain only decimal digits.\n", stderr);
+            return -1;
+        }
+    }
+    char *end;
+    errno = 0;
+    long port_val = strtol(port_arg, &end, 10);
+    if (errno != 0 || *end != '\0' || port_val < 1 || port_val > 65535)
+    {
+        fprintf(stderr, "Invalid port: %s\n", port_arg);
+        return -1;
+    }
+    *port = (unsigned short)port_val;
+
+    int fd = open(root_arg, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0)
+    {
+        fprintf(stderr, "Cannot open root directory: %s\n", root_arg);
+        return -1;
+    }
+    *root_fd = fd;
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    unsigned short port;
+    int root_fd;
+
+    if (cli_parse(argc, argv, &port, &root_fd) < 0)
+        return EXIT_FAILURE;
+
+    int status = webserver_run(port, root_fd);
+    close(root_fd);
+    return status;
+}
+
+struct http_response app_handle_request(int root_fd,
+                                        const struct http_request *request,
+                                        struct router_result route)
 {
     struct http_response response = {
         .status = route.status,
@@ -32,8 +115,8 @@ struct http_response app_handle_request(const struct http_request *request, stru
     }
     if (route.handler == ROUTER_INDEX)
     {
-        /* Only this trusted literal is opened; URL paths never reach open(). */
-        int fd = open("index.html", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        int fd = openat(root_fd, "index.html",
+                        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0)
         {
             if (errno == ENOENT)

@@ -15,7 +15,6 @@ from email.utils import parsedate_to_datetime
 from typing import Final, Optional
 
 HOST: Final = "127.0.0.1"
-PORT: Final = 8080
 READY_TIMEOUT: Final = 5.0
 REQUEST_TIMEOUT: Final = 5.0
 TERM_TIMEOUT: Final = 5.0
@@ -23,6 +22,8 @@ TERM_TIMEOUT: Final = 5.0
 INDEX_PATH: Final = Path(__file__).parent.parent / "index.html"
 INDEX_BYTES: Final = INDEX_PATH.read_bytes()
 INDEX_LEN: Final = len(INDEX_BYTES)
+
+SERVER_PORT: Optional[int] = None
 
 REASON_PHRASES: Final = {
     400: b"Bad Request",
@@ -64,15 +65,21 @@ def stop_server(
     assert not drain_thread.is_alive()
 
 
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((HOST, 0))
+        return s.getsockname()[1]
+
+
 def start_server(
-    exe: str, cwd: Optional[str] = None
-) -> tuple[subprocess.Popen[bytes], threading.Thread, queue.Queue[bytes | None]]:
+    exe: str, root: str
+) -> tuple[subprocess.Popen[bytes], threading.Thread, queue.Queue[bytes | None], int]:
+    port = find_free_port()
     proc = subprocess.Popen(
-        [exe],
+        [exe, "--port", str(port), "--root", root],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
-        cwd=cwd,
     )
     q: queue.Queue[bytes | None] = queue.Queue()
     stdout = proc.stdout
@@ -100,8 +107,16 @@ def start_server(
             break
         if line is None:
             break
-        if b"Waiting for client" in line:
-            return proc, t, q
+        parts = line.strip().split()
+        if len(parts) == 2 and parts[0] == b"READY":
+            try:
+                ready_port = int(parts[1].decode())
+            except ValueError:
+                break
+            if ready_port == port:
+                global SERVER_PORT
+                SERVER_PORT = port
+                return proc, t, q, port
 
     stop_server(proc, t)
     raise AssertionError("server did not become ready")
@@ -124,7 +139,8 @@ def raw_request(
     shutdown_write: bool = False,
     method: Optional[str] = None,
 ) -> Response:
-    with socket.create_connection((HOST, PORT), timeout=REQUEST_TIMEOUT) as sock:
+    assert SERVER_PORT is not None
+    with socket.create_connection((HOST, SERVER_PORT), timeout=REQUEST_TIMEOUT) as sock:
         if request:
             sock.sendall(request)
         if shutdown_write:
@@ -141,7 +157,8 @@ def raw_headers_only(
     *,
     shutdown_write: bool = False,
 ) -> tuple[bytes, bytes]:
-    with socket.create_connection((HOST, PORT), timeout=REQUEST_TIMEOUT) as sock:
+    assert SERVER_PORT is not None
+    with socket.create_connection((HOST, SERVER_PORT), timeout=REQUEST_TIMEOUT) as sock:
         if request:
             sock.sendall(request)
         if shutdown_write:
@@ -237,7 +254,8 @@ def expect_continue_then_final(
     expected_status: int,
     expected_body: bytes = b"",
 ) -> None:
-    with socket.create_connection((HOST, PORT), timeout=REQUEST_TIMEOUT) as sock:
+    assert SERVER_PORT is not None
+    with socket.create_connection((HOST, SERVER_PORT), timeout=REQUEST_TIMEOUT) as sock:
         sock.sendall(request_head)
         head = bytearray()
         while not head.endswith(b"\r\n\r\n"):
@@ -654,8 +672,17 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="webserver-routes-") as directory:
         index_path = Path(directory) / "index.html"
         index_path.write_bytes(INDEX_BYTES)
-        proc, drain, _ = start_server(exe, cwd=directory)
+        proc, drain, _, port = start_server(exe, directory)
         try:
+            assert port == SERVER_PORT
+            collision = subprocess.run(
+                [exe, "--port", str(port), "--root", directory],
+                capture_output=True,
+                timeout=READY_TIMEOUT,
+                check=False,
+            )
+            assert collision.returncode != 0
+            assert b"READY" not in collision.stdout
             test_index_routes()
             test_head_routes()
             test_head_parser_errors()

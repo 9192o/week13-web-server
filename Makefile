@@ -18,7 +18,7 @@ test-unit:
 		"$$body_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
 		"$$server_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c $(LDLIBS) -Wl,--wrap=openat -Wl,--wrap=fstat -o "$$router_bin"; \
 		"$$router_bin"
 
 test-integration: webserver
@@ -31,7 +31,7 @@ help:
 		'Container: make | make dev-check' \
 		'Unit tests: make test-unit' \
 		'Integration tests: make test-integration' \
-		'Run the server: ./webserver'
+		'Run the server: ./webserver --port 8080 --root .'
 
 dev-build:
 	sh dev.sh build
