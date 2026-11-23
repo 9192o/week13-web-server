@@ -22,7 +22,7 @@ ASAN_CFLAGS = -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 \
               -fsanitize=address,undefined -fno-omit-frame-pointer
 ASAN_MAKE   = $(MAKE) BUILD=build-asan TARGET=server-asan CFLAGS="$(ASAN_CFLAGS)"
 
-.PHONY: all test asan ftest ftest-slow clean
+.PHONY: all test asan ftest ftest-slow valgrind clean
 
 all: $(TARGET) $(CGI_BINS)
 
@@ -54,6 +54,11 @@ ftest:
 ftest-slow:
 	$(ASAN_MAKE) all
 	bash tests/functional.sh ./server-asan --slow
+
+# valgrind: 일반 빌드 서버를 valgrind 아래에서 띄워 빠른 기능 테스트
+# (메모리 오류·확실한 누수가 있으면 서버가 exit 99 → 실패)
+valgrind: all
+	bash tests/functional.sh tests/valgrind-server.sh
 
 www/cgi-bin/%: cgi-src/%.c
 	@mkdir -p $(dir $@)
