@@ -18,7 +18,11 @@ LIB_OBJS  = $(LIB_SRCS:%.c=$(BUILD)/%.o)
 MAIN_OBJ  = $(MAIN_SRC:%.c=$(BUILD)/%.o)
 TEST_BINS = $(TEST_SRCS:tests/%.c=$(BUILD)/tests/%)
 
-.PHONY: all test asan clean
+ASAN_CFLAGS = -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 \
+              -fsanitize=address,undefined -fno-omit-frame-pointer
+ASAN_MAKE   = $(MAKE) BUILD=build-asan TARGET=server-asan CFLAGS="$(ASAN_CFLAGS)"
+
+.PHONY: all test asan ftest ftest-slow clean
 
 all: $(TARGET) $(CGI_BINS)
 
@@ -39,9 +43,17 @@ test: $(TEST_BINS)
 # AddressSanitizer + LeakSanitizer + UBSan 빌드: make asan && ./server-asan
 # 일반 빌드와 오브젝트가 섞이지 않도록 별도 디렉터리(build-asan)를 쓴다.
 asan:
-	$(MAKE) BUILD=build-asan TARGET=server-asan \
-		CFLAGS="-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" \
-		all test
+	$(ASAN_MAKE) all test
+
+# 기능 테스트: ASan 서버를 임시 문서 루트로 띄워 시나리오 확인 (sanitizer 보고도 실패 처리)
+# ftest 는 빠른 것만, ftest-slow 는 시간 제한 테스트(약 30초)까지.
+ftest:
+	$(ASAN_MAKE) all
+	bash tests/functional.sh ./server-asan
+
+ftest-slow:
+	$(ASAN_MAKE) all
+	bash tests/functional.sh ./server-asan --slow
 
 www/cgi-bin/%: cgi-src/%.c
 	@mkdir -p $(dir $@)
