@@ -1,14 +1,18 @@
 #include "server.h"
+#include "body.h"
 #include "http_parser.h"
 #include "http_response.h"
 #include "static.h"
+#include "url.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -61,7 +65,7 @@ const char *find_header_end(const char *buf, size_t len)
     return NULL;
 }
 
-static long long now_ms(void)
+long long now_ms(void)
 {
     struct timespec ts;
 
@@ -73,7 +77,7 @@ static long long now_ms(void)
  * deadline(now_ms 기준)까지 fd 가 읽을 수 있게 되길 기다린다.
  * 반환: 1 읽기 가능(데이터, EOF, 오류 모두 — read 가 알려줌), 0 시간 초과, -1 poll 오류.
  */
-static int wait_readable(int fd, long long deadline)
+int wait_readable(int fd, long long deadline)
 {
     for (;;) {
         long long left = deadline - now_ms();
@@ -234,10 +238,73 @@ static void access_log(const char *peer, const char *reqline, int status,
                 note ? " " : "", note ? note : "");
 }
 
+/*
+ * /cgi-bin 으로 온 POST: 411 → 413 → 100 Continue → 본문 읽기.
+ * CGI 단위 전이라 본문을 다 읽으면 임시로 404.
+ * 반환: 응답할 상태 코드, 또는 0 (응답 없이 close, *note 에 이유).
+ */
+static int handle_cgi_post(int fd, const char *buf, size_t len,
+                           const struct http_request *req, const char **note)
+{
+    struct body_input in;
+    const char *expect;
+    char *body = NULL;
+    size_t consumed;
+    enum read_body_result r;
+
+    if (req->content_length < 0)
+        return 411;
+    if (req->content_length > REQUEST_BODY_MAX)
+        return 413;
+
+    in.buf = buf;
+    in.buffered_len = len;
+    in.head_len = req->head_len;
+    in.content_length = req->content_length;
+
+    expect = http_get_header(req, "Expect");
+    if (req->version_minor == 1 && expect != NULL &&
+        strcasecmp(expect, "100-continue") == 0 &&
+        (long long)(len - req->head_len) < req->content_length) {
+        if (write_all(fd, HTTP_100_CONTINUE, strlen(HTTP_100_CONTINUE)) < 0) {
+            *note = "(send failed)";
+            return 0;
+        }
+    }
+
+    if (req->content_length > 0) {
+        body = malloc((size_t)req->content_length);
+        if (body == NULL) {
+            fprintf(stderr, "malloc(%lld) for request body: %s\n",
+                    req->content_length, strerror(errno));
+            return 500;
+        }
+    }
+
+    r = read_request_body(fd, &in, BODY_TIMEOUT_MS, body, &consumed);
+    free(body);
+    (void)consumed;            /* phase 1: 남는 바이트는 무시 (Connection: close) */
+
+    switch (r) {
+    case READ_BODY_OK:
+        return 404;            /* CGI 단위 전까지 임시 */
+    case READ_BODY_TIMEOUT:
+        return 408;
+    case READ_BODY_CLOSED:
+        *note = "(client closed mid-body)";
+        return 0;
+    case READ_BODY_ERROR:
+        break;
+    }
+    *note = "(body read error)";
+    return 0;
+}
+
 void server_handle(int conn_fd, const char *peer, const char *root)
 {
     char buf[REQUEST_HEAD_MAX];
     char reqline[REQLINE_LOG_MAX + 4];
+    char decoded[HTTP_URI_MAX + 1];
     char location[HTTP_URI_MAX + 64];
     const char *extra = NULL;
     struct http_request req;
@@ -255,7 +322,17 @@ void server_handle(int conn_fd, const char *peer, const char *root)
     case READ_HEAD_OK:
         status = http_parse_request(buf, len, &req);
         if (status == 0)
-            status = static_resolve(root, req.path, req.method, &target);
+            status = url_check_path(req.path, decoded, sizeof decoded);
+        if (status != 0)
+            break;
+        if (url_is_cgi(decoded))
+            status = req.method == HTTP_POST
+                         ? handle_cgi_post(conn_fd, buf, len, &req, &note)
+                         : 404;        /* CGI GET 은 CGI 단위에서 */
+        else if (req.method == HTTP_POST)
+            status = 405;
+        else
+            status = static_resolve(root, decoded, &target);
         break;
     case READ_HEAD_TOO_LARGE:
         status = http_classify_overflow(buf, len);

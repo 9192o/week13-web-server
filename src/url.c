@@ -59,3 +59,26 @@ enum url_path_check url_check_segments(const char *path)
         seg += n + 1;
     }
 }
+
+int url_check_path(const char *raw, char *decoded, size_t cap)
+{
+    if (url_decode(raw, decoded, cap) < 0)
+        return 400;
+    switch (url_check_segments(decoded)) {
+    case URL_PATH_DOTDOT:
+        return 400;
+    case URL_PATH_DOTFILE:
+        return 404;
+    case URL_PATH_OK:
+        break;
+    }
+    return 0;
+}
+
+int url_is_cgi(const char *decoded)
+{
+    size_t n = strlen(URL_CGI_PREFIX);
+
+    return strncmp(decoded, URL_CGI_PREFIX, n) == 0 &&
+           (decoded[n] == '\0' || decoded[n] == '/');
+}

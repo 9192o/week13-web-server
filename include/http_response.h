@@ -6,6 +6,9 @@
 
 #define HTTP_SERVER_NAME "week13-webserver"
 
+/* Expect: 100-continue 에 대한 중간 응답 (상태 줄 + 빈 줄) */
+#define HTTP_100_CONTINUE "HTTP/1.1 100 Continue\r\n\r\n"
+
 /* 상태 코드의 reason phrase. 표에 없으면 NULL. */
 const char *http_reason(int status);
 

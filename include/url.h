@@ -23,4 +23,17 @@ enum url_path_check {
  */
 enum url_path_check url_check_segments(const char *path);
 
+/* CGI 경로 접두사. 정적 서빙에서 제외된다. */
+#define URL_CGI_PREFIX "/cgi-bin"
+
+/*
+ * 정적 서빙과 CGI 가 공유하는 경로 검사: 디코딩 → ".." → 점 파일.
+ * 성공하면 decoded 에 디코딩된 경로를 쓴다 (cap >= strlen(raw) + 1).
+ * 반환: 0 통과, 400 (잘못된 %·%00·".."), 404 (점 파일).
+ */
+int url_check_path(const char *raw, char *decoded, size_t cap);
+
+/* decoded 가 "/cgi-bin" 이거나 "/cgi-bin/" 으로 시작하면 1, 아니면 0. */
+int url_is_cgi(const char *decoded);
+
 #endif

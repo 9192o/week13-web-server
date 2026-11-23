@@ -61,6 +61,41 @@ static void test_segments(void)
     CHECK_EQ_INT(url_check_segments("/.env/../x"), URL_PATH_DOTDOT);  /* ".." 이 우선 */
 }
 
+/* test_static 에서 옮겨 온 경로 검사 케이스 */
+static void test_check_path_ok(void)
+{
+    CHECK_EQ_INT(url_check_path("/%69ndex.html", out, sizeof out), 0);
+    CHECK_EQ_STR(out, "/index.html");                        /* 디코딩된 경로를 돌려줌 */
+}
+
+static void test_check_path_dotfile_404(void)
+{
+    CHECK_EQ_INT(url_check_path("/.env", out, sizeof out), 404);   /* S4-2 */
+    CHECK_EQ_INT(url_check_path("/%2eenv", out, sizeof out), 404);
+    CHECK_EQ_INT(url_check_path("/.nothing", out, sizeof out), 404);
+}
+
+static void test_check_path_400(void)
+{
+    CHECK_EQ_INT(url_check_path("/../secret.txt", out, sizeof out), 400);
+    CHECK_EQ_INT(url_check_path("/%2e%2e/secret.txt", out, sizeof out), 400);
+    CHECK_EQ_INT(url_check_path("/docs/..%2f..%2fsecret.txt", out, sizeof out), 400);
+    CHECK_EQ_INT(url_check_path("/bad%zz", out, sizeof out), 400);
+    CHECK_EQ_INT(url_check_path("/a%00.html", out, sizeof out), 400);
+}
+
+static void test_is_cgi(void)
+{
+    CHECK_EQ_INT(url_check_path("/cgi%2Dbin/adder", out, sizeof out), 0);
+    CHECK_EQ_INT(url_is_cgi(out), 1);                        /* 디코딩 후 판단 */
+    CHECK_EQ_INT(url_is_cgi("/cgi-bin/adder"), 1);
+    CHECK_EQ_INT(url_is_cgi("/cgi-bin"), 1);
+    CHECK_EQ_INT(url_is_cgi("/cgi-bin/"), 1);
+    CHECK_EQ_INT(url_is_cgi("/cgi-binx"), 0);
+    CHECK_EQ_INT(url_is_cgi("/a/cgi-bin/x"), 0);
+    CHECK_EQ_INT(url_is_cgi("/"), 0);
+}
+
 int main(void)
 {
     RUN_TEST(test_decode_plain);
@@ -68,5 +103,9 @@ int main(void)
     RUN_TEST(test_decode_invalid);
     RUN_TEST(test_decode_capacity);
     RUN_TEST(test_segments);
+    RUN_TEST(test_check_path_ok);
+    RUN_TEST(test_check_path_dotfile_404);
+    RUN_TEST(test_check_path_400);
+    RUN_TEST(test_is_cgi);
     return TEST_SUMMARY();
 }

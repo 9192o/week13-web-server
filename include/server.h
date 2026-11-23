@@ -17,6 +17,12 @@
 /* 접근 로그에 남길 요청 첫 줄의 최대 바이트 (넘으면 "...") */
 #define REQLINE_LOG_MAX 200
 
+/* POST 본문 상한 (Content-Length 가 넘으면 읽기 전에 413) */
+#define REQUEST_BODY_MAX (1024 * 1024)
+
+/* 헤더를 다 받은 뒤 새로 시작하는 본문 전체 데드라인 (넘으면 408) */
+#define BODY_TIMEOUT_MS 10000
+
 enum read_head_result {
     READ_HEAD_OK,        /* \r\n\r\n 까지 받음 */
     READ_HEAD_CLOSED,    /* 헤더 끝 전에 클라이언트가 끊음 (read == 0) */
@@ -57,5 +63,14 @@ enum read_head_result read_request_head(int fd, char *buf, size_t cap,
 
 /* 부분 쓰기와 EINTR 을 처리하며 len 바이트를 모두 쓴다. 실패 시 -1. */
 int write_all(int fd, const void *buf, size_t len);
+
+/* CLOCK_MONOTONIC 기준 밀리초 (데드라인 계산용) */
+long long now_ms(void);
+
+/*
+ * deadline(now_ms 기준)까지 fd 가 읽을 수 있게 되길 기다린다.
+ * 반환: 1 읽기 가능, 0 시간 초과, -1 poll 오류.
+ */
+int wait_readable(int fd, long long deadline);
 
 #endif
