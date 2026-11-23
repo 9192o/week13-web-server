@@ -9,14 +9,13 @@ case "$1" in test|memory|benchmark) mode=$1 ;; *) exit 2 ;; esac
 
 cd "$(dirname "$0")/.."
 revision=$(GIT_MASTER=1 git rev-parse --verify "${2:-HEAD}^{commit}")
-baseline=$(GIT_MASTER=1 git rev-parse --verify '5b20a75^{commit}')
 docker_cli=docker
 if [ -n "${WSL_DISTRO_NAME:-}" ]; then
     docker_cli=docker.exe
 fi
 image=$("$docker_cli" image inspect week13-web-server-dev:trixie --format '{{.Id}}' | tr -d '\r')
 test -n "$image"
-printf 'Source: %s\nBaseline: %s\nImage: %s\n' "$revision" "$baseline" "$image" >&2
+printf 'Source: %s\nImage: %s\n' "$revision" "$image" >&2
 "$docker_cli" version --format 'Docker client={{.Client.Version}} server={{.Server.Version}}' >&2
 
 files=$(mktemp -d)
@@ -24,6 +23,8 @@ trap 'rm -rf "$files"' EXIT
 trap 'exit 1' HUP INT TERM
 GIT_MASTER=1 git archive --format=tar "$revision" >"$files/phase2.tar"
 if [ "$mode" = benchmark ]; then
+    baseline=$(GIT_MASTER=1 git rev-parse --verify '5b20a75^{commit}')
+    printf 'Baseline: %s\n' "$baseline" >&2
     GIT_MASTER=1 git archive --format=tar "$baseline" >"$files/phase1.tar"
 fi
 
