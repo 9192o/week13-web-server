@@ -44,11 +44,21 @@ int http_format_head(char *buf, size_t cap, int status,
                      const char *content_type, long long content_length,
                      const char *extra, time_t now)
 {
+    return http_format_head_raw(buf, cap, http_normalize_status(status),
+                                content_type, content_length, extra, now);
+}
+
+int http_format_head_raw(char *buf, size_t cap, int status,
+                         const char *content_type, long long content_length,
+                         const char *extra, time_t now)
+{
+    const char *reason = http_reason(status);
     char date[64];
     struct tm tm;
     int n;
 
-    status = http_normalize_status(status);
+    if (reason == NULL)
+        reason = "";           /* 표에 없는 코드: 빈 문구 ("HTTP/1.1 201 ") */
 
     /* RFC 9110 IMF-fixdate: "Sun, 06 Nov 1994 08:49:37 GMT" (C 로캘 기준) */
     if (gmtime_r(&now, &tm) == NULL ||
@@ -64,7 +74,7 @@ int http_format_head(char *buf, size_t cap, int status,
                  "%s"
                  "Connection: close\r\n"
                  "\r\n",
-                 status, http_reason(status), date, content_type,
+                 status, reason, date, content_type,
                  content_length, extra ? extra : "");
     if (n < 0 || (size_t)n >= cap) {
         fprintf(stderr, "BUG: response head overflow\n");

@@ -30,6 +30,15 @@ int http_format_head(char *buf, size_t cap, int status,
                      const char *extra, time_t now);
 
 /*
+ * http_format_head 와 같지만 상태 코드를 500 으로 바꾸지 않는다 (CGI Status 용).
+ * 문구는 표에 있으면 표의 문구, 없으면 빈 문구 ("HTTP/1.1 201 ").
+ * 범위(100~599) 검사는 호출자 책임.
+ */
+int http_format_head_raw(char *buf, size_t cap, int status,
+                         const char *content_type, long long content_length,
+                         const char *extra, time_t now);
+
+/*
  * 에러 페이지 HTML 본문을 buf 에 쓴다. 사용자 입력은 넣지 않는다.
  * 반환: 쓴 바이트 수. buf 가 부족하면 -1.
  */

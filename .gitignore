@@ -2,3 +2,4 @@
 /build-asan/
 /server
 /server-asan
+/www/cgi-bin/adder

@@ -7,9 +7,12 @@ TARGET  ?= server
 
 # main.c 를 제외한 모듈은 테스트에서도 링크한다.
 LIB_SRCS  = src/config.c src/server.c src/http_parser.c src/http_response.c \
-            src/url.c src/static.c src/body.c
+            src/url.c src/static.c src/body.c src/cgi.c
 MAIN_SRC  = src/main.c
 TEST_SRCS = $(wildcard tests/test_*.c)
+
+# www/cgi-bin 에 설치되는 CGI 프로그램 (소스는 cgi-src/)
+CGI_BINS  = www/cgi-bin/adder
 
 LIB_OBJS  = $(LIB_SRCS:%.c=$(BUILD)/%.o)
 MAIN_OBJ  = $(MAIN_SRC:%.c=$(BUILD)/%.o)
@@ -17,7 +20,7 @@ TEST_BINS = $(TEST_SRCS:tests/%.c=$(BUILD)/tests/%)
 
 .PHONY: all test asan clean
 
-all: $(TARGET)
+all: $(TARGET) $(CGI_BINS)
 
 $(TARGET): $(LIB_OBJS) $(MAIN_OBJ)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -40,5 +43,9 @@ asan:
 		CFLAGS="-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer" \
 		all test
 
+www/cgi-bin/%: cgi-src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $< -o $@
+
 clean:
-	rm -rf build build-asan server server-asan
+	rm -rf build build-asan server server-asan $(CGI_BINS)

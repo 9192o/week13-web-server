@@ -1,5 +1,6 @@
 #include "server.h"
 #include "body.h"
+#include "cgi.h"
 #include "http_parser.h"
 #include "http_response.h"
 #include "static.h"
@@ -7,6 +8,8 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdio.h>
@@ -25,6 +28,12 @@ int server_listen(int port)
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         perror("socket");
+        return -1;
+    }
+    /* CGI 자식이 listen 소켓을 물려받지 않게 */
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        perror("fcntl(FD_CLOEXEC)");
+        close(fd);
         return -1;
     }
 
@@ -239,12 +248,41 @@ static void access_log(const char *peer, const char *reqline, int status,
 }
 
 /*
- * /cgi-bin 으로 온 POST: 411 → 413 → 100 Continue → 본문 읽기.
- * CGI 단위 전이라 본문을 다 읽으면 임시로 404.
- * 반환: 응답할 상태 코드, 또는 0 (응답 없이 close, *note 에 이유).
+ * 응답을 보내고 연결을 닫는다. status <= 0 이면 응답 없이 close (로그에 note).
+ * 400 이상이면 lingering close.
  */
-static int handle_cgi_post(int fd, const char *buf, size_t len,
-                           const struct http_request *req, const char **note)
+static void finish_error(int fd, const char *peer, const char *reqline,
+                         int status, const char *extra, const char *note)
+{
+    int body_len;
+
+    if (status <= 0) {
+        access_log(peer, reqline, 0, 0, note);
+        close(fd);
+        return;
+    }
+    status = http_normalize_status(status);
+    body_len = send_error(fd, status, extra);
+    if (body_len < 0) {
+        access_log(peer, reqline, 0, 0, "(send failed)");
+        close(fd);
+        return;
+    }
+    access_log(peer, reqline, status, body_len, note);
+    if (status >= 400)
+        lingering_close(fd);
+    else
+        close(fd);
+}
+
+/*
+ * /cgi-bin 으로 온 POST 의 본문: 411 → 413 → 100 Continue → 본문 읽기.
+ * 반환: 0 성공 (*body 에 malloc 한 본문, 길이 0 이면 NULL),
+ *       -1 응답 없이 close (*note 에 이유), 그 외 응답할 상태 코드.
+ */
+static int read_cgi_body(int fd, const char *buf, size_t len,
+                         const struct http_request *req, const char **note,
+                         char **out_body)
 {
     struct body_input in;
     const char *expect;
@@ -252,6 +290,7 @@ static int handle_cgi_post(int fd, const char *buf, size_t len,
     size_t consumed;
     enum read_body_result r;
 
+    *out_body = NULL;
     if (req->content_length < 0)
         return 411;
     if (req->content_length > REQUEST_BODY_MAX)
@@ -268,7 +307,7 @@ static int handle_cgi_post(int fd, const char *buf, size_t len,
         (long long)(len - req->head_len) < req->content_length) {
         if (write_all(fd, HTTP_100_CONTINUE, strlen(HTTP_100_CONTINUE)) < 0) {
             *note = "(send failed)";
-            return 0;
+            return -1;
         }
     }
 
@@ -282,22 +321,168 @@ static int handle_cgi_post(int fd, const char *buf, size_t len,
     }
 
     r = read_request_body(fd, &in, BODY_TIMEOUT_MS, body, &consumed);
-    free(body);
     (void)consumed;            /* phase 1: 남는 바이트는 무시 (Connection: close) */
+    if (r == READ_BODY_OK) {
+        *out_body = body;
+        return 0;
+    }
+    free(body);                /* S9: 실패하면 버퍼를 바로 해제 */
 
     switch (r) {
-    case READ_BODY_OK:
-        return 404;            /* CGI 단위 전까지 임시 */
     case READ_BODY_TIMEOUT:
         return 408;
     case READ_BODY_CLOSED:
         *note = "(client closed mid-body)";
-        return 0;
+        return -1;
+    case READ_BODY_OK:
     case READ_BODY_ERROR:
         break;
     }
     *note = "(body read error)";
-    return 0;
+    return -1;
+}
+
+/* getpeername/getsockname 결과를 "ip" 와 포트로 */
+static void sock_addr(int fd, int peer, char *ip, size_t ip_cap, int *port)
+{
+    struct sockaddr_in a;
+    socklen_t al = sizeof a;
+    int r = peer ? getpeername(fd, (struct sockaddr *)&a, &al)
+                 : getsockname(fd, (struct sockaddr *)&a, &al);
+
+    if (r < 0 || inet_ntop(AF_INET, &a.sin_addr, ip, (socklen_t)ip_cap) == NULL) {
+        snprintf(ip, ip_cap, "0.0.0.0");
+        *port = 0;
+        return;
+    }
+    *port = ntohs(a.sin_port);
+}
+
+/* SERVER_NAME: Host 헤더에서 포트를 뗀 값, 없으면 서버 쪽 IP */
+static void server_name_of(const struct http_request *req, const char *local_ip,
+                           char *out, size_t cap)
+{
+    const char *host = req->host;
+    size_t n;
+
+    if (host == NULL || host[0] == '\0') {
+        snprintf(out, cap, "%s", local_ip);
+        return;
+    }
+    if (host[0] == '[') {                   /* [IPv6]:port */
+        const char *rb = strchr(host, ']');
+        n = rb ? (size_t)(rb - host) + 1 : strlen(host);
+    } else {
+        n = strcspn(host, ":");
+    }
+    if (n >= cap)
+        n = cap - 1;
+    memcpy(out, host, n);
+    out[n] = '\0';
+}
+
+static void cgi_fail_note(const struct cgi_result *res, char *out, size_t cap)
+{
+    switch (res->fail) {
+    case CGI_FAIL_SIGNAL:
+        snprintf(out, cap, "(cgi signal %d)", res->detail);
+        break;
+    case CGI_FAIL_EXIT:
+        snprintf(out, cap, "(cgi exit %d)", res->detail);
+        break;
+    case CGI_FAIL_TIMEOUT:
+        snprintf(out, cap, "(cgi timeout)");
+        break;
+    case CGI_FAIL_TOO_LARGE:
+        snprintf(out, cap, "(cgi output too large)");
+        break;
+    case CGI_FAIL_BAD_HEADER:
+        snprintf(out, cap, "(cgi bad header)");
+        break;
+    case CGI_FAIL_INTERNAL:
+    case CGI_OK:
+        snprintf(out, cap, "(cgi internal error)");
+        break;
+    }
+}
+
+/*
+ * /cgi-bin 요청 전체 처리: 스크립트 찾기 → (POST) 본문 → 실행 → 응답 → close.
+ */
+static void serve_cgi(int fd, const char *peer, const char *reqline,
+                      const char *buf, size_t len,
+                      const struct http_request *req, const char *root,
+                      const char *decoded)
+{
+    char script[PATH_MAX];
+    char local_ip[INET_ADDRSTRLEN], remote_ip[INET_ADDRSTRLEN];
+    char server_name[256], protocol[16], note_buf[64];
+    char head[1024];
+    const char *note = NULL;
+    char *body = NULL;
+    struct cgi_request creq;
+    struct cgi_result res;
+    size_t out_len;
+    int status, hl;
+
+    status = cgi_resolve(root, decoded, script);
+    if (status == 0 && req->method == HTTP_POST)
+        status = read_cgi_body(fd, buf, len, req, &note, &body);
+    if (status != 0) {
+        finish_error(fd, peer, reqline, status, NULL, note);
+        return;
+    }
+
+    memset(&creq, 0, sizeof creq);
+    sock_addr(fd, 1, remote_ip, sizeof remote_ip, &creq.remote_port);
+    sock_addr(fd, 0, local_ip, sizeof local_ip, &creq.server_port);
+    server_name_of(req, local_ip, server_name, sizeof server_name);
+    snprintf(protocol, sizeof protocol, "HTTP/1.%d", req->version_minor);
+    creq.script_path = script;
+    creq.script_name = decoded;
+    creq.method = req->method_str;
+    creq.query = req->query;
+    creq.protocol = protocol;
+    creq.remote_addr = remote_ip;
+    creq.server_name = server_name;
+    creq.content_length = -1;
+    if (req->method == HTTP_POST) {
+        creq.content_type = http_get_header(req, "Content-Type");
+        creq.content_length = req->content_length;
+        creq.body = body;
+        creq.body_len = (size_t)req->content_length;
+    }
+
+    cgi_run(&creq, CGI_TIMEOUT_MS, &res);
+    free(body);
+    if (res.fail != CGI_OK) {
+        cgi_fail_note(&res, note_buf, sizeof note_buf);
+        finish_error(fd, peer, reqline, 500, NULL, note_buf);   /* S11 */
+        return;
+    }
+
+    /* 상태 줄과 헤더는 서버가 쓴다 (문구는 서버 표, 없으면 빈 문구) */
+    out_len = res.output_len - res.body_off;
+    hl = http_format_head_raw(head, sizeof head, res.status, res.content_type,
+                              (long long)out_len, NULL, time(NULL));
+    if (hl < 0) {
+        cgi_result_free(&res);
+        finish_error(fd, peer, reqline, 500, NULL, "(cgi head overflow)");
+        return;
+    }
+    if (write_all(fd, head, (size_t)hl) < 0 ||
+        write_all(fd, res.output + res.body_off, out_len) < 0) {
+        access_log(peer, reqline, 0, 0, "(send failed)");
+        cgi_result_free(&res);
+        close(fd);
+        return;
+    }
+    access_log(peer, reqline, res.status, (long long)out_len, NULL);
+    cgi_result_free(&res);
+    if (res.status >= 400)
+        lingering_close(fd);
+    else
+        close(fd);
 }
 
 void server_handle(int conn_fd, const char *peer, const char *root)
@@ -312,7 +497,6 @@ void server_handle(int conn_fd, const char *peer, const char *root)
     enum read_head_result rr;
     const char *note = NULL;
     int status = 0;            /* 0 이면 응답 없이 닫는다 */
-    int body_len;
     size_t len;
 
     rr = read_request_head(conn_fd, buf, sizeof buf, HEADER_TIMEOUT_MS, &len);
@@ -325,11 +509,11 @@ void server_handle(int conn_fd, const char *peer, const char *root)
             status = url_check_path(req.path, decoded, sizeof decoded);
         if (status != 0)
             break;
-        if (url_is_cgi(decoded))
-            status = req.method == HTTP_POST
-                         ? handle_cgi_post(conn_fd, buf, len, &req, &note)
-                         : 404;        /* CGI GET 은 CGI 단위에서 */
-        else if (req.method == HTTP_POST)
+        if (url_is_cgi(decoded)) {
+            serve_cgi(conn_fd, peer, reqline, buf, len, &req, root, decoded);
+            return;
+        }
+        if (req.method == HTTP_POST)
             status = 405;
         else
             status = static_resolve(root, decoded, &target);
@@ -352,8 +536,7 @@ void server_handle(int conn_fd, const char *peer, const char *root)
     }
 
     if (status == 0) {
-        access_log(peer, reqline, 0, 0, note);
-        close(conn_fd);
+        finish_error(conn_fd, peer, reqline, 0, NULL, note);
         return;
     }
 
@@ -377,18 +560,7 @@ void server_handle(int conn_fd, const char *peer, const char *root)
         extra = "Allow: GET\r\n";
     }
 
-    status = http_normalize_status(status);
-    body_len = send_error(conn_fd, status, extra);
-    if (body_len < 0) {
-        access_log(peer, reqline, 0, 0, "(send failed)");
-        close(conn_fd);
-        return;
-    }
-    access_log(peer, reqline, status, body_len, NULL);
-    if (status >= 400)
-        lingering_close(conn_fd);
-    else
-        close(conn_fd);
+    finish_error(conn_fd, peer, reqline, status, extra, NULL);
 }
 
 void server_run(int listen_fd, const char *root)
@@ -407,6 +579,9 @@ void server_run(int listen_fd, const char *root)
             perror("accept");
             continue;
         }
+        /* CGI 자식이 연결 소켓을 물려받지 않게 (실패해도 처리는 계속) */
+        if (fcntl(conn_fd, F_SETFD, FD_CLOEXEC) < 0)
+            perror("fcntl(FD_CLOEXEC)");
 
         if (inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof ip) == NULL)
             strcpy(ip, "?");

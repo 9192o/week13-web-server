@@ -73,6 +73,21 @@ static void test_format_head_unknown_status_becomes_500(void)
     CHECK(strncmp(buf, "HTTP/1.1 500 Internal Server Error\r\n", 36) == 0);
 }
 
+static void test_format_head_raw(void)
+{
+    /* CGI Status: 코드는 그대로, 문구는 표에 있으면 표, 없으면 빈 문구 */
+    CHECK(http_format_head_raw(buf, sizeof buf, 201, "text/plain", 0, NULL,
+                               FIXED_TIME) > 0);
+    CHECK(strncmp(buf, "HTTP/1.1 201 \r\nDate: ", 21) == 0);
+    CHECK(http_format_head_raw(buf, sizeof buf, 404, "text/plain", 0, NULL,
+                               FIXED_TIME) > 0);
+    CHECK(strncmp(buf, "HTTP/1.1 404 Not Found\r\n", 24) == 0);
+    CHECK(http_format_head_raw(buf, sizeof buf, 599, "text/plain", 3, NULL,
+                               FIXED_TIME) > 0);
+    CHECK(strncmp(buf, "HTTP/1.1 599 \r\n", 15) == 0);
+    CHECK(strstr(buf, "\r\nContent-Length: 3\r\n") != NULL);
+}
+
 static void test_format_head_overflow(void)
 {
     char small[32];
@@ -119,6 +134,7 @@ int main(void)
     RUN_TEST(test_format_head_large_length);
     RUN_TEST(test_format_head_extra_headers);
     RUN_TEST(test_format_head_unknown_status_becomes_500);
+    RUN_TEST(test_format_head_raw);
     RUN_TEST(test_format_head_overflow);
     RUN_TEST(test_error_body);
     RUN_TEST(test_error_body_fits_server_buffer);
