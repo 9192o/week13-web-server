@@ -37,6 +37,7 @@ int static_resolve(const char *root, const char *decoded,
  * 반환:
  *    0  전송 완료
  *   -1  헤더를 보낸 뒤 실패 (EPIPE, 파일이 줄어듦 등) → 호출자는 그냥 close
+ *   -2  SEND_TIMEOUT: 응답 전체를 SEND_TIMEOUT_MS 안에 다 보내지 못함 → 그냥 close
  *   그 외  아직 아무것도 보내지 않음 → 그 상태 코드로 에러 응답 (open 실패 등)
  */
 int static_send(int fd, const struct static_target *t, long long *sent);

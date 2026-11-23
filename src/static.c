@@ -132,8 +132,8 @@ int static_send(int fd, const struct static_target *t, long long *sent)
     static char chunk[STATIC_CHUNK];      /* 연결을 하나씩 처리하는 Phase 1 이라 공유 가능 */
     char head[512];
     struct stat st;
-    long long left;
-    int file, hl;
+    long long left, deadline;
+    int file, hl, sr;
 
     *sent = 0;
     file = open(t->path, O_RDONLY);
@@ -154,9 +154,11 @@ int static_send(int fd, const struct static_target *t, long long *sent)
         close(file);
         return 500;
     }
-    if (write_all(fd, head, (size_t)hl) < 0) {
+    deadline = now_ms() + SEND_TIMEOUT_MS;   /* 헤더 + 본문 전체 */
+    sr = send_all(fd, head, (size_t)hl, deadline);
+    if (sr != SEND_OK) {
         close(file);
-        return -1;
+        return sr;
     }
 
     while (left > 0) {
@@ -169,9 +171,10 @@ int static_send(int fd, const struct static_target *t, long long *sent)
             close(file);
             return -1;
         }
-        if (write_all(fd, chunk, (size_t)n) < 0) {   /* S10: EPIPE 등 */
+        sr = send_all(fd, chunk, (size_t)n, deadline);
+        if (sr != SEND_OK) {              /* S10: EPIPE 등, 또는 시간 초과 */
             close(file);
-            return -1;
+            return sr;
         }
         *sent += n;
         left -= n;

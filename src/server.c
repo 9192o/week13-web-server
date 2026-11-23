@@ -83,10 +83,10 @@ long long now_ms(void)
 }
 
 /*
- * deadline(now_ms 기준)까지 fd 가 읽을 수 있게 되길 기다린다.
- * 반환: 1 읽기 가능(데이터, EOF, 오류 모두 — read 가 알려줌), 0 시간 초과, -1 poll 오류.
+ * deadline(now_ms 기준)까지 fd 에 events 가 오길 기다린다.
+ * 반환: 1 준비됨(오류·끊김 포함 — 이어지는 read/send 가 알려줌), 0 시간 초과, -1 poll 오류.
  */
-int wait_readable(int fd, long long deadline)
+static int wait_event(int fd, short events, long long deadline)
 {
     for (;;) {
         long long left = deadline - now_ms();
@@ -96,7 +96,7 @@ int wait_readable(int fd, long long deadline)
         if (left <= 0)
             return 0;
         p.fd = fd;
-        p.events = POLLIN;
+        p.events = events;
         p.revents = 0;
         r = poll(&p, 1, (int)left);
         if (r < 0) {
@@ -106,6 +106,12 @@ int wait_readable(int fd, long long deadline)
         }
         return r;
     }
+}
+
+/* 반환: 1 읽기 가능(데이터, EOF, 오류 모두 — read 가 알려줌), 0 시간 초과, -1 poll 오류. */
+int wait_readable(int fd, long long deadline)
+{
+    return wait_event(fd, POLLIN, deadline);
 }
 
 enum read_head_result read_request_head(int fd, char *buf, size_t cap,
@@ -158,6 +164,40 @@ int write_all(int fd, const void *buf, size_t len)
     return 0;
 }
 
+enum send_result send_all(int fd, const void *buf, size_t len, long long deadline)
+{
+    const char *p = buf;
+
+    while (len > 0) {
+        ssize_t n;
+
+        /* 매번 확인: 버퍼가 조금씩 계속 비워져도 응답 전체 시간은 넘기지 않는다 */
+        if (now_ms() >= deadline)
+            return SEND_TIMEOUT;
+        n = send(fd, p, len, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* 소켓 버퍼가 가득 참: 자리가 날 때까지 남은 시간만큼만 기다림 */
+                if (wait_event(fd, POLLOUT, deadline) < 0)
+                    return SEND_ERROR;
+                continue;      /* 시간 초과였다면 위의 deadline 검사에서 걸림 */
+            }
+            return SEND_ERROR; /* EPIPE 등 */
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    return SEND_OK;
+}
+
+/* send_all 실패를 접근 로그 비고로 */
+static const char *send_fail_note(int r)
+{
+    return r == SEND_TIMEOUT ? "(send timeout)" : "(send failed)";
+}
+
 /*
  * 에러 응답 뒤 RST 로 응답이 날아가지 않도록: 쓰기 방향만 닫고(FIN),
  * 클라이언트가 아직 보내는 데이터를 한도(바이트/시간)까지 읽어 버린 뒤 close.
@@ -184,12 +224,14 @@ static void lingering_close(int fd)
 /*
  * 에러 페이지(헤더 + HTML 본문)를 보낸다.
  * extra 는 NULL 또는 추가 헤더 줄들 (301 의 Location, 405 의 Allow).
- * 반환: 보낸 본문 바이트 수, 생성기 버그나 쓰기 실패면 -1 (호출자는 응답 없이 닫음).
+ * 반환: 보낸 본문 바이트 수. 실패면 음수 (호출자는 그냥 닫음):
+ *   SEND_TIMEOUT 시간 초과, -1 쓰기 실패나 생성기 버그.
  */
 static int send_error(int fd, int status, const char *extra)
 {
     char head[HTTP_URI_MAX + 512], body[512];   /* Location 에 URI 가 통째로 들어갈 수 있음 */
-    int hl, bl;
+    long long deadline;
+    int hl, bl, r;
 
     bl = http_format_error_body(body, sizeof body, status);
     if (bl < 0) {
@@ -200,10 +242,14 @@ static int send_error(int fd, int status, const char *extra)
                           "text/html; charset=utf-8", bl, extra, time(NULL));
     if (hl < 0)
         return -1;
-    if (write_all(fd, head, (size_t)hl) < 0 ||
-        write_all(fd, body, (size_t)bl) < 0) {
-        perror("write");
-        return -1;
+    deadline = now_ms() + SEND_TIMEOUT_MS;
+    r = send_all(fd, head, (size_t)hl, deadline);
+    if (r == SEND_OK)
+        r = send_all(fd, body, (size_t)bl, deadline);
+    if (r != SEND_OK) {
+        if (r == SEND_ERROR)
+            perror("send");
+        return r;
     }
     return bl;
 }
@@ -264,7 +310,7 @@ static void finish_error(int fd, const char *peer, const char *reqline,
     status = http_normalize_status(status);
     body_len = send_error(fd, status, extra);
     if (body_len < 0) {
-        access_log(peer, reqline, 0, 0, "(send failed)");
+        access_log(peer, reqline, 0, 0, send_fail_note(body_len));
         close(fd);
         return;
     }
@@ -305,8 +351,10 @@ static int read_cgi_body(int fd, const char *buf, size_t len,
     if (req->version_minor == 1 && expect != NULL &&
         strcasecmp(expect, "100-continue") == 0 &&
         (long long)(len - req->head_len) < req->content_length) {
-        if (write_all(fd, HTTP_100_CONTINUE, strlen(HTTP_100_CONTINUE)) < 0) {
-            *note = "(send failed)";
+        int r = send_all(fd, HTTP_100_CONTINUE, strlen(HTTP_100_CONTINUE),
+                         now_ms() + SEND_TIMEOUT_MS);
+        if (r != SEND_OK) {
+            *note = send_fail_note(r);
             return -1;
         }
     }
@@ -423,7 +471,8 @@ static void serve_cgi(int fd, const char *peer, const char *reqline,
     struct cgi_request creq;
     struct cgi_result res;
     size_t out_len;
-    int status, hl;
+    long long deadline;
+    int status, hl, sr;
 
     status = cgi_resolve(root, decoded, script);
     if (status == 0 && req->method == HTTP_POST)
@@ -470,9 +519,12 @@ static void serve_cgi(int fd, const char *peer, const char *reqline,
         finish_error(fd, peer, reqline, 500, NULL, "(cgi head overflow)");
         return;
     }
-    if (write_all(fd, head, (size_t)hl) < 0 ||
-        write_all(fd, res.output + res.body_off, out_len) < 0) {
-        access_log(peer, reqline, 0, 0, "(send failed)");
+    deadline = now_ms() + SEND_TIMEOUT_MS;   /* CGI 실행 시간과 별개로 전송부터 */
+    sr = send_all(fd, head, (size_t)hl, deadline);
+    if (sr == SEND_OK)
+        sr = send_all(fd, res.output + res.body_off, out_len, deadline);
+    if (sr != SEND_OK) {
+        access_log(peer, reqline, 0, 0, send_fail_note(sr));
         cgi_result_free(&res);
         close(fd);
         return;
@@ -544,8 +596,10 @@ void server_handle(int conn_fd, const char *peer, const char *root)
         long long sent;
         int r = static_send(conn_fd, &target, &sent);
 
-        if (r <= 0) {          /* 완료, 또는 헤더를 보낸 뒤 실패 (S10: EPIPE) */
-            access_log(peer, reqline, 200, sent, r < 0 ? "(aborted)" : NULL);
+        if (r <= 0) {          /* 완료, 또는 헤더를 보낸 뒤 실패 (S10: EPIPE, 시간 초과) */
+            access_log(peer, reqline, 200, sent,
+                       r == SEND_TIMEOUT ? "(send timeout)" :
+                       r < 0             ? "(aborted)" : NULL);
             close(conn_fd);
             return;
         }

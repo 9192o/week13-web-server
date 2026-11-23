@@ -2,18 +2,31 @@
 #
 # 기능 테스트: 서버를 임시 문서 루트로 띄우고 curl / raw 요청으로 시나리오를 확인한다.
 #
-#   사용법: tests/functional.sh <서버 바이너리> [--slow]
-#     --slow  시간 제한 테스트(408, 무응답 close, CGI 시간 초과, 처리 중 SIGINT)까지 실행
-#     PORT    환경 변수로 포트 변경 (기본 18099)
+#   사용법: tests/functional.sh <서버 바이너리> [--timing]
+#     --timing  시간 제한 시나리오(408, 무응답 close, CGI 시간 초과, 전송 시간 초과,
+#               처리 중 SIGINT)까지 실행
+#     PORT      환경 변수로 포트 변경 (기본 18099)
+#     HEADER_MS BODY_MS CGI_MS SEND_MS
+#               서버가 빌드된 시간 제한 값(ms). 기본은 실제 값 5000/10000/5000/30000.
+#               make ftest 는 짧은 값으로 빌드한 서버와 함께 그 값을 넘긴다.
 #
 # 실패가 있거나, SIGTERM 종료 코드가 0 이 아니거나, 서버 로그에 sanitizer 보고가
-# 있으면 exit 1. 필요 도구: bash(/dev/tcp), curl, coreutils(head, cmp, timeout).
+# 있거나, 서버 fd 수가 시작 때와 다르거나, CGI 가 0/1/2 외의 fd 를 물려받았으면 exit 1.
+# 필요 도구: bash(/dev/tcp), curl, coreutils(head, cmp, timeout, ls), /proc.
 
 set -u
 
-BIN=${1:?usage: tests/functional.sh <server binary> [--slow]}
-SLOW=0
-[ "${2:-}" = "--slow" ] && SLOW=1
+BIN=${1:?usage: tests/functional.sh <server binary> [--timing]}
+TIMING=0
+case "${2:-}" in
+    "") ;;
+    --timing) TIMING=1 ;;
+    *) echo "알 수 없는 옵션: $2 (--timing 만 있음)" >&2; exit 2 ;;
+esac
+HEADER_MS=${HEADER_MS:-5000}
+BODY_MS=${BODY_MS:-10000}
+CGI_MS=${CGI_MS:-5000}
+SEND_MS=${SEND_MS:-30000}
 PORT=${PORT:-18099}
 URL=http://127.0.0.1:$PORT
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -51,6 +64,14 @@ expect_between() {
         fail "$1" "기대 $2..$3, 실제 $4"
     fi
 }
+
+# expect_ms 이름 시간제한값(ms) 실제경과(ms) : 값의 90% ~ 값+2초 사이면 통과
+expect_ms() {
+    expect_between "$1" $(( $2 * 9 / 10 )) $(( $2 + 2000 )) "$3"
+}
+
+ms_to_s()  { echo "$(( $1 / 1000 )).$(printf '%03d' $(( $1 % 1000 )))"; }
+sleep_ms() { sleep "$(ms_to_s "$1")"; }
 
 log_has() { grep -qF -- "$1" "$LOG"; }
 
@@ -109,11 +130,19 @@ cgi nocontent 'printf "Status: 204\nContent-Type: text/plain\n\n"'
 cgi slow      'sleep 10'
 cgi len       'printf "Content-Type: text/plain\n\n"; wc -c'
 cgi noexec    'printf "Content-Type: text/plain\n\nx"'
+cgi fds       'printf "Content-Type: text/plain\n\n"; exec ls /proc/self/fd'
 chmod 644 "$R/cgi-bin/noexec"
 
 # ---------------------------------------------------------------- 서버 시작
 
-"$BIN" -p "$PORT" -r "$R" 2>"$LOG" &
+# 서버는 0/1/2 만 가지고 시작한다. 셸이나 터미널이 물려준 fd(예: WSL 의 /dev/ptmx)가
+# 있으면 닫는다 — 그래야 아래 fd 검사가 실행 환경 탓으로 흔들리지 않는다.
+(
+    for fd in $(ls "/proc/$BASHPID/fd"); do
+        [ "$fd" -gt 2 ] && eval "exec $fd>&-"
+    done
+    exec "$BIN" -p "$PORT" -r "$R"
+) 2>"$LOG" &
 SRV=$!
 for _ in $(seq 50); do
     [ "$(code "$URL/index.html")" = 200 ] && break
@@ -124,6 +153,23 @@ if [ "$(code "$URL/index.html")" != 200 ]; then
     cat "$LOG" >&2
     exit 1
 fi
+
+# 서버 프로세스의 열린 fd 수. 시작 직후 값을 기억해 두고 끝에서 비교한다.
+fd_count() { ls "/proc/$SRV/fd" 2>/dev/null | wc -l | tr -d ' '; }
+
+# 마지막 연결이 아직 닫히는 중일 수 있어, 0.1초 간격으로 두 번 같은 값이 나올 때까지
+fd_settled() {
+    local prev cur
+    prev=$(fd_count)
+    for _ in $(seq 20); do
+        sleep 0.1
+        cur=$(fd_count)
+        [ "$cur" = "$prev" ] && break
+        prev=$cur
+    done
+    echo "$cur"
+}
+FD0=$(fd_settled)
 
 # ---------------------------------------------------------------- 정적 파일
 
@@ -180,9 +226,11 @@ expect "Content-Length 2000000 → 413"           "HTTP/1.1 413 Content Too Larg
 OUT=$(curl -sv -H 'Expect: 100-continue' --data-binary @"$WORK/800k" "$URL/cgi-bin/len" 2>&1 | tr -d '\r')
 expect_match "Expect: 100-continue → 100 Continue" '^< HTTP/1.1 100 Continue$' "$OUT"
 expect_match "800KB 본문이 CGI stdin 으로 전달"    '^ *800000$' "$OUT"
+# 100 이 오는지 지켜보는 시간: 본문 시간 제한보다 짧아야 그 사이 408 이 오지 않음
+EARLY_MS=$(( BODY_MS / 2 < 1000 ? BODY_MS / 2 : 1000 ))
 OUT=$(timeout 10 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'
 printf "POST /cgi-bin/len HTTP/1.0\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n" >&3
-early=$(timeout 1 head -c 30 <&3 | tr -d "\r\n")
+early=$(timeout '"$(ms_to_s "$EARLY_MS")"' head -c 30 <&3 | tr -d "\r\n")
 printf hello >&3
 echo "early=[$early] $(head -1 <&3 | tr -d "\r")"')
 expect "HTTP/1.0 + Expect 에는 100 을 안 보냄"  "early=[] HTTP/1.1 200 OK" "$OUT"
@@ -211,6 +259,10 @@ else
     ok "S11 부분 출력은 버림"
 fi
 if log_has "(cgi signal 11)"; then ok "S11 로그 (cgi signal 11)"; else fail "S11 로그 (cgi signal 11)" "로그에 없음"; fi
+# CGI 는 stdin/stdout/stderr 만 물려받아야 한다 (listen·연결 소켓, 파이프 반대편, 열어 둔 파일 X).
+# 3 은 ls 가 /proc/self/fd 를 읽으려고 직접 연 디렉터리.
+expect "CGI 가 물려받은 fd 는 0 1 2 뿐 (+ ls 자신의 3)" "0 1 2 3" \
+       "$(curl -s "$URL/cgi-bin/fds" | tr '\n' ' ' | sed 's/ $//')"
 expect "Status: 201 → 빈 문구"                   "HTTP/1.1 201 " "$(curl -si "$URL/cgi-bin/made" | head -1 | tr -d '\r')"
 expect "Status: 204 → 500"                       500 "$(code "$URL/cgi-bin/nocontent")"
 expect "/cgi-bin/adder/extra → 404"              404 "$(code "$URL/cgi-bin/adder/extra")"
@@ -228,39 +280,73 @@ sleep 0.3
 expect "S10 전송 중 끊김 뒤에도 서버 정상"       200 "$(code "$URL/index.html")"
 if log_has "(aborted)"; then ok "S10 로그 (aborted)"; else fail "S10 로그 (aborted)" "로그에 없음"; fi
 
-# ---------------------------------------------------------------- 시간 제한 (--slow)
+# ---------------------------------------------------------------- 시간 제한 (--timing)
 
-if [ "$SLOW" = 1 ]; then
-    echo "== 시간 제한 (--slow)"
+if [ "$TIMING" = 1 ]; then
+    echo "== 시간 제한 (--timing: 헤더 ${HEADER_MS}ms, 본문 ${BODY_MS}ms, CGI ${CGI_MS}ms, 전송 ${SEND_MS}ms)"
     T0=$(now_ms)
     expect "헤더 일부만 보내고 대기 → 408"       "HTTP/1.1 408 Request Timeout" \
            "$(raw_status 'GET / HTTP/1.1\r\nHo')"
-    expect_between "헤더 408 까지 약 5초 (ms)"   4500 7000 $(( $(now_ms) - T0 ))
+    expect_ms "헤더 408 까지 약 ${HEADER_MS}ms"  "$HEADER_MS" $(( $(now_ms) - T0 ))
 
     T0=$(now_ms)
     N=$(timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'; cat <&3 | wc -c' | tr -d ' ')
     expect "아무것도 안 보냄 → 응답 없이 close" 0 "$N"
-    expect_between "무응답 close 까지 약 5초 (ms)" 4500 7000 $(( $(now_ms) - T0 ))
+    expect_ms "무응답 close 까지 약 ${HEADER_MS}ms" "$HEADER_MS" $(( $(now_ms) - T0 ))
 
     T0=$(now_ms)
     expect "본문 일부만 보내고 대기 → 408"       "HTTP/1.1 408 Request Timeout" \
            "$(raw_status 'POST /cgi-bin/len HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab')"
-    expect_between "본문 408 까지 약 10초 (ms)"  9500 12000 $(( $(now_ms) - T0 ))
+    expect_ms "본문 408 까지 약 ${BODY_MS}ms"    "$BODY_MS" $(( $(now_ms) - T0 ))
 
     T0=$(now_ms)
     expect "CGI 시간 초과 → 500"                 500 "$(code "$URL/cgi-bin/slow")"
-    expect_between "CGI kill 까지 약 5초 (ms)"   4500 7000 $(( $(now_ms) - T0 ))
+    expect_ms "CGI kill 까지 약 ${CGI_MS}ms"     "$CGI_MS" $(( $(now_ms) - T0 ))
     if log_has "(cgi timeout)"; then ok "로그 (cgi timeout)"; else fail "로그 (cgi timeout)" "로그에 없음"; fi
+
+    # 응답을 읽지 않는 클라이언트: 소켓 버퍼(수 MB)가 찬 뒤 응답 전체 제한에서 끊김
+    T0=$(now_ms)
+    exec 4<>/dev/tcp/127.0.0.1/"$PORT"
+    printf 'GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n' >&4
+    for _ in $(seq $(( SEND_MS / 100 + 50 ))); do
+        log_has "(send timeout)" && break
+        sleep 0.1
+    done
+    EL=$(( $(now_ms) - T0 ))
+    exec 4>&-
+    if log_has "(send timeout)"; then
+        ok "안 읽는 클라이언트 → 로그 (send timeout)"
+    else
+        fail "안 읽는 클라이언트 → 로그 (send timeout)" "로그에 없음"
+    fi
+    expect_ms "전송 끊김까지 약 ${SEND_MS}ms"     "$SEND_MS" "$EL"
+    expect "전송 시간 초과 뒤에도 서버 정상"     200 "$(code "$URL/index.html")"
+fi
+
+# ---------------------------------------------------------------- fd 누수
+
+# 위 시나리오(에러, CGI, 끊김, 시간 초과 등)를 모두 거친 뒤에도 시작 때와 정확히 같아야 한다.
+echo "== fd 누수"
+for _ in $(seq 20); do
+    [ "$(fd_count)" = "$FD0" ] && break
+    sleep 0.1
+done
+FD1=$(fd_count)
+if [ "$FD1" = "$FD0" ]; then
+    ok "서버 fd 수 그대로 (시작 $FD0, 끝 $FD1)"
+else
+    fail "서버 fd 수 그대로" "시작 $FD0, 끝 $FD1"
+    ls -l "/proc/$SRV/fd" | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------- 종료
 
 echo "== 종료"
-if [ "$SLOW" = 1 ]; then
+if [ "$TIMING" = 1 ]; then
     # 처리 중인 요청이 있을 때 SIGINT: 그 요청을 끝까지 처리한 뒤 exit 0
     raw_status 'GET / HTTP/1.1\r\nHo' > "$WORK/inflight" &
     CLI=$!
-    sleep 0.5
+    sleep_ms $(( HEADER_MS / 3 ))          # 서버가 그 요청의 헤더를 기다리는 도중에
     kill -INT "$SRV"
     wait "$SRV"
     RC=$?

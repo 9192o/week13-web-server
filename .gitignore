@@ -1,5 +1,7 @@
 /build/
 /build-asan/
+/build-asan-fast/
 /server
 /server-asan
+/server-asan-fast
 /www/cgi-bin/adder

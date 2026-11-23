@@ -2,6 +2,7 @@
 #include "test.h"
 
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -192,8 +193,94 @@ static void test_read_head_deadline_is_total(void)
     waitpid(pid, NULL, 0);
 }
 
+/* send_all 용 소켓쌍: sv[0] 이 보내는 쪽. 버퍼를 작게 해서 안 읽으면 금방 차게 */
+static void small_socketpair(int sv[2])
+{
+    int sz = 4096;
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0)
+        abort();
+    setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sz, sizeof sz);
+    setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz);
+}
+
+static void test_send_all_ok(void)
+{
+    char out[6] = {0};
+    int sv[2];
+
+    small_socketpair(sv);
+    CHECK_EQ_INT(send_all(sv[0], "hello", 5, now_ms() + 1000), SEND_OK);
+    CHECK_EQ_INT(read(sv[1], out, 5), 5);
+    CHECK_EQ_STR(out, "hello");
+    close(sv[0]);
+    close(sv[1]);
+}
+
+/* 받는 쪽이 전혀 읽지 않으면 버퍼가 찬 뒤 deadline 에서 멈춘다 */
+static void test_send_all_timeout_no_reader(void)
+{
+    size_t n = 1024 * 1024;
+    char *big = calloc(1, n);
+    long long t0, elapsed;
+    int sv[2];
+
+    small_socketpair(sv);
+    t0 = now_ms();
+    CHECK_EQ_INT(send_all(sv[0], big, n, t0 + 200), SEND_TIMEOUT);
+    elapsed = now_ms() - t0;
+    CHECK(elapsed >= 200 && elapsed < 1000);
+    close(sv[0]);
+    close(sv[1]);
+    free(big);
+}
+
+/* 데드라인은 응답 전체 기준: 조금씩 계속 받아 가도(진행은 있음) 시간이 끝나면 TIMEOUT */
+static void test_send_all_deadline_is_total(void)
+{
+    struct timespec tick = {0, 10 * 1000 * 1000};  /* 10ms 마다 512바이트 ≈ 50KB/s */
+    size_t n = 1024 * 1024;
+    char *big = calloc(1, n);
+    long long t0, elapsed;
+    int sv[2];
+    pid_t pid;
+
+    small_socketpair(sv);
+    pid = fork();
+    if (pid == 0) {
+        char buf[512];
+        close(sv[0]);
+        while (read(sv[1], buf, sizeof buf) > 0)
+            nanosleep(&tick, NULL);
+        _exit(0);
+    }
+    close(sv[1]);
+    t0 = now_ms();
+    CHECK_EQ_INT(send_all(sv[0], big, n, t0 + 300), SEND_TIMEOUT);
+    elapsed = now_ms() - t0;
+    CHECK(elapsed >= 300 && elapsed < 1500);
+    close(sv[0]);                                  /* 자식의 read 가 0 → 종료 */
+    waitpid(pid, NULL, 0);
+    free(big);
+}
+
+/* 상대가 닫았으면 SEND_ERROR (MSG_NOSIGNAL 이라 SIGPIPE 로 죽지 않음) */
+static void test_send_all_peer_closed(void)
+{
+    int sv[2];
+
+    small_socketpair(sv);
+    close(sv[1]);
+    CHECK_EQ_INT(send_all(sv[0], "x", 1, now_ms() + 1000), SEND_ERROR);
+    close(sv[0]);
+}
+
 int main(void)
 {
+    RUN_TEST(test_send_all_ok);
+    RUN_TEST(test_send_all_timeout_no_reader);
+    RUN_TEST(test_send_all_deadline_is_total);
+    RUN_TEST(test_send_all_peer_closed);
     RUN_TEST(test_find_header_end);
     RUN_TEST(test_read_head_timeout_no_data);
     RUN_TEST(test_read_head_timeout_partial);

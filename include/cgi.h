@@ -5,7 +5,9 @@
 #include <stddef.h>
 
 #define CGI_OUTPUT_MAX       (1024 * 1024)  /* 넘으면 kill + 500 */
+#ifndef CGI_TIMEOUT_MS                      /* 빌드할 때 -D 로 바꿀 수 있음 (server.h 참고) */
 #define CGI_TIMEOUT_MS       5000           /* fork 부터. 넘으면 kill + 500 */
+#endif
 #define CGI_CONTENT_TYPE_MAX 256            /* 넘으면 500 */
 
 /*

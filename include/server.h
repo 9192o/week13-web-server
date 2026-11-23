@@ -8,12 +8,21 @@
 /* 요청 라인 + 헤더를 담는 고정 버퍼 크기. URI 상한(8192)보다 넉넉하게. */
 #define REQUEST_HEAD_MAX 16384
 
+/*
+ * 시간 제한 값(*_TIMEOUT_MS)은 빌드할 때 -D 로 바꿀 수 있다.
+ * make ftest 는 짧은 값으로 빌드해서 시간 제한 시나리오를 몇 초 안에 돌린다.
+ */
+
 /* 요청 라인 + 헤더 전체를 받아야 하는 데드라인 (read 한 번이 아니라 전체 기준) */
+#ifndef HEADER_TIMEOUT_MS
 #define HEADER_TIMEOUT_MS 5000
+#endif
 
 /* 에러 응답 뒤 남은 수신 데이터를 비울 때의 한도 (lingering close) */
 #define LINGER_MAX_BYTES  (64 * 1024)
+#ifndef LINGER_TIMEOUT_MS
 #define LINGER_TIMEOUT_MS 1000
+#endif
 
 /* 접근 로그에 남길 요청 첫 줄의 최대 바이트 (넘으면 "...") */
 #define REQLINE_LOG_MAX 200
@@ -22,7 +31,20 @@
 #define REQUEST_BODY_MAX (1024 * 1024)
 
 /* 헤더를 다 받은 뒤 새로 시작하는 본문 전체 데드라인 (넘으면 408) */
+#ifndef BODY_TIMEOUT_MS
 #define BODY_TIMEOUT_MS 10000
+#endif
+
+/* 응답 하나(헤더 + 본문) 전체를 보내야 하는 데드라인 (넘으면 그냥 close) */
+#ifndef SEND_TIMEOUT_MS
+#define SEND_TIMEOUT_MS 30000
+#endif
+
+enum send_result {
+    SEND_OK = 0,
+    SEND_ERROR = -1,     /* EPIPE, ECONNRESET 등 */
+    SEND_TIMEOUT = -2    /* deadline 까지 다 보내지 못함 */
+};
 
 enum read_head_result {
     READ_HEAD_OK,        /* \r\n\r\n 까지 받음 */
@@ -71,8 +93,19 @@ const char *find_header_end(const char *buf, size_t len);
 enum read_head_result read_request_head(int fd, char *buf, size_t cap,
                                         int timeout_ms, size_t *out_len);
 
-/* 부분 쓰기와 EINTR 을 처리하며 len 바이트를 모두 쓴다. 실패 시 -1. */
+/*
+ * 부분 쓰기와 EINTR 을 처리하며 len 바이트를 모두 쓴다. 실패 시 -1.
+ * 시간 제한이 없으므로 클라이언트 소켓에는 send_all 을 쓴다 (이건 파이프용).
+ */
 int write_all(int fd, const void *buf, size_t len);
+
+/*
+ * 소켓 fd 로 len 바이트를 모두 보낸다. deadline(now_ms 기준)이 지나면 SEND_TIMEOUT.
+ * send 는 MSG_DONTWAIT 라 막히지 않고, 소켓 버퍼가 차면 poll 로 남은 시간만큼만 기다린다.
+ * 조금씩 계속 받아 가는 클라이언트여도 deadline 을 넘기면 멈춘다 (응답 전체 기준).
+ * send 를 쓰므로 소켓 전용 (파이프에는 write_all).
+ */
+enum send_result send_all(int fd, const void *buf, size_t len, long long deadline);
 
 /* CLOCK_MONOTONIC 기준 밀리초 (데드라인 계산용) */
 long long now_ms(void);

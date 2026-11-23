@@ -22,6 +22,21 @@ ASAN_CFLAGS = -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -g -O1 \
               -fsanitize=address,undefined -fno-omit-frame-pointer
 ASAN_MAKE   = $(MAKE) BUILD=build-asan TARGET=server-asan CFLAGS="$(ASAN_CFLAGS)"
 
+# 시간 제한을 짧게 줄인 ASan 빌드 (ftest 가 시간 제한 시나리오를 몇 초 안에 돌리려고).
+# 값이 다르면 오브젝트도 달라지므로 디렉터리를 따로 쓴다.
+# FAST_SEND_MS 는 100MB 전체 수신 시나리오가 그 안에 끝날 만큼은 되어야 한다.
+FAST_HEADER_MS = 500
+FAST_BODY_MS   = 1000
+FAST_CGI_MS    = 500
+FAST_SEND_MS   = 2000
+FAST_DEFS = -DHEADER_TIMEOUT_MS=$(FAST_HEADER_MS) -DBODY_TIMEOUT_MS=$(FAST_BODY_MS) \
+            -DCGI_TIMEOUT_MS=$(FAST_CGI_MS) -DSEND_TIMEOUT_MS=$(FAST_SEND_MS)
+FAST_MAKE = $(MAKE) BUILD=build-asan-fast TARGET=server-asan-fast \
+            CFLAGS="$(ASAN_CFLAGS) $(FAST_DEFS)"
+# functional.sh 가 기대 시간을 계산할 때 쓰는 값 (기본값은 실제 값)
+FAST_ENV  = HEADER_MS=$(FAST_HEADER_MS) BODY_MS=$(FAST_BODY_MS) \
+            CGI_MS=$(FAST_CGI_MS) SEND_MS=$(FAST_SEND_MS)
+
 .PHONY: all test asan ftest ftest-slow valgrind clean
 
 all: $(TARGET) $(CGI_BINS)
@@ -46,14 +61,15 @@ asan:
 	$(ASAN_MAKE) all test
 
 # 기능 테스트: ASan 서버를 임시 문서 루트로 띄워 시나리오 확인 (sanitizer 보고도 실패 처리)
-# ftest 는 빠른 것만, ftest-slow 는 시간 제한 테스트(약 30초)까지.
+# ftest 는 시간 제한을 줄인 빌드로 시간 제한 시나리오까지 전부 (몇 초).
+# ftest-slow 는 실제 시간 제한 값 그대로 (약 1분, 대부분 전송 제한 30초 대기).
 ftest:
-	$(ASAN_MAKE) all
-	bash tests/functional.sh ./server-asan
+	$(FAST_MAKE) all
+	$(FAST_ENV) bash tests/functional.sh ./server-asan-fast --timing
 
 ftest-slow:
 	$(ASAN_MAKE) all
-	bash tests/functional.sh ./server-asan --slow
+	bash tests/functional.sh ./server-asan --timing
 
 # valgrind: 일반 빌드 서버를 valgrind 아래에서 띄워 빠른 기능 테스트
 # (메모리 오류·확실한 누수가 있으면 서버가 exit 99 → 실패)
@@ -65,4 +81,4 @@ www/cgi-bin/%: cgi-src/%.c
 	$(CC) $(CFLAGS) $< -o $@
 
 clean:
-	rm -rf build build-asan server server-asan $(CGI_BINS)
+	rm -rf build build-asan build-asan-fast server server-asan server-asan-fast $(CGI_BINS)
