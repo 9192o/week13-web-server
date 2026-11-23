@@ -211,7 +211,7 @@ def stop_server(proc: subprocess.Popen[bytes], drain_thread: threading.Thread) -
 def prepare_root(root: Path, static_sizes: List[int]) -> Dict[str, int]:
     mapping: Dict[str, int] = {}
     for size in static_sizes:
-        name = f"{STATIC_PREFIX}static_{size}.bin"
+        name = f"{STATIC_PREFIX}static_{size}.png"
         path = root / name
         with path.open("xb") as f:
             f.write(payload(size))
@@ -307,15 +307,12 @@ def worker_close(
         if err and len(error_samples) < 10:
             error_samples.append(err)
 
-    measured_started = False
+    t_first = time.perf_counter()
     for _ in range(repeat):
         for _ in range(samples):
             connections_opened += 1
             latency, err = request_close(port, method, path, body, expected_body)
             now = time.perf_counter()
-            if not measured_started:
-                t_first = now
-                measured_started = True
             t_last = now
             if err:
                 errors += 1
@@ -386,14 +383,11 @@ def worker_keepalive(
         if err and len(error_samples) < 10:
             error_samples.append(err)
 
-    measured_started = False
+    t_first = time.perf_counter()
     for _ in range(repeat):
         for _ in range(samples):
             latency, err = do_one()
             now = time.perf_counter()
-            if not measured_started:
-                t_first = now
-                measured_started = True
             t_last = now
             if err:
                 errors += 1
@@ -728,6 +722,15 @@ def main() -> int:
         stop_server(server_proc, server_drain)
         server_proc, server_drain = None, None
 
+        missing_reuse = [
+            {"concurrency": r["concurrency"], "workload": r["workload"]}
+            for r in all_results
+            if r["condition"] == "C"
+            and args.max_requests_per_connection > 1
+            and args.repeat * args.samples >= 2
+            and r["successful"] <= r["connections_opened"]
+        ]
+
         output = {
             "metadata": {
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -757,6 +760,7 @@ def main() -> int:
                 "total_errors": total_errors,
                 "total_successful_requests": sum(r["successful"] for r in all_results),
                 "total_connections_opened": sum(r["connections_opened"] for r in all_results),
+                "missing_reuse": missing_reuse,
             },
             "results": all_results,
         }
@@ -769,6 +773,9 @@ def main() -> int:
 
         if total_errors:
             print(f"\nerror: {total_errors} request(s) failed", file=sys.stderr)
+            return 1
+        if missing_reuse:
+            print("\nerror: condition C did not demonstrate connection reuse", file=sys.stderr)
             return 1
         return 0
 
