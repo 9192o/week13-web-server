@@ -4,6 +4,7 @@
 #include "app.h"
 #include "connection.h"
 #include "http.h"
+#include "shutdown.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,8 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <signal.h>
-
+#include <fcntl.h>
+#include <poll.h>
 #include <errno.h>
 
 #define LISTEN_BACKLOG 5
@@ -34,19 +36,34 @@ int webserver_run(unsigned short port, int root_fd)
         perror("Setting SIGPIPE policy failed");
         return EXIT_FAILURE;
     }
+
+    if (shutdown_init() < 0)
+    {
+        perror("Shutdown initialization failed");
+        return EXIT_FAILURE;
+    }
+
     int listener_fd = create_listener(port);
     if (listener_fd == -1)
     {
+        shutdown_close();
         return EXIT_FAILURE;
     }
 
+    connection_set_stop_fd(shutdown_fd());
+
     int exit_status = serve_clients(listener_fd, port, root_fd);
+
+    connection_set_stop_fd(-1);
+
     if (close(listener_fd) == -1)
     {
         perror("Closing Server Socket Failed.");
+        shutdown_close();
         return EXIT_FAILURE;
     }
 
+    shutdown_close();
     return exit_status;
 }
 
@@ -88,11 +105,50 @@ static int create_listener(unsigned short port)
         goto fail;
     }
 
+    int flags = fcntl(listener_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(listener_fd, F_SETFL, flags | O_NONBLOCK) < 0)
+    {
+        perror("Setting listener non-blocking failed");
+        goto fail;
+    }
+
     return listener_fd;
 
 fail:
     close(listener_fd);
     return -1;
+}
+
+static int accept_with_shutdown(int listener_fd, int stop_fd, int *out_shutdown)
+{
+    *out_shutdown = 0;
+    for (;;)
+    {
+        int client_fd = accept(listener_fd, NULL, NULL);
+        if (client_fd >= 0)
+            return client_fd;
+        if (errno == EINTR)
+            continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK)
+            return -1;
+
+        struct pollfd fds[2] = {
+            {listener_fd, POLLIN, 0},
+            {stop_fd, POLLIN, 0},
+        };
+        int r = poll(fds, 2, -1);
+        if (r < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (fds[1].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))
+        {
+            *out_shutdown = 1;
+            return -1;
+        }
+    }
 }
 
 static int serve_clients(int listener_fd, unsigned short port, int root_fd)
@@ -109,13 +165,16 @@ static int serve_clients(int listener_fd, unsigned short port, int root_fd)
         return EXIT_FAILURE;
     }
 
-    while (1)
+    int stop_fd = shutdown_fd();
+
+    while (!shutdown_requested())
     {
-        int client_fd = accept(listener_fd, NULL, NULL);
+        int shutdown_now = 0;
+        int client_fd = accept_with_shutdown(listener_fd, stop_fd, &shutdown_now);
         if (client_fd == -1)
         {
-            if (errno == EINTR)
-                continue;
+            if (shutdown_now)
+                break;
 
             perror("Accepting Client Failed.");
             close(log_fd);
@@ -124,6 +183,23 @@ static int serve_clients(int listener_fd, unsigned short port, int root_fd)
 
         handle_client(client_fd, root_fd, log_fd);
     }
+
+    close(log_fd);
+    return EXIT_SUCCESS;
+}
+
+static void cap_deadline_at_shutdown(struct timespec *deadline,
+                                     const struct timespec *shutdown_deadline)
+{
+    if (shutdown_deadline == NULL)
+        return;
+    if (deadline->tv_sec != shutdown_deadline->tv_sec) {
+        if (deadline->tv_sec > shutdown_deadline->tv_sec)
+            *deadline = *shutdown_deadline;
+        return;
+    }
+    if (deadline->tv_nsec > shutdown_deadline->tv_nsec)
+        *deadline = *shutdown_deadline;
 }
 
 static void handle_client(int client_fd, int root_fd, int log_fd)
@@ -142,15 +218,28 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
     struct timespec accepted;
     int head = 0;
     int error_status = 0;
+    int validated = 0;
+    struct timespec shutdown_deadline;
+    int have_shutdown_deadline = 0;
+
     if (connection_deadline_now(&accepted) < 0)
     {
-        if (log_fd >= 0)
-            close(client_fd);
+        close(client_fd);
         return;
     }
+
     struct timespec total_deadline, header_deadline;
     connection_deadline_add(&accepted, PHASE1_TOTAL_MS, NULL, &total_deadline);
     connection_deadline_add(&accepted, PHASE1_HEADER_MS, &total_deadline, &header_deadline);
+
+    if (shutdown_requested())
+    {
+        connection_deadline_from_now((uint32_t)shutdown_grace_seconds() * 1000u,
+                                     NULL, &shutdown_deadline);
+        have_shutdown_deadline = 1;
+        cap_deadline_at_shutdown(&total_deadline, &shutdown_deadline);
+        cap_deadline_at_shutdown(&header_deadline, &shutdown_deadline);
+    }
 
     while (1)
     {
@@ -160,6 +249,25 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
         size_t bytes_received;
         conn_result_t io = connection_recv_some(client_fd, receive_buffer + total_received,
                                                 receive_length, &header_deadline, &bytes_received);
+        if (io == CONN_RESULT_STOPPED)
+        {
+            (void)shutdown_requested();
+            if (!have_shutdown_deadline)
+            {
+                connection_deadline_from_now((uint32_t)shutdown_grace_seconds() * 1000u,
+                                             NULL, &shutdown_deadline);
+                have_shutdown_deadline = 1;
+            }
+            if (!validated)
+            {
+                close(client_fd);
+                http_body_destroy(&body);
+                return;
+            }
+            cap_deadline_at_shutdown(&total_deadline, &shutdown_deadline);
+            cap_deadline_at_shutdown(&header_deadline, &shutdown_deadline);
+            continue;
+        }
         if (io == CONN_RESULT_TIMEOUT || io == CONN_RESULT_EOF)
         {
             error_status = io == CONN_RESULT_TIMEOUT ? 408 : 400;
@@ -211,6 +319,20 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
         path_log[target.path.length] = '\0';
         access.path = path_log;
     }
+
+    validated = 1;
+
+    if (shutdown_requested() && !have_shutdown_deadline)
+    {
+        connection_deadline_from_now((uint32_t)shutdown_grace_seconds() * 1000u,
+                                     NULL, &shutdown_deadline);
+        have_shutdown_deadline = 1;
+    }
+    if (have_shutdown_deadline)
+    {
+        cap_deadline_at_shutdown(&total_deadline, &shutdown_deadline);
+    }
+
     error = http_body_init(&body, &headers.headers);
     if (error)
     {
@@ -235,6 +357,9 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
     struct timespec body_deadline;
     if (connection_deadline_from_now(PHASE1_IDLE_MS, &total_deadline, &body_deadline) < 0)
         goto cleanup;
+    if (have_shutdown_deadline)
+        cap_deadline_at_shutdown(&body_deadline, &shutdown_deadline);
+
     while (result.status == HTTP_PARSE_NEED_MORE)
     {
         if (body.expect_continue && !sent_continue)
@@ -249,6 +374,19 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
         size_t received;
         conn_result_t io = connection_recv_some(client_fd, buffer, sizeof(buffer),
                                                 &body_deadline, &received);
+        if (io == CONN_RESULT_STOPPED)
+        {
+            (void)shutdown_requested();
+            if (!have_shutdown_deadline)
+            {
+                connection_deadline_from_now((uint32_t)shutdown_grace_seconds() * 1000u,
+                                             NULL, &shutdown_deadline);
+                have_shutdown_deadline = 1;
+            }
+            cap_deadline_at_shutdown(&total_deadline, &shutdown_deadline);
+            cap_deadline_at_shutdown(&body_deadline, &shutdown_deadline);
+            continue;
+        }
         if (io == CONN_RESULT_TIMEOUT || io == CONN_RESULT_EOF)
         {
             error_status = io == CONN_RESULT_TIMEOUT ? 408 : 400;
@@ -257,6 +395,8 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
         if (io != CONN_RESULT_OK ||
             connection_deadline_from_now(PHASE1_IDLE_MS, &total_deadline, &body_deadline) < 0)
             goto cleanup;
+        if (have_shutdown_deadline)
+            cap_deadline_at_shutdown(&body_deadline, &shutdown_deadline);
         result = http_parse_body(&body, buffer, (size_t)received);
     }
     if (result.status == HTTP_PARSE_ERROR)
@@ -319,6 +459,15 @@ static int send_application_response(int client_fd, const struct http_response *
     struct timespec deadline;
     if (connection_deadline_from_now(PHASE1_SEND_MS, NULL, &deadline) < 0)
         return -1;
+
+    if (shutdown_requested())
+    {
+        struct timespec shutdown_deadline;
+        connection_deadline_from_now((uint32_t)shutdown_grace_seconds() * 1000u,
+                                     NULL, &shutdown_deadline);
+        cap_deadline_at_shutdown(&deadline, &shutdown_deadline);
+    }
+
     char header[HTTP_REQUEST_LINE_MAX + 512];
     size_t length = http_format_response_head(response, header, sizeof(header));
     if (!length || send_bytes(client_fd, header, length, &deadline, access) < 0)

@@ -31,11 +31,14 @@ typedef enum {
     CONN_RESULT_OK = 0,
     CONN_RESULT_TIMEOUT,
     CONN_RESULT_INTR,
+    CONN_RESULT_STOPPED,
     CONN_RESULT_AGAIN,
     CONN_RESULT_EOF,
     CONN_RESULT_RESET,
     CONN_RESULT_ERROR
 } conn_result_t;
+
+void connection_set_stop_fd(int fd);
 
 int connection_deadline_now(struct timespec *ts);
 int connection_deadline_add(const struct timespec *base, uint32_t timeout_ms,

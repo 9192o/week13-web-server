@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -50,6 +51,63 @@ void connection_test_set_send(ssize_t (*fn)(int, const void *, size_t, int)) {
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
+
+static int conn_stop_fd = -1;
+
+void connection_set_stop_fd(int fd)
+{
+    conn_stop_fd = fd;
+}
+
+static int conn_set_nonblocking(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0)
+        return -1;
+    if (flags & O_NONBLOCK)
+        return 0;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static conn_result_t conn_wait_for(int fd, short events,
+                                   const struct timespec *deadline,
+                                   int stop_fd)
+{
+    if (stop_fd < 0)
+        return CONN_RESULT_OK;
+
+    if (conn_set_nonblocking(fd) < 0)
+        return CONN_RESULT_ERROR;
+
+    int64_t remaining = connection_deadline_remaining_ms(deadline);
+    if (remaining <= 0)
+        return CONN_RESULT_TIMEOUT;
+
+    struct pollfd fds[2] = {
+        {fd, events, 0},
+        {stop_fd, POLLIN, 0},
+    };
+
+    for (;;) {
+        int timeout = remaining > INT_MAX ? INT_MAX : (int)remaining;
+        int r = poll(fds, 2, timeout);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            return CONN_RESULT_ERROR;
+        }
+        if (r == 0)
+            return CONN_RESULT_TIMEOUT;
+        if (fds[1].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))
+            return CONN_RESULT_STOPPED;
+        if (fds[0].revents & (events | POLLERR | POLLHUP | POLLNVAL))
+            return CONN_RESULT_OK;
+
+        remaining = connection_deadline_remaining_ms(deadline);
+        if (remaining <= 0)
+            return CONN_RESULT_TIMEOUT;
+    }
+}
 
 static int timespec_gt(const struct timespec *a, const struct timespec *b) {
     if (a->tv_sec != b->tv_sec) {
@@ -134,11 +192,17 @@ conn_result_t connection_recv_some(int fd, void *buf, size_t max_len,
         if (connection_deadline_remaining_ms(deadline) <= 0) {
             return CONN_RESULT_TIMEOUT;
         }
-        if (connection_set_socket_timeout(fd, SO_RCVTIMEO, deadline) != 0) {
-            if (connection_deadline_remaining_ms(deadline) <= 0) {
-                return CONN_RESULT_TIMEOUT;
+        if (conn_stop_fd >= 0) {
+            conn_result_t w = conn_wait_for(fd, POLLIN, deadline, conn_stop_fd);
+            if (w != CONN_RESULT_OK)
+                return w;
+        } else {
+            if (connection_set_socket_timeout(fd, SO_RCVTIMEO, deadline) != 0) {
+                if (connection_deadline_remaining_ms(deadline) <= 0) {
+                    return CONN_RESULT_TIMEOUT;
+                }
+                return CONN_RESULT_ERROR;
             }
-            return CONN_RESULT_ERROR;
         }
         ssize_t r = CONN_RECV(fd, buf, max_len, 0);
         if (r > 0) {
@@ -223,13 +287,21 @@ conn_result_t connection_send_all(int fd, const void *buf, size_t len,
             *out_done = done;
             return CONN_RESULT_TIMEOUT;
         }
-        if (connection_set_socket_timeout(fd, SO_SNDTIMEO, deadline) != 0) {
-            if (connection_deadline_remaining_ms(deadline) <= 0) {
+        if (conn_stop_fd >= 0) {
+            conn_result_t w = conn_wait_for(fd, POLLOUT, deadline, conn_stop_fd);
+            if (w != CONN_RESULT_OK) {
                 *out_done = done;
-                return CONN_RESULT_TIMEOUT;
+                return w;
             }
-            *out_done = done;
-            return CONN_RESULT_ERROR;
+        } else {
+            if (connection_set_socket_timeout(fd, SO_SNDTIMEO, deadline) != 0) {
+                if (connection_deadline_remaining_ms(deadline) <= 0) {
+                    *out_done = done;
+                    return CONN_RESULT_TIMEOUT;
+                }
+                *out_done = done;
+                return CONN_RESULT_ERROR;
+            }
         }
         ssize_t s = CONN_SEND(fd, (const char *)buf + done, len - done,
                               MSG_NOSIGNAL);
