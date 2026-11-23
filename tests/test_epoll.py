@@ -9,10 +9,9 @@ On success prints ``EPOLL_TESTS_PASS`` and exits 0.
 On failure prints the failing assertion and exits 1.
 
 This module uses only the Python standard library and ordinary local socket
-requests.  All complete requests carry ``Connection: close`` because these
-tests are about concurrency, not keep-alive.  The suite is intentionally
-written against the Phase 2 contract (P2-01, P2-02, P2-09) so many cases are
-expected to be baseline-red against the current sequential build.
+requests.  Most requests carry ``Connection: close``; the truncated-response
+case leaves reuse enabled to verify that the server stops the pipeline.
+The suite covers the Phase 2 contract (P2-01, P2-02, P2-09).
 """
 
 import http.client
@@ -360,6 +359,43 @@ def test_interruptions_and_fd_baseline(exe: str, root: str) -> None:
     print("PASS INTERRUPTIONS_AND_FD_BASELINE")
 
 
+def test_truncated_response_closes_pipeline(exe: str, root: str) -> None:
+    """A short file response must end the connection, not start the next response."""
+    path = Path(root) / "truncated.png"
+    size = 32 * 1024 * 1024
+    with path.open("wb") as file:
+        file.truncate(size)
+        proc, drain_thread, _, port = start_server(exe, root)
+        try:
+            baseline = fd_count(proc.pid)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
+                sock.settimeout(REQUEST_TIMEOUT)
+                sock.connect((HOST, port))
+                sock.sendall(
+                    b"GET /truncated.png HTTP/1.1\r\nHost: x\r\n\r\n"
+                    b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                )
+                with http.client.HTTPResponse(sock) as response:
+                    response.begin()
+                    assert response.status == 200
+                    assert response.getheader("Content-Length") == str(size)
+                    assert response.read(1) == b"\0"
+                    file.truncate(0)
+                    try:
+                        response.read()
+                    except http.client.IncompleteRead as exc:
+                        assert not exc.partial.strip(b"\0"), "unexpected response after file bytes"
+                    else:
+                        raise AssertionError("expected a short body followed by connection close")
+                    assert sock.recv(1) == b"", "connection did not end after the short body"
+            wait_for_fd_count(proc.pid, baseline)
+        finally:
+            stop_server(proc, drain_thread)
+        assert proc.returncode == 0, proc.returncode
+    print("PASS TRUNCATED_RESPONSE_CLOSES_PIPELINE")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         print("usage: test_epoll.py <path-to-webserver-executable>", file=sys.stderr)
@@ -373,6 +409,7 @@ def main() -> None:
         test_default_limit(exe, root)
         test_shutdown_honors_connection_limit(exe, root)
         test_interruptions_and_fd_baseline(exe, root)
+        test_truncated_response_closes_pipeline(exe, root)
 
     print("EPOLL_TESTS_PASS")
 
