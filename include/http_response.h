@@ -32,7 +32,7 @@ int http_format_head(char *buf, size_t cap, int status,
 /*
  * http_format_head 와 같지만 상태 코드를 500 으로 바꾸지 않는다 (CGI Status 용).
  * 문구는 표에 있으면 표의 문구, 없으면 빈 문구 ("HTTP/1.1 201 ").
- * 범위(100~599) 검사는 호출자 책임.
+ * 허용 범위 검사는 호출자 책임 (CGI 는 cgi_parse_output 이 함).
  */
 int http_format_head_raw(char *buf, size_t cap, int status,
                          const char *content_type, long long content_length,

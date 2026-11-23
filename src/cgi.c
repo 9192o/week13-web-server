@@ -134,7 +134,8 @@ int cgi_parse_output(const char *out, size_t len, int *status,
             if (vlen > 3 && !is_ows(v[3]))
                 return -1;                /* "2000" 처럼 네 자리 이상 */
             code = (v[0] - '0') * 100 + (v[1] - '0') * 10 + (v[2] - '0');
-            if (code < 100 || code > 599)
+            /* 1xx 는 최종 응답이 될 수 없고, 204/205/304 는 본문을 가질 수 없어 미지원 */
+            if (code < 200 || code > 599 || code == 204 || code == 205 || code == 304)
                 return -1;
             *status = code;               /* CGI 가 보낸 문구는 무시 */
             have_status = 1;

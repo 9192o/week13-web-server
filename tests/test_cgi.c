@@ -164,8 +164,18 @@ static void test_parse_status(void)
     CHECK_EQ_INT(status, 404);                            /* CGI 문구는 무시 */
     CHECK_EQ_INT(parse("Status: 201\nContent-Type: a\n\n", &status, ct, &off), 0);
     CHECK_EQ_INT(status, 201);
-    CHECK_EQ_INT(parse("Status: 100\nContent-Type: a\n\n", &status, ct, &off), 0);
+    CHECK_EQ_INT(parse("Status: 200\nContent-Type: a\n\n", &status, ct, &off), 0);
+    CHECK_EQ_INT(parse("Status: 206\nContent-Type: a\n\n", &status, ct, &off), 0);
+    CHECK_EQ_INT(parse("Status: 303\nContent-Type: a\n\n", &status, ct, &off), 0);
     CHECK_EQ_INT(parse("Status: 599\nContent-Type: a\n\n", &status, ct, &off), 0);
+
+    /* 1xx: 최종 응답 불가 → 500 */
+    CHECK_EQ_INT(parse("Status: 100\nContent-Type: a\n\n", &status, ct, &off), -1);
+    CHECK_EQ_INT(parse("Status: 199\nContent-Type: a\n\n", &status, ct, &off), -1);
+    /* 본문을 가질 수 없는 코드 → 500 */
+    CHECK_EQ_INT(parse("Status: 204\nContent-Type: a\n\n", &status, ct, &off), -1);
+    CHECK_EQ_INT(parse("Status: 205\nContent-Type: a\n\n", &status, ct, &off), -1);
+    CHECK_EQ_INT(parse("Status: 304\nContent-Type: a\n\n", &status, ct, &off), -1);
 
     CHECK_EQ_INT(parse("Status: 099\nContent-Type: a\n\n", &status, ct, &off), -1);
     CHECK_EQ_INT(parse("Status: 600\nContent-Type: a\n\n", &status, ct, &off), -1);

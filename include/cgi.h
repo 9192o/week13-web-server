@@ -55,10 +55,12 @@ struct cgi_result {
 
 /*
  * CGI 출력의 헤더 부분을 해석한다. 줄 끝은 LF 또는 CRLF.
- * Content-Type(필수, 한 번)과 Status(선택, 한 번, 100~599 세 자리 숫자)만 보고
+ * Content-Type(필수, 한 번)과 Status(선택, 한 번, 세 자리 숫자)만 보고
  * 나머지 헤더는 버린다. CGI 가 보낸 상태 문구도 무시.
+ * Status 허용 범위: 200~599, 단 204·205·304 제외 (1xx 는 최종 응답 불가,
+ * 204/205/304 는 본문을 가질 수 없음).
  * 반환: 0 성공, -1 형식 오류 (빈 줄 없음, 콜론 없는 줄, Content-Type 없음·중복·너무 김,
- *       Status 중복·형식 오류·범위 밖).
+ *       Status 중복·형식 오류·허용 범위 밖).
  */
 int cgi_parse_output(const char *out, size_t len, int *status,
                      char *content_type, size_t ct_cap, size_t *body_off);
