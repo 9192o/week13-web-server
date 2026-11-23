@@ -2,10 +2,10 @@
 
 CC = gcc
 CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -Werror
-SOURCES = app.c webserver.c http.c router.c static_file.c static_response.c connection.c shutdown.c
-HEADERS = app.h webserver.h http.h router.h static_file.h static_response.h connection.h shutdown.h
+SOURCES = app.c webserver.c epoll_loop.c client_session.c http.c router.c static_file.c static_response.c connection.c shutdown.c
+HEADERS = app.h webserver.h epoll_loop.h client_session.h http.h router.h static_file.h static_response.h connection.h shutdown.h
 
-.PHONY: help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown
+.PHONY: help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll
 
 webserver: $(SOURCES) $(HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(SOURCES) $(LDLIBS) -o $@
@@ -18,7 +18,7 @@ test-unit:
 		$(UNIT_RUNNER) "$$http_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c http.c $(LDLIBS) -o "$$body_bin"; \
 		$(UNIT_RUNNER) "$$body_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c connection.c shutdown.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -Wl,--wrap=setsockopt -o "$$server_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c connection.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
 		$(UNIT_RUNNER) "$$server_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c static_response.c static_file.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
 		$(UNIT_RUNNER) "$$router_bin"; \
@@ -40,6 +40,9 @@ test-deadlines:
 
 test-shutdown: webserver
 	python3 tests/test_shutdown.py ./webserver
+
+test-epoll: webserver
+	python3 tests/test_epoll.py ./webserver
 
 help:
 	@printf '%s\n' \

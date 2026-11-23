@@ -12,7 +12,7 @@ import time
 def build_server(src_dir, grace_seconds=2):
     exe = os.path.join(src_dir, "webserver-shutdown-test")
     sources = [
-        "app.c", "webserver.c", "http.c", "router.c",
+        "app.c", "webserver.c", "epoll_loop.c", "client_session.c", "http.c", "router.c",
         "static_file.c", "static_response.c", "connection.c", "shutdown.c",
     ]
     cmd = [
@@ -172,7 +172,7 @@ def test_validated_request_honors_existing_deadline(signum, label):
             "-DPHASE1_TOTAL_MS=2000",
             "-DPHASE1_SEND_MS=2000",
             "-I.",
-            "app.c", "webserver.c", "http.c", "router.c",
+            "app.c", "webserver.c", "epoll_loop.c", "client_session.c", "http.c", "router.c",
             "static_file.c", "static_response.c", "connection.c", "shutdown.c",
             "-o", test_exe,
         ]
@@ -198,6 +198,61 @@ def test_validated_request_honors_existing_deadline(signum, label):
                 proc.kill()
                 proc.wait()
         print(f"PASS {label}_VALIDATED_HONORS_EXISTING_DEADLINE")
+
+
+def test_active_response_finishes(signum, label):
+    with tempfile.TemporaryDirectory() as root:
+        port = 19085
+        payload = b"phase-two" * 2097152
+        with open(os.path.join(root, "large.png"), "wb") as file:
+            file.write(payload)
+        proc = start_server(exe, port, root)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+                s.settimeout(5.0)
+                s.connect(("127.0.0.1", port))
+                s.sendall(
+                    b"GET /large.png HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                with s.makefile("rb") as wire:
+                    assert wire.readline().startswith(b"HTTP/1.1 200 ")
+                    while (line := wire.readline()) != b"\r\n":
+                        assert line, "EOF in response headers"
+                    proc.send_signal(signum)
+                    assert wire.read(len(payload)) == payload
+                    assert wire.read(1) == b""
+            wait_for_exit(proc, 5.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        print(f"PASS {label}_ACTIVE_RESPONSE_FINISHES")
+
+
+def test_grace_caps_body_wait(signum, label):
+    with tempfile.TemporaryDirectory() as root:
+        port = 19086
+        proc = start_server(exe, port, root)
+        try:
+            with connect(port) as s:
+                s.sendall(
+                    b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 9\r\n"
+                    b"Expect: 100-continue\r\n\r\n"
+                )
+                with s.makefile("rb") as wire:
+                    assert wire.readline() == b"HTTP/1.1 100 Continue\r\n"
+                    assert wire.readline() == b"\r\n"
+                    at_signal = time.monotonic()
+                    proc.send_signal(signum)
+                    assert wire.read(1) == b""
+                    assert 1.0 <= time.monotonic() - at_signal < 5.0
+            wait_for_exit(proc, 5.0)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        print(f"PASS {label}_GRACE_CAPS_BODY_WAIT")
 
 
 def test_no_new_accepts_after_signal(signum, label):
@@ -236,6 +291,8 @@ def main():
         test_partial_header_silent_close(signum, label)
         test_validated_request_allowed(signum, label)
         test_validated_request_honors_existing_deadline(signum, label)
+        test_active_response_finishes(signum, label)
+        test_grace_caps_body_wait(signum, label)
         test_no_new_accepts_after_signal(signum, label)
 
     print("SHUTDOWN_TESTS_PASS")

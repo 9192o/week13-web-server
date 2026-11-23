@@ -10,23 +10,25 @@
 #include <stddef.h>
 #include <fcntl.h>
 
-#include "webserver.c"
+#include "client_session.c"
 
-#define handle_client(fd, root) handle_client(fd, root, -1)
-#define send_application_response(fd, response, head) \
-    send_application_response(fd, response, head, &(conn_access_record_t){0})
-
-int __wrap_setsockopt(int fd, int level, int option, const void *value, socklen_t size)
+static void handle_client(int unused_fd, int root)
 {
-    (void)fd;
-    (void)value;
-    assert(level == SOL_SOCKET && (option == SO_RCVTIMEO || option == SO_SNDTIMEO));
-    assert(size > 0);
-    return 0;
+    (void)unused_fd;
+    int fd = open("/dev/null", O_RDONLY);
+    assert(fd >= 0);
+    struct client_session *session = client_session_create(fd, root, -1);
+    assert(session);
+    bool alive = true;
+    for (size_t steps = 0; steps < 128 && alive; ++steps)
+        alive = client_session_advance(session, true, true);
+    assert(!alive);
+    client_session_destroy(session);
 }
 
 #define MAX_RECV_CALLS 64
 static int index_fd = -1;
+static const struct http_response *response_override;
 
 static struct
 {
@@ -65,6 +67,7 @@ static void reset(void)
     memset(&mock, 0, sizeof(mock));
     memset(&app_stub, 0, sizeof(app_stub));
     index_fd = -1;
+    response_override = NULL;
 }
 
 static void feedv(const char *data[], const size_t len[], size_t n)
@@ -151,6 +154,8 @@ ssize_t __wrap_send(int sockfd, const void *buf, size_t len, int flags)
 static struct http_response stub_response(const struct http_request *request)
 {
     (void)request;
+    if (response_override)
+        return *response_override;
     return (struct http_response){
         .status = 200,
         .content_type = "application/octet-stream",
@@ -768,6 +773,21 @@ static void test_absolute_target_all_splits(void)
     }
 }
 
+static void send_fixture_response(const struct http_response *response, int head)
+{
+    struct http_response fixture = *response;
+    if (fixture.file_fd >= 0)
+    {
+        fixture.file_fd = dup(fixture.file_fd);
+        assert(fixture.file_fd >= 0);
+    }
+    response_override = &fixture;
+    feed(head ? "HEAD / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+              : "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    handle_client(0, -1);
+    response_override = NULL;
+}
+
 static void test_binary_response_and_head(void)
 {
     const char bytes[] = "a\0\xff\r\nHTTP/1.1 500 fake\r\n";
@@ -776,7 +796,7 @@ static void test_binary_response_and_head(void)
         .body = {bytes, sizeof(bytes) - 1}, .file_fd = -1};
     reset();
     mock.send_next_partial = 3;
-    assert(send_application_response(0, &response, 0) == 0);
+    send_fixture_response(&response, 0);
     char *end = strstr(mock.send_buf, "\r\n\r\n");
     assert(end);
     size_t header_length = (size_t)(end + 4 - mock.send_buf);
@@ -785,7 +805,7 @@ static void test_binary_response_and_head(void)
     assert_response_contains("Content-Length: 24\r\n");
     assert_response_contains("X-Content-Type-Options: nosniff\r\n");
     reset();
-    assert(send_application_response(0, &response, 1) == 0);
+    send_fixture_response(&response, 1);
     end = strstr(mock.send_buf, "\r\n\r\n");
     assert(end && mock.send_len == (size_t)(end + 4 - mock.send_buf));
     assert_response_contains("Content-Length: 24\r\n");
@@ -805,7 +825,7 @@ static void test_file_response_streaming(void)
         .status = 200, .content_type = "text/html; charset=utf-8",
         .body.length = sizeof(bytes), .file_fd = fileno(file)};
     reset();
-    assert(send_application_response(0, &response, 0) == 0);
+    send_fixture_response(&response, 0);
     char *end = strstr(mock.send_buf, "\r\n\r\n");
     assert(end);
     size_t header_length = (size_t)(end + 4 - mock.send_buf);
@@ -816,7 +836,7 @@ static void test_file_response_streaming(void)
     rewind(file);
     response.body.length = sizeof(bytes) + 1;
     reset();
-    assert(send_application_response(0, &response, 0) == -1);
+    send_fixture_response(&response, 0);
     assert(mock.send_len == header_length + sizeof(bytes));
     assert_response_prefix("HTTP/1.1 200 OK\r\n");
     assert(fclose(file) == 0);
@@ -831,7 +851,7 @@ static void test_method_not_allowed_response(void)
     for (int head = 0; head <= 1; ++head)
     {
         reset();
-        assert(send_application_response(0, &response, head) == 0);
+        send_fixture_response(&response, head);
         assert_response_prefix("HTTP/1.1 405 Method Not Allowed\r\n");
         assert_response_contains("Allow: POST\r\n");
         assert_response_contains("Content-Length: 18\r\n");

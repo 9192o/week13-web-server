@@ -14,15 +14,21 @@
 #include <string.h>
 #include <unistd.h>
 
+#define DEFAULT_MAX_CONNECTIONS 256u
+#define MAX_CONNECTIONS_LIMIT 65535u
+
 static void print_usage(void)
 {
-    fputs("Usage: ./webserver --port <1-65535> --root <directory>\n", stderr);
+    fputs("Usage: ./webserver --port <1-65535> --root <directory>"
+          " [--max-connections <1-65535>]\n", stderr);
 }
 
-static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd)
+static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd,
+                     size_t *connection_limit)
 {
     const char *port_arg = NULL;
     const char *root_arg = NULL;
+    const char *limit_arg = NULL;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -43,6 +49,15 @@ static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd)
                 return -1;
             }
             root_arg = argv[i];
+        }
+        else if (strcmp(argv[i], "--max-connections") == 0)
+        {
+            if (++i >= argc || limit_arg != NULL)
+            {
+                print_usage();
+                return -1;
+            }
+            limit_arg = argv[i];
         }
         else
         {
@@ -76,6 +91,23 @@ static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd)
     }
     *port = (unsigned short)port_val;
 
+    *connection_limit = DEFAULT_MAX_CONNECTIONS;
+    if (limit_arg != NULL)
+    {
+        const char *digit = limit_arg;
+        while (*digit >= '0' && *digit <= '9')
+            ++digit;
+        errno = 0;
+        unsigned long limit = strtoul(limit_arg, &end, 10);
+        if (digit == limit_arg || *digit || *end || errno != 0 ||
+            limit < 1 || limit > MAX_CONNECTIONS_LIMIT)
+        {
+            fputs("Invalid --max-connections (expected 1-65535).\n", stderr);
+            return -1;
+        }
+        *connection_limit = (size_t)limit;
+    }
+
     int fd = open(root_arg, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0)
     {
@@ -90,8 +122,9 @@ int main(int argc, char **argv)
 {
     unsigned short port;
     int root_fd;
+    size_t connection_limit;
 
-    if (cli_parse(argc, argv, &port, &root_fd) < 0)
+    if (cli_parse(argc, argv, &port, &root_fd, &connection_limit) < 0)
         return EXIT_FAILURE;
 
     struct stat root_info;
@@ -104,7 +137,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
     close(probe_fd);
-    int status = webserver_run(port, root_fd);
+    int status = webserver_run(port, root_fd, connection_limit);
     close(root_fd);
     return status;
 }

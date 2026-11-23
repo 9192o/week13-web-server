@@ -51,10 +51,16 @@ int __wrap_fstat(int fd, struct stat *statbuf)
     return __real_fstat(fd, statbuf);
 }
 
-int webserver_run(unsigned short port, int root_fd)
+static size_t parsed_connection_limit;
+
+#define cli_parse(argc, argv, port, root) \
+    cli_parse(argc, argv, port, root, &parsed_connection_limit)
+
+int webserver_run(unsigned short port, int root_fd, size_t connection_limit)
 {
     (void)port;
     (void)root_fd;
+    (void)connection_limit;
     return 0;
 }
 
@@ -293,9 +299,29 @@ static void test_cli_valid(void)
     char *argv[] = {"webserver", "--root", directory, "--port", "8080", NULL};
     assert(cli_parse(5, argv, &port, &root_fd) == 0);
     assert(port == 8080);
+    assert(parsed_connection_limit == 256);
     assert(root_fd >= 0);
     assert(close(root_fd) == 0);
     assert(rmdir(directory) == 0);
+}
+
+static void test_cli_connection_limit(void)
+{
+    unsigned short port;
+    int root_fd;
+    char *argv[] = {"webserver", "--port", "8080", "--root", "/tmp",
+                    "--max-connections", "2", "--max-connections", "9", NULL};
+    assert(cli_parse(7, argv, &port, &root_fd) == 0);
+    assert(parsed_connection_limit == 2);
+    assert(close(root_fd) == 0);
+    assert(cli_parse(9, argv, &port, &root_fd) == -1);
+    assert(cli_parse(6, argv, &port, &root_fd) == -1);
+    char *invalid[] = {"0", "65536", "-1", "+2", " 2", "2x", ""};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i)
+    {
+        argv[6] = invalid[i];
+        assert(cli_parse(7, argv, &port, &root_fd) == -1);
+    }
 }
 
 static void test_cli_root_not_directory(void)
@@ -322,6 +348,7 @@ int main(void)
     test_cli_duplicate_arg();
     test_cli_unknown_arg();
     test_cli_valid();
+    test_cli_connection_limit();
     test_cli_root_not_directory();
     puts("ROUTER_TESTS_PASS");
     puts("CLI_TESTS_PASS");
