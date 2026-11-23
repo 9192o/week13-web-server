@@ -61,6 +61,7 @@ def check_connection_lifetime(port: int, pid: int, lines: queue.Queue[bytes]) ->
     with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
         client.sendall(
             b"POST /echo?search=query-marker HTTP/1.1\r\nHost: localhost\r\n"
+            b"Connection: close\r\n"
             b"Authorization: Bearer auth-marker\r\nCookie: example=cookie-marker\r\n"
             b"Content-Length: 11\r\n\r\nbody-marker"
         )
@@ -74,7 +75,7 @@ def check_connection_lifetime(port: int, pid: int, lines: queue.Queue[bytes]) ->
     for _ in range(30):
         # Every log is emitted after the socket and file descriptors are closed.
         with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
-            client.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            client.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             assert read_final(client) == (200, b"next request")
         record = json.loads(lines.get(timeout=5))
         assert record["complete"] and record["path"] == "/" and record["status"] == 200

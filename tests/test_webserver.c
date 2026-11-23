@@ -20,9 +20,12 @@ static void handle_client(int unused_fd, int root)
     struct client_session *session = client_session_create(fd, root, -1);
     assert(session);
     bool alive = true;
-    for (size_t steps = 0; steps < 128 && alive; ++steps)
+    for (size_t steps = 0; steps < 128 && alive &&
+         session->state != CS_IDLE && !session->request_count; ++steps)
         alive = client_session_advance(session, true, true);
-    assert(!alive);
+    while (alive && (session->state == CS_WRITING || session->state == CS_READ_BODY))
+        alive = client_session_advance(session, true, true);
+    assert(!alive || session->state == CS_IDLE || session->state == CS_READ_HEAD);
     client_session_destroy(session);
 }
 
@@ -216,7 +219,6 @@ static void assert_ok_response(void)
 {
     assert_response_prefix("HTTP/1.1 200 OK\r\n");
     assert_response_contains("Content-Length: 0\r\n");
-    assert_response_contains("Connection: close\r\n");
     assert_response_contains("Date: ");
     assert_response_contains("X-Content-Type-Options: nosniff\r\n");
     char *end = strstr(mock.send_buf, "\r\n\r\n");

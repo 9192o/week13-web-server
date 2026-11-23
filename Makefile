@@ -5,7 +5,7 @@ CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -Werror
 SOURCES = app.c webserver.c epoll_loop.c client_session.c http.c router.c static_file.c static_response.c connection.c shutdown.c
 HEADERS = app.h webserver.h epoll_loop.h client_session.h http.h router.h static_file.h static_response.h connection.h shutdown.h
 
-.PHONY: help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll
+.PHONY: help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll test-keepalive
 
 webserver: $(SOURCES) $(HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(SOURCES) $(LDLIBS) -o $@
@@ -43,6 +43,9 @@ test-shutdown: webserver
 
 test-epoll: webserver
 	python3 tests/test_epoll.py ./webserver
+
+test-keepalive: webserver
+	python3 tests/test_keepalive.py ./webserver
 
 help:
 	@printf '%s\n' \

@@ -27,8 +27,11 @@
 #define CS_RECV_BUDGET 8192
 #define CS_SEND_BUDGET 65536
 #define CS_FILE_BUFSZ  8192
+#define CS_KEEPALIVE_MS 5000
+#define CS_MAX_REQUESTS 100
 
 enum cs_state {
+    CS_IDLE,      /* successful previous request, waiting for a new one */
     CS_READ_HEAD, /* accumulating request line + headers in head_buf */
     CS_READ_BODY, /* decoding request body */
     CS_WRITING,   /* sending final response head/body */
@@ -48,6 +51,12 @@ struct client_session {
     int log_fd;
     enum cs_state state;
     int logged;
+    bool log_request;
+    bool wants_close;
+    bool body_complete;
+    unsigned int request_count;
+    char pending[CS_RECV_BUDGET];
+    size_t pending_len;
 
     struct timespec accepted;
     struct timespec total_deadline;
@@ -193,11 +202,48 @@ static conn_result_t cs_send_raw(int fd, const void *buf, size_t len, size_t *ou
 
 static void cs_log_access(struct client_session *c)
 {
-    if (c->log_fd < 0 || c->logged)
+    if (!c->log_request || c->log_fd < 0 || c->logged)
         return;
     c->access.duration_ms = connection_stopwatch_elapsed_ms(&c->accepted);
     (void)connection_log_access(c->log_fd, &c->access);
     c->logged = 1;
+}
+
+static void cs_release_response(struct client_session *c)
+{
+    if (c->response_queued && c->final_response.file_fd >= 0)
+        close(c->final_response.file_fd);
+    c->response_queued = 0;
+}
+
+static bool cs_reset_request(struct client_session *c, bool idle)
+{
+    cs_release_response(c);
+    if (c->body_initialized)
+        http_body_destroy(&c->body_parser);
+    c->body_initialized = 0;
+    c->head_len = c->pending_len;
+    memcpy(c->head_buf, c->pending, c->pending_len);
+    c->pending_len = 0;
+    c->line = (struct http_request_line_result){0};
+    c->headers = (struct http_headers_result){0};
+    c->body_feed_offset = 0;
+    c->head = c->validated = c->logged = 0;
+    c->access = (conn_access_record_t){.status = -1};
+    c->sent_continue = c->need_continue = 0;
+    c->continue_pos = 0;
+    c->wants_close = c->body_complete = false;
+    c->log_request = !idle;
+    c->state = idle ? CS_IDLE : CS_READ_HEAD;
+    if (idle)
+        return connection_deadline_from_now(CS_KEEPALIVE_MS, NULL,
+                                            &c->stage_deadline) == 0;
+    if (connection_deadline_now(&c->accepted) < 0)
+        return false;
+    connection_deadline_add(&c->accepted, PHASE1_TOTAL_MS, NULL, &c->total_deadline);
+    connection_deadline_add(&c->accepted, PHASE1_HEADER_MS, &c->total_deadline,
+                            &c->stage_deadline);
+    return true;
 }
 
 /* Store a final response without changing state (used while still reading body). */
@@ -221,6 +267,8 @@ static void queue_final_response(struct client_session *c,
 {
     cs_set_pending_response(c, response);
 
+    c->final_response.keep_alive = c->body_complete && !c->wants_close &&
+        !c->have_shutdown_deadline && c->request_count < CS_MAX_REQUESTS;
     c->send_header_len = 0;
     c->send_header_pos = 0;
     c->body_pos = 0;
@@ -244,6 +292,7 @@ static void queue_final_response(struct client_session *c,
 
 static void cs_queue_error_response(struct client_session *c, int status)
 {
+    c->wants_close = true;
     const char *reason = http_reason_phrase(status);
     struct http_response error_response = {
         .status = status,
@@ -263,6 +312,9 @@ static void cs_handle_timeout(struct client_session *c)
     }
     switch (c->state)
     {
+    case CS_IDLE:
+        cs_close_client(c);
+        break;
     case CS_READ_HEAD:
     case CS_READ_BODY:
         cs_queue_error_response(c, 408);
@@ -425,6 +477,15 @@ static enum cs_status cs_feed_body_chunk(struct client_session *c,
     }
     if (result.status == HTTP_PARSE_COMPLETE)
     {
+        size_t trailing = len - result.consumed;
+        if (trailing > sizeof(c->pending))
+        {
+            cs_close_client(c);
+            return CS_STATUS_ERROR;
+        }
+        memcpy(c->pending, data + result.consumed, trailing);
+        c->pending_len = trailing;
+        c->body_complete = true;
         cs_finalize_body(c);
         return CS_STATUS_DONE;
     }
@@ -591,6 +652,8 @@ static enum cs_status cs_process_head(struct client_session *c)
         return CS_STATUS_OK;
     }
     c->validated = 1;
+    ++c->request_count;
+    c->wants_close = http_connection_wants_close(&c->headers.headers);
 
     if (connection_deadline_from_now(PHASE1_IDLE_MS, &c->total_deadline,
                                      &c->body_deadline) < 0)
@@ -608,6 +671,21 @@ static enum cs_status cs_process_head(struct client_session *c)
             app_handle_request(c->root_fd, &c->request, &c->route, c->location);
         if (app_response.status != 200)
         {
+            /* An early route error may reuse only a request known to have no body. */
+            if (c->body_parser.state == HTTP_BODY_DONE)
+            {
+                size_t trailing = c->head_len - c->body_feed_offset;
+                if (trailing > sizeof(c->pending))
+                {
+                    if (app_response.file_fd >= 0)
+                        close(app_response.file_fd);
+                    cs_close_client(c);
+                    return CS_STATUS_ERROR;
+                }
+                memcpy(c->pending, c->head_buf + c->body_feed_offset, trailing);
+                c->pending_len = trailing;
+                c->body_complete = true;
+            }
             queue_final_response(c, &app_response);
             return CS_STATUS_OK;
         }
@@ -639,6 +717,11 @@ static enum cs_status cs_read_head(struct client_session *c, bool readable)
         return CS_STATUS_BLOCK;
     if (r == CONN_RESULT_EOF)
     {
+        if (c->state == CS_IDLE)
+        {
+            cs_close_client(c);
+            return CS_STATUS_ERROR;
+        }
         cs_queue_error_response(c, 400);
         return CS_STATUS_OK;
     }
@@ -648,6 +731,19 @@ static enum cs_status cs_read_head(struct client_session *c, bool readable)
         return CS_STATUS_ERROR;
     }
     c->head_len += n;
+    if (c->state == CS_IDLE)
+    {
+        c->state = CS_READ_HEAD;
+        c->log_request = true;
+        if (connection_deadline_now(&c->accepted) < 0)
+        {
+            cs_close_client(c);
+            return CS_STATUS_ERROR;
+        }
+        connection_deadline_add(&c->accepted, PHASE1_TOTAL_MS, NULL, &c->total_deadline);
+        connection_deadline_add(&c->accepted, PHASE1_HEADER_MS, &c->total_deadline,
+                                &c->stage_deadline);
+    }
     return CS_STATUS_OK;
 }
 
@@ -662,6 +758,7 @@ struct client_session *client_session_create(int fd, int root_fd, int log_fd)
     c->log_fd = log_fd;
     c->state = CS_READ_HEAD;
     c->access.status = -1;
+    c->log_request = true;
     c->final_response.file_fd = -1;
 
     if (connection_deadline_now(&c->accepted) < 0)
@@ -690,8 +787,7 @@ void client_session_destroy(struct client_session *client)
     if (client == NULL)
         return;
 
-    if (client->response_queued && client->final_response.file_fd >= 0)
-        close(client->final_response.file_fd);
+    cs_release_response(client);
     if (client->body_initialized)
         http_body_destroy(&client->body_parser);
     cs_close_client(client);
@@ -704,6 +800,7 @@ short client_session_interest(const struct client_session *client)
 {
     switch (client->state)
     {
+    case CS_IDLE:
     case CS_READ_HEAD:
         return POLLIN;
     case CS_READ_BODY:
@@ -726,10 +823,18 @@ bool client_session_begin_shutdown(struct client_session *client,
                                    const struct timespec *shutdown_deadline)
 {
     if (!client->validated)
+    {
+        client->log_request = false;
         return false;
+    }
 
     client->have_shutdown_deadline = 1;
     client->shutdown_deadline = *shutdown_deadline;
+    if (client->send_header_pos == 0)
+    {
+        client->final_response.keep_alive = 0;
+        client->send_header_len = 0;
+    }
 
     cs_cap_at_shutdown(client, &client->total_deadline);
     cs_cap_at_shutdown(client, &client->header_deadline);
@@ -764,9 +869,16 @@ bool client_session_advance(struct client_session *client, bool readable,
 
         switch (client->state)
         {
+        case CS_IDLE:
         case CS_READ_HEAD:
         {
-            enum cs_status st = cs_read_head(client, readable);
+            enum cs_status st = client->head_len > 0
+                ? cs_process_head(client) : CS_STATUS_BLOCK;
+            if (st == CS_STATUS_OK)
+                continue;
+            if (st == CS_STATUS_ERROR)
+                return false;
+            st = cs_read_head(client, readable);
             if (st == CS_STATUS_BLOCK)
                 return true;
             if (st == CS_STATUS_ERROR)
@@ -797,7 +909,7 @@ bool client_session_advance(struct client_session *client, bool readable,
             enum cs_status st = cs_read_body(client, readable);
             if (st == CS_STATUS_ERROR)
                 return false;
-            if (st == CS_STATUS_DONE)
+            if (st == CS_STATUS_DONE || client->state != CS_READ_BODY)
                 continue;
             return true;
         }
@@ -812,6 +924,20 @@ bool client_session_advance(struct client_session *client, bool readable,
             if (st == CS_STATUS_DONE)
             {
                 client->access.complete = 1;
+                if (client->final_response.keep_alive && !client->have_shutdown_deadline)
+                {
+                    cs_log_access(client);
+                    if (!cs_reset_request(client, client->pending_len == 0))
+                    {
+                        cs_close_client(client);
+                        return false;
+                    }
+                    if (client->state == CS_IDLE)
+                        return true;
+                    /* Buffered request bytes have no independent epoll event. */
+                    writable = false;
+                    continue;
+                }
                 size_t discarded;
                 shutdown(client->fd, SHUT_WR);
                 connection_drain(client->fd, HTTP_REQUEST_HEAD_MAX, &discarded);

@@ -133,6 +133,14 @@ def read_to_eof(sock: socket.socket) -> bytes:
     return bytes(data)
 
 
+def request_with_close(request: bytes) -> bytes:
+    first = request.find(b"\r\n")
+    if first < 0 or b"\r\n\r\n" not in request:
+        return request
+    first += 2
+    return request[:first] + b"Connection: close\r\n" + request[first:]
+
+
 def raw_request(
     request: bytes,
     *,
@@ -142,7 +150,7 @@ def raw_request(
     assert SERVER_PORT is not None
     with socket.create_connection((HOST, SERVER_PORT), timeout=REQUEST_TIMEOUT) as sock:
         if request:
-            sock.sendall(request)
+            sock.sendall(request_with_close(request))
         if shutdown_write:
             sock.shutdown(socket.SHUT_WR)
         with http.client.HTTPResponse(sock, method=method) as response:
@@ -160,7 +168,7 @@ def raw_headers_only(
     assert SERVER_PORT is not None
     with socket.create_connection((HOST, SERVER_PORT), timeout=REQUEST_TIMEOUT) as sock:
         if request:
-            sock.sendall(request)
+            sock.sendall(request_with_close(request))
         if shutdown_write:
             sock.shutdown(socket.SHUT_WR)
         head = bytearray()
@@ -256,7 +264,7 @@ def expect_continue_then_final(
 ) -> None:
     assert SERVER_PORT is not None
     with socket.create_connection((HOST, SERVER_PORT), timeout=REQUEST_TIMEOUT) as sock:
-        sock.sendall(request_head)
+        sock.sendall(request_with_close(request_head))
         head = bytearray()
         while not head.endswith(b"\r\n\r\n"):
             byte = sock.recv(1)
