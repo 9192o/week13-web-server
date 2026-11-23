@@ -2,9 +2,11 @@
 PHASE1_SANITIZE_FLAGS = -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie
 PHASE1_VALGRIND = valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=91 --track-fds=yes
 
-.PHONY: test sanitize valgrind benchmark
+.PHONY: test-fast test sanitize valgrind benchmark
 
-test: test-unit test-integration test-deadlines
+test-fast: test-unit test-integration
+
+test: test-fast test-deadlines
 
 sanitize:
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
