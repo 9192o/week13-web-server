@@ -22,6 +22,8 @@
 P1-27/T-27은 계속 Phase 2로 이관한다.
 2026-11-23 사용자 확인으로 [Phase 2 요구사항](docs/PHASE_2_REQUIREMENTS.md)을
 확정했다. 작업 단위 및 검증 순서는 [Phase 2 구현 계획](docs/superpowers/plans/2026-11-23-phase-2.md)을 따른다.
+Phase 2 구현의 기능·메모리 검사와 A/B/C 측정 결과는
+[Phase 2 검증](docs/PHASE_2_TESTING.md)에 기록했다. Phase 1의 과거 완료 판정은 별개다.
 
 ## 1. 목적과 현재 작업 범위
 
