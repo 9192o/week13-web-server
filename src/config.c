@@ -57,6 +57,10 @@ int config_parse(int argc, char **argv, struct server_config *out,
         snprintf(errbuf, errlen, "root %s: %s", root, strerror(errno));
         return -1;
     }
+    if (strcmp(out->root, "/") == 0) {   /* 파일 시스템 전체 노출 방지 (-r /.. 등도 여기서 걸림) */
+        snprintf(errbuf, errlen, "root must not be \"/\"");
+        return -1;
+    }
     if (stat(out->root, &st) < 0 || !S_ISDIR(st.st_mode)) {
         snprintf(errbuf, errlen, "root %s: not a directory", root);
         return -1;

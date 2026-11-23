@@ -105,7 +105,7 @@ static void teardown(void)
 
 static int resolve(const char *path)
 {
-    return static_resolve(root, path, HTTP_GET, &t);
+    return static_resolve(root, path, &t);   /* path 는 url_check_path 를 통과한 디코딩된 경로 */
 }
 
 static void test_regular_file_200(void)
@@ -121,7 +121,6 @@ static void test_regular_file_200(void)
     CHECK_EQ_INT(resolve("/cat.png"), 200);                 /* S3 */
     CHECK_EQ_STR(t.mime, "image/png");
 
-    CHECK_EQ_INT(resolve("/%69ndex.html"), 200);            /* 디코딩 후 찾음 */
     CHECK_EQ_INT(resolve("/inside"), 200);                  /* root 안 링크는 허용 */
     CHECK_EQ_STR(t.path, want);
 }
@@ -143,40 +142,25 @@ static void test_not_found(void)
     CHECK_EQ_INT(resolve("/index.html/x"), 404);            /* ENOTDIR */
 }
 
-static void test_dotfile_404(void)
-{
-    CHECK_EQ_INT(resolve("/.env"), 404);                    /* S4-2: 실제로 있어도 404 */
-    CHECK_EQ_INT(resolve("/%2eenv"), 404);
-    CHECK_EQ_INT(resolve("/.nothing"), 404);                /* 없어도 같은 응답 */
-}
-
-static void test_dotdot_400(void)
-{
-    CHECK_EQ_INT(resolve("/../secret.txt"), 400);
-    CHECK_EQ_INT(resolve("/%2e%2e/secret.txt"), 400);
-    CHECK_EQ_INT(resolve("/docs/..%2f..%2fsecret.txt"), 400);
-    CHECK_EQ_INT(resolve("/bad%zz"), 400);
-    CHECK_EQ_INT(resolve("/a%00.html"), 400);
-}
-
 static void test_symlink_outside_root_403(void)
 {
     CHECK_EQ_INT(resolve("/escape"), 403);
 }
 
-static void test_cgi_bin_reserved_404(void)
+static void test_too_long_500(void)
 {
-    CHECK_EQ_INT(resolve("/cgi-bin/adder"), 404);           /* 스크립트 소스 노출 방지 */
-    CHECK_EQ_INT(resolve("/cgi-bin"), 404);
-    CHECK_EQ_INT(resolve("/cgi%2Dbin/adder"), 404);
-    CHECK_EQ_INT(resolve("/cgi-binx"), 404);                /* 그냥 없는 파일 */
-}
+    char p[PATH_MAX + 100];
 
-static void test_post_405(void)
-{
-    CHECK_EQ_INT(static_resolve(root, "/index.html", HTTP_POST, &t), 405);
-    CHECK_EQ_INT(static_resolve(root, "/nope", HTTP_POST, &t), 405);
-    CHECK_EQ_INT(static_resolve(root, "/.env", HTTP_POST, &t), 404);   /* 점 파일 검사가 먼저 */
+    /* root + 경로가 PATH_MAX 를 넘음 */
+    p[0] = '/';
+    memset(p + 1, 'a', PATH_MAX);
+    p[PATH_MAX + 1] = '\0';
+    CHECK_EQ_INT(resolve(p), 500);
+
+    /* 전체는 짧지만 한 세그먼트가 NAME_MAX 를 넘음 → realpath 가 ENAMETOOLONG */
+    memset(p + 1, 'b', 300);
+    p[301] = '\0';
+    CHECK_EQ_INT(resolve(p), 500);
 }
 
 static void test_mime(void)
@@ -185,7 +169,7 @@ static void test_mime(void)
     CHECK_EQ_STR(mime_lookup("/a/INDEX.HTM"), "text/html; charset=utf-8");
     CHECK_EQ_STR(mime_lookup("style.css"), "text/css; charset=utf-8");
     CHECK_EQ_STR(mime_lookup("app.js"), "text/javascript; charset=utf-8");
-    CHECK_EQ_STR(mime_lookup("x.json"), "application/json");
+    CHECK_EQ_STR(mime_lookup("x.json"), "application/json; charset=utf-8");
     CHECK_EQ_STR(mime_lookup("x.txt"), "text/plain; charset=utf-8");
     CHECK_EQ_STR(mime_lookup("x.Jpeg"), "image/jpeg");
     CHECK_EQ_STR(mime_lookup("x.jpg"), "image/jpeg");
@@ -207,11 +191,8 @@ int main(void)
     RUN_TEST(test_regular_file_200);
     RUN_TEST(test_directory);
     RUN_TEST(test_not_found);
-    RUN_TEST(test_dotfile_404);
-    RUN_TEST(test_dotdot_400);
     RUN_TEST(test_symlink_outside_root_403);
-    RUN_TEST(test_cgi_bin_reserved_404);
-    RUN_TEST(test_post_405);
+    RUN_TEST(test_too_long_500);
     RUN_TEST(test_mime);
     teardown();
     return TEST_SUMMARY();

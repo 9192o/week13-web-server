@@ -62,6 +62,16 @@ static void test_bad_root(void)
     CHECK_EQ_INT(config_parse(ARGC(file), file, &cfg, err, sizeof err), -1);
 }
 
+static void test_root_slash_rejected(void)
+{
+    char *slash[]  = {"server", "-r", "/", NULL};
+    char *dotdot[] = {"server", "-r", "/..", NULL};   /* realpath 결과가 "/" */
+    CHECK_EQ_INT(config_parse(ARGC(slash), slash, &cfg, err, sizeof err), -1);
+    CHECK_EQ_STR(err, "root must not be \"/\"");
+    CHECK_EQ_INT(config_parse(ARGC(dotdot), dotdot, &cfg, err, sizeof err), -1);
+    CHECK_EQ_STR(err, "root must not be \"/\"");
+}
+
 int main(void)
 {
     RUN_TEST(test_defaults);
@@ -70,5 +80,6 @@ int main(void)
     RUN_TEST(test_port_not_number);
     RUN_TEST(test_missing_value_and_unknown);
     RUN_TEST(test_bad_root);
+    RUN_TEST(test_root_slash_rejected);
     return TEST_SUMMARY();
 }

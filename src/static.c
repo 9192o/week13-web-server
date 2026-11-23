@@ -21,7 +21,7 @@ static const struct {
     {"htm",  "text/html; charset=utf-8"},
     {"css",  "text/css; charset=utf-8"},
     {"js",   "text/javascript; charset=utf-8"},
-    {"json", "application/json"},
+    {"json", "application/json; charset=utf-8"},
     {"txt",  "text/plain; charset=utf-8"},
     {"png",  "image/png"},
     {"jpg",  "image/jpeg"},
@@ -57,7 +57,6 @@ static int errno_status(int e)
     switch (e) {
     case ENOENT:
     case ENOTDIR:
-    case ENAMETOOLONG:
         return 404;
     case EACCES:
         return 403;
@@ -71,8 +70,6 @@ static int is_under_root(const char *root, const char *real)
 {
     size_t rl = strlen(root);
 
-    if (strcmp(root, "/") == 0)
-        return 1;
     return strncmp(real, root, rl) == 0 && (real[rl] == '\0' || real[rl] == '/');
 }
 
@@ -92,39 +89,17 @@ static int locate(const char *root, const char *candidate, char *out_real,
     return 0;
 }
 
-static int has_prefix_segment(const char *path, const char *prefix)
+int static_resolve(const char *root, const char *decoded,
+                   struct static_target *out)
 {
-    size_t n = strlen(prefix);
-    return strncmp(path, prefix, n) == 0 && (path[n] == '\0' || path[n] == '/');
-}
-
-int static_resolve(const char *root, const char *raw_path,
-                   enum http_method method, struct static_target *out)
-{
-    char decoded[HTTP_URI_MAX + 1];
     char candidate[PATH_MAX];
     struct stat st;
     size_t dl;
     int n, rc;
 
-    if (url_decode(raw_path, decoded, sizeof decoded) < 0)
-        return 400;
-    switch (url_check_segments(decoded)) {
-    case URL_PATH_DOTDOT:
-        return 400;
-    case URL_PATH_DOTFILE:
-        return 404;
-    case URL_PATH_OK:
-        break;
-    }
-    if (has_prefix_segment(decoded, STATIC_CGI_PREFIX))
-        return 404;
-    if (method != HTTP_GET)
-        return 405;
-
     n = snprintf(candidate, sizeof candidate, "%s%s", root, decoded);
     if (n < 0 || (size_t)n >= sizeof candidate)
-        return 404;                       /* 경로가 PATH_MAX 를 넘음: 그런 파일은 없음 */
+        return 500;                       /* 경로가 PATH_MAX 를 넘음: ENAMETOOLONG 과 같이 500 */
     rc = locate(root, candidate, out->path, &st);
     if (rc != 0)
         return rc;
