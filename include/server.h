@@ -1,6 +1,7 @@
 #ifndef SERVER_H
 #define SERVER_H
 
+#include <signal.h>
 #include <stddef.h>
 #include <sys/types.h>
 
@@ -37,7 +38,16 @@ enum read_head_result {
  */
 int server_listen(int port);
 
-/* accept 루프. 연결을 하나씩 순차 처리한다 (Phase 1). */
+/*
+ * SIGINT/SIGTERM 핸들러가 1 로 켜는 종료 플래그 (main.c 가 SA_RESTART 없이 등록).
+ * accept 가 EINTR 로 돌아오면 server_run 이 이를 보고 반환한다.
+ */
+extern volatile sig_atomic_t server_stop;
+
+/*
+ * accept 루프. 연결을 하나씩 순차 처리한다 (Phase 1).
+ * server_stop 이 켜지면 반환 (처리 중인 요청은 끝까지 처리). listen_fd 는 닫지 않는다.
+ */
 void server_run(int listen_fd, const char *root);
 
 /*

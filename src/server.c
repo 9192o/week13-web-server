@@ -563,9 +563,12 @@ void server_handle(int conn_fd, const char *peer, const char *root)
     finish_error(conn_fd, peer, reqline, status, extra, NULL);
 }
 
+volatile sig_atomic_t server_stop = 0;
+
 void server_run(int listen_fd, const char *root)
 {
-    for (;;) {
+    /* 처리 중에 신호가 와도 그 요청은 끝까지 처리하고, 다음 accept 전에 확인 */
+    while (!server_stop) {
         struct sockaddr_in peer;
         socklen_t peer_len = sizeof peer;
         char ip[INET_ADDRSTRLEN];
@@ -575,7 +578,7 @@ void server_run(int listen_fd, const char *root)
         conn_fd = accept(listen_fd, (struct sockaddr *)&peer, &peer_len);
         if (conn_fd < 0) {
             if (errno == EINTR || errno == ECONNABORTED)
-                continue;
+                continue;          /* EINTR: 종료 신호면 while 조건에서 빠져나감 */
             perror("accept");
             continue;
         }

@@ -5,6 +5,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+/* 플래그만 켠다. 두 번째 신호도 같은 동작 (강제 종료는 phase 2) */
+static void on_stop_signal(int sig)
+{
+    (void)sig;
+    server_stop = 1;
+}
 
 int main(int argc, char **argv)
 {
@@ -28,11 +36,21 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    /* 정상 종료: SA_RESTART 없이 등록해야 막혀 있던 accept 가 EINTR 로 돌아온다 */
+    sa.sa_handler = on_stop_signal;
+    sa.sa_flags = 0;
+    if (sigaction(SIGINT, &sa, NULL) < 0 || sigaction(SIGTERM, &sa, NULL) < 0) {
+        perror("sigaction(SIGINT/SIGTERM)");
+        return EXIT_FAILURE;
+    }
+
     listen_fd = server_listen(cfg.port);
     if (listen_fd < 0)
         return EXIT_FAILURE;
 
     fprintf(stderr, "listening on 0.0.0.0:%d, root=%s\n", cfg.port, cfg.root);
     server_run(listen_fd, cfg.root);
+    fprintf(stderr, "shutting down\n");
+    close(listen_fd);
     return EXIT_SUCCESS;
 }
