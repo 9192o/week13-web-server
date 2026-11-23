@@ -3,9 +3,11 @@ FROM debian:trixie-20261104-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        clang-format \
         curl \
         gcc \
         gdb \
+        git \
         libc6-dev \
         make \
         python3 \
