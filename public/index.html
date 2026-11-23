@@ -42,6 +42,19 @@
         </figure>
       </div>
     </section>
+
+    <section aria-labelledby="echo">
+      <h2 id="echo">동적 라우팅: POST /echo</h2>
+      <p>텍스트나 PNG를 보내고 응답의 상태, MIME 타입, 바이트 일치 여부를 확인하세요.</p>
+      <form id="echo-form" method="post" action="/echo">
+        <label for="echo-text">보낼 텍스트</label>
+        <textarea id="echo-text" rows="3">안녕, HTTP!</textarea>
+        <button type="submit">텍스트 보내기</button>
+        <button type="button" id="echo-png">PNG 샘플 보내기</button>
+      </form>
+      <pre id="echo-result" role="status">아직 보낸 요청이 없습니다.</pre>
+      <p><a href="/echo">GET /echo</a> — 허용하지 않는 메서드 (405)</p>
+    </section>
   </main>
 </body>
 </html>
