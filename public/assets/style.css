@@ -1,0 +1,40 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.55;
+}
+
+main {
+  max-inline-size: 48rem;
+  margin-inline: auto;
+  padding: 1rem;
+}
+
+h1, h2 {
+  line-height: 1.2;
+}
+
+header, section {
+  padding-block: 0.75rem;
+}
+
+a {
+  overflow-wrap: anywhere;
+}
+
+.samples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+figure {
+  margin: 0;
+  max-inline-size: 100%;
+}
+
+img {
+  display: block;
+  max-inline-size: 100%;
+  block-size: auto;
+}

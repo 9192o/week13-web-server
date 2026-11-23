@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTTP 라우팅 실습</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/demo.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>HTTP 라우팅 실습</h1>
+      <p>개발자 도구의 Network 탭에서 요청 상태와 <code>Content-Type</code>을 확인하세요.</p>
+    </header>
+
+    <section aria-labelledby="routes">
+      <h2 id="routes">정적 라우팅</h2>
+      <ul>
+        <li><a href="/index.html">/index.html</a> — 현재 페이지와 같은 파일 (200)</li>
+        <li><a href="/about">/about</a> — 308로 <code>/about/</code>에 이동</li>
+        <li><a href="/assets/sample.json">/assets/sample.json</a> — 존재하지만 지원하지 않는 타입 (403)</li>
+        <li><a href="/missing.html">/missing.html</a> — 파일 없음 (404)</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="mime">
+      <h2 id="mime">MIME 샘플</h2>
+      <ul>
+        <li><a href="/assets/style.css">style.css</a> — <code>text/css</code></li>
+        <li><a href="/assets/demo.js">demo.js</a> — <code>text/javascript</code></li>
+      </ul>
+      <p id="js-result">JavaScript 실행 전</p>
+      <div class="samples">
+        <figure>
+          <img src="/assets/sample.png" width="240" height="120" alt="파란색과 금색으로 나뉜 PNG 샘플">
+          <figcaption><a href="/assets/sample.png">sample.png</a> — <code>image/png</code></figcaption>
+        </figure>
+        <figure>
+          <img src="/assets/sample.jpg" width="240" height="120" alt="파란색과 금색으로 나뉜 JPEG 샘플">
+          <figcaption><a href="/assets/sample.jpg">sample.jpg</a> — <code>image/jpeg</code></figcaption>
+        </figure>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
