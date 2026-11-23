@@ -196,14 +196,25 @@ static void handle_connection(int connfd, const struct sockaddr_in *peer,
                    !g_stop;
         int close_after = !keep;
 
+        handler_result_t handler_rc = HANDLER_OK;
+
         if (req.method == HTTP_OPTIONS) {
-            (void)http_response_send_options(connfd, close_after);
+            if (http_response_send_options(connfd, close_after) < 0)
+                handler_rc = HANDLER_ERROR;
         } else if (cfg->cgi_dir[0] != '\0' &&
                    strncmp(req.path, "/cgi-bin/", 9) == 0) {
-            (void)cgi_handle(connfd, &req, cfg, peer_ip, close_after);
+            handler_rc = cgi_handle(connfd, &req, cfg, peer_ip, close_after);
         } else {
-            (void)static_file_handle(connfd, &req, cfg, close_after);
+            handler_rc = static_file_handle(connfd, &req, cfg, close_after);
         }
+
+        /*
+         * HANDLER_CLOSE: the handler sent a Connection: close response.
+         * HANDLER_ERROR: the response is incomplete (write timeout, client
+         * gone, file shrank). In both cases do not read another request.
+         */
+        if (handler_rc != HANDLER_OK)
+            keep = 0;
 
         size_t body_in_buf = 0;
         if (req.body_len > 0 && len > req.header_len) {

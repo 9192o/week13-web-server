@@ -12,11 +12,11 @@ SERVER_BIN  := server
 
 CGI_BINS := cgi-bin/echo cgi-bin/sleep cgi-bin/crash
 
-TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c
+TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c
 TEST_OBJS := $(TEST_SRCS:.c=.o)
 TEST_BIN  := run_tests
 
-TEST_SUPPORT_SRCS := src/http_request.c src/http_response.c src/config.c src/util.c
+TEST_SUPPORT_SRCS := src/http_request.c src/http_response.c src/config.c src/util.c src/static_file.c
 TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:.c=.o)
 
 DEPS := $(SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)

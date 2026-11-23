@@ -270,8 +270,9 @@
 
 ## 3. 정적 파일 흐름 — `static_file_handle()`
 
-`src/static_file.c:174` · `int` · ← `handle_connection`
+`src/static_file.c:174` · `handler_result_t` · ← `handle_connection`
 
+- **반환값은 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`.** 에러 응답(404/403/416 등)은 `HANDLER_CLOSE`라서 연결을 재사용하지 않는다.
 - **GET/HEAD가 아니면 `405`.** 정적 파일은 읽기 전용이다.
 - **dotfile 세그먼트가 있으면 `404`.** `.env`, `.git` 같은 파일은 존재 자체를 숨긴다 (403이 아니라 404).
 - **`realpath(docroot)`로 기준 경로를 확정한다.** symlink가 섞인 docroot도 실제 경로로 비교하기 위해서다.
@@ -292,11 +293,11 @@
 
 ### `send_file()`
 
-`src/static_file.c:16` · `static int` · ← `static_file_handle`
+`src/static_file.c:17` · `int` · ← `static_file_handle`
 
 - **64KB 청크로 읽어서 `writen`으로 보낸다.** 파일 전체를 메모리에 올리지 않는다. 2MB 파일도 64KB씩 나간다.
 - **`EINTR`은 재시도.** 시그널로 깬 읽기는 실패가 아니다.
-- **읽기가 0이면 중단.** 파일이 중간에 잘린 경우다. (이때 `Content-Length`보다 적게 보내질 수 있는 엣지가 있다.)
+- **읽기가 0이면 `-1`.** 파일이 중간에 잘린 경우다. `Content-Length`보다 적게 보냈으므로 연결을 닫는다.
 - **쓰기 실패는 `-1`.** 클라이언트가 끊긴 경우다.
 
 ### `has_dotfile_segment()`
@@ -361,8 +362,9 @@
 
 ## 4. CGI 흐름 — `cgi_handle()`
 
-`src/cgi.c:157` · `int` · ← `handle_connection`
+`src/cgi.c:157` · `handler_result_t` · ← `handle_connection`
 
+- **반환값은 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`.** CGI 에러(404/500/504 등)는 `HANDLER_CLOSE`라서 연결을 재사용하지 않는다.
 - **`/cgi-bin/` 접두사 확인.** 아니면 `404`. 라우팅에서 이미 걸러지지만 이중 방어다.
 - **`name`이 비면 `404`.** `/cgi-bin/` 자체 요청이다.
 - **`realpath(cgi_dir)`로 기준 경로를 확정한다.** 실패하면 `500` (설정이 깨진 상태).
@@ -577,7 +579,7 @@
 | `http_response_send_options` | `src/http_response.c:101` | 200 + Allow |
 | `http_response_send_memory` | `src/http_response.c:119` | 메모리 본문 응답 |
 | `http_response_send_error` | `src/http_response.c:149` | HTML 에러 |
-| `send_file` | `src/static_file.c:16` | 64KB 스트리밍 |
+| `send_file` | `src/static_file.c:17` | 64KB 스트리밍 |
 | `has_dotfile_segment` | `src/static_file.c:37` | dotfile 검사 |
 | `path_within_root` | `src/static_file.c:55` | root 포함 검사 |
 | `status_from_errno` | `src/static_file.c:64` | errno → 상태 |

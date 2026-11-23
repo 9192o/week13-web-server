@@ -14,6 +14,8 @@ chmod 000 "$TESTROOT/secret.txt"
 ln -s index.html "$TESTROOT/link-inside"
 ln -s /etc/passwd "$TESTROOT/link-outside"
 dd if=/dev/zero of="$TESTROOT/big.bin" bs=1024 count=2048 >/dev/null 2>&1
+dd if=/dev/zero of="$TESTROOT/trunc.bin" bs=1024 count=16384 >/dev/null 2>&1
+dd if=/dev/zero of="$TESTROOT/slow.bin" bs=1024 count=8192 >/dev/null 2>&1
 
 ./server "$PORT" "$TESTROOT" ./cgi-bin \
     --keepalive-idle 1 --keepalive-max 3 >"$LOG" 2>&1 &
@@ -177,6 +179,35 @@ kill -9 "$dc_pid" 2>/dev/null || true
 wait "$dc_pid" 2>/dev/null || true
 sleep 0.2
 check_status "server alive after client disconnect" \
+    "http://127.0.0.1:$PORT/index.html" "200"
+
+# 전송 중 파일이 줄어들면 Content-Length와 실제 바디가 어긋난다.
+# send_file은 조기 EOF를 실패로 처리하고 연결을 닫아야 한다.
+trunc_out="$TESTROOT/trunc.out"
+curl -sS --max-time 10 --limit-rate 100k -o "$trunc_out" \
+    "http://127.0.0.1:$PORT/trunc.bin" >/dev/null 2>&1 &
+trunc_pid=$!
+
+# Wait until the body has started before truncating. If the file is truncated
+# before the server opens it, the test would pass for the wrong reason.
+for _ in $(seq 1 100); do
+    [ -s "$trunc_out" ] && break
+    sleep 0.05
+done
+: > "$TESTROOT/trunc.bin"
+wait "$trunc_pid" 2>/dev/null || true
+
+trunc_len=0
+if [ -f "$trunc_out" ]; then
+    trunc_len=$(wc -c < "$trunc_out" | tr -d ' ')
+fi
+if [ "$trunc_len" -gt 0 ] && [ "$trunc_len" -lt 16777216 ]; then
+    echo "PASS: truncated file closes early ($trunc_len bytes)"
+else
+    echo "FAIL: truncated file (got $trunc_len bytes)"
+    fail=1
+fi
+check_status "server alive after truncated send" \
     "http://127.0.0.1:$PORT/index.html" "200"
 
 # D10: Last-Modified / If-Modified-Since
@@ -392,6 +423,22 @@ case "$slow_out" in
         ;;
 esac
 
+# 응답을 거의 읽지 않는 클라이언트: SO_SNDTIMEO로 연결이 닫혀야 한다.
+curl -sS --max-time 10 --limit-rate 1 -o /dev/null \
+    "http://127.0.0.1:$TIMEOUT_PORT/slow.bin" >/dev/null 2>&1 &
+slow_send_pid=$!
+sleep 2
+code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$TIMEOUT_PORT/index.html" 2>/dev/null || echo "000")
+kill -9 "$slow_send_pid" 2>/dev/null || true
+wait "$slow_send_pid" 2>/dev/null || true
+if [ "$code" = "200" ]; then
+    echo "PASS: server alive after send timeout"
+else
+    echo "FAIL: server alive after send timeout (got $code)"
+    fail=1
+fi
+
 # CGI timeout / crash (timeout 서버: --timeout 1)
 code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$TIMEOUT_PORT/cgi-bin/sleep" 2>/dev/null || echo "000")
@@ -517,6 +564,19 @@ case "$h11_close_out" in
         fail=1
         ;;
 esac
+
+# 404는 Connection: close로 응답하므로, 같은 연결에 pipelined 요청을 보내도
+# 두 번째 요청을 처리하지 않아야 한다.
+err_keep_out=$({ printf 'GET /missing HTTP/1.1\r\nHost: x\r\n\r\n'; \
+    printf 'GET /index.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'; } \
+    | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+err_keep_count=$(printf '%s' "$err_keep_out" | grep -c '^HTTP/1.1' || true)
+if [ "$err_keep_count" = "1" ]; then
+    echo "PASS: error response closes keep-alive connection"
+else
+    echo "FAIL: error response closes keep-alive connection (got $err_keep_count responses)"
+    fail=1
+fi
 
 max_out=$({ for _ in 1 2 3 4; do \
     printf 'GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n'; \

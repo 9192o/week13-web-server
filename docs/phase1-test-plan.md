@@ -71,6 +71,7 @@ tests/fixtures/www/
 | TCP-08 | FR-02 | 통합 | 클라이언트 중간 끊기 | 크래시 없음, fd 회수 | PASS |
 | TCP-09 | NFR-10 | 통합 | keep-alive 중 `SIGINT` | 현재 응답 후 종료, 다음 요청 거부 | PASS (shutdown-test) |
 | TCP-10 | NFR-10 | 통합 | 두 번째 `SIGINT` | 즉시 종료 | PASS (shutdown-test) |
+| TCP-11 | NFR-10 | 통합 | 응답을 읽지 않는 클라이언트 | `SO_SNDTIMEO` 후 close, 서버 생존 | PASS |
 
 ### C. HTTP 요청 파싱 (REQ)
 
@@ -148,6 +149,9 @@ tests/fixtures/www/
 | STATIC-19 | D10 | 통합 | Accept-Ranges | `bytes` | PASS |
 | STATIC-20 | D12 | 통합 | 디렉토리 listing | 생성 안 함 | PASS |
 | STATIC-21 | D10 | 통합 | `OPTIONS /index.html` | 200 + `Allow` | PASS |
+| STATIC-22 | FR-09 | 통합 | 전송 중 파일 truncate | 조기 종료, 다음 요청 정상 | PASS |
+| STATIC-23 | FR-09 | 단위 | `send_file` 조기 EOF | `-1` 반환 | PASS |
+| STATIC-24 | FR-09 | 단위 | `send_file` 정상 크기 | `0`, 전체 전송 | PASS |
 
 ### F. CGI (CGI)
 
@@ -175,7 +179,7 @@ tests/fixtures/www/
 | KEEP-05 | D9 | 통합 | `Connection: close` | 응답 후 종료 | PASS |
 | KEEP-06 | D9 | 통합 | idle timeout 10s | 종료 | PASS (idle 1s test) |
 | KEEP-07 | D9 | 통합 | max requests 100 | 종료 | PASS (max 3 test) |
-| KEEP-08 | D9 | 통합 | 에러/EOF | 안전 종료 | TODO |
+| KEEP-08 | D9 | 통합 | 에러 응답 후 keep-alive | close, 다음 요청 미처리 | PASS |
 | KEEP-09 | D9 | 통합 | 버퍼 잔여 바이트 | 다음 요청으로 이어짐 | PASS |
 | KEEP-10 | D9 | 통합 | `ab -k` | 정상 처리 | PASS |
 

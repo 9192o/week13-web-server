@@ -56,6 +56,7 @@ accept()
 - 다음 요청을 기다릴 때는 `keepalive_idle_sec`, 요청이 시작되면 `request_timeout_sec` 타임아웃을 사용한다.
 - idle timeout은 응답 없이 close, 부분 요청 timeout은 `408`.
 - 에러 응답은 항상 close.
+- 핸들러는 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`를 반환하고, `CLOSE`/`ERROR`면 연결 루프가 `keep = 0`으로 닫는다.
 
 ## 정적 파일 보안
 
@@ -65,7 +66,7 @@ accept()
 - 요청 경로와 symlink 해석 후 경로 둘 다 dotfile 검사.
 - `realpath(docroot)`와 `realpath(filepath)`를 비교해 docroot 밖 symlink는 `403`.
 - 디렉터리는 `/dir` → `301 /dir/`, `/dir/` → `index.html`, index 없으면 `404`.
-- 큰 파일은 64KB 청크로 스트리밍한다.
+- 큰 파일은 64KB 청크로 스트리밍한다. 전송 실패나 조기 EOF 시 연결을 닫는다.
 
 ## CGI
 

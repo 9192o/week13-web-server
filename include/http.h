@@ -36,6 +36,14 @@ typedef enum {
     HTTP_VERSION_NOT_SUPPORTED = 505
 } http_status_t;
 
+/* Result of a request handler. CLOSE means a Connection: close response
+ * was sent and the connection must not be reused. */
+typedef enum {
+    HANDLER_OK = 0,
+    HANDLER_CLOSE = 1,
+    HANDLER_ERROR = -1
+} handler_result_t;
+
 typedef struct {
     const char *name;
     size_t name_len;

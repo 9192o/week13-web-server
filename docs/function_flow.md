@@ -403,7 +403,9 @@ for (size_t i = start; i + 3 < len; i++) {
 - **`OPTIONS`는 내용과 무관하게 공통 응답.** `Allow` 헤더를 붙인다.
 - **`cfg->cgi_dir`가 비어 있지 않고 경로가 `/cgi-bin/`으로 시작하면 CGI.**
 - **나머지는 정적 파일.**
-- **라우팅 함수의 반환값을 무시한다.** 응답 전송 실패는 이미 소켓이 끊긴 경우라 복구할 방법이 없다.
+- **라우팅 함수의 반환값을 `handler_result_t`로 받는다.**
+- **`HANDLER_CLOSE`면 `keep = 0`.** 핸들러가 `Connection: close` 응답을 보낸 경우다(404/403/416 등).
+- **`HANDLER_ERROR`면 `keep = 0`.** 응답 전송이 실패했거나 파일이 잘린 경우다. 다음 요청을 읽지 않고 연결을 닫는다.
 
 ### 버퍼 잔여 바이트
 
@@ -443,7 +445,7 @@ SIGINT/SIGTERM (두 번째)
 
 - **에러 응답은 거의 항상 연결을 닫는다.** `http_response_send_error(..., 1)`이 대부분이다. 파싱 실패 후 남은 바이트를 신뢰할 수 없기 때문이다.
 - **응답 상태 라인은 항상 `HTTP/1.1`이다.** HTTP/1.0 요청에도 1.1로 응답한다.
-- **`SO_RCVTIMEO`와 `SO_SNDTIMEO`을 모두 설정한다.** 읽기와 쓰기 모두 `request_timeout_sec`으로 bounded된다. `writen`은 타임아웃 시 `-1`을 반환하고 호출자가 연결을 닫는다.
+- **`SO_RCVTIMEO`와 `SO_SNDTIMEO`을 모두 설정한다.** 읽기/쓰기 **호출 한 번**이 `request_timeout_sec`까지만 기다린다. 전체 응답 시간 제한은 아니다. `writen`은 타임아웃 시 `-1`을 반환하고 호출자가 연결을 닫는다.
 - **Phase 1 종료 시 backlog 연결은 RST될 수 있다.** 단일 스레드라 요청 처리 중 `listenfd`를 즉시 닫을 수 없어서다. Phase 2에서 accept 담당 주체가 먼저 `listenfd`를 닫는 구조로 해결한다.
 - **`has_header_end`는 매 read마다 버퍼 전체를 다시 훑는다.** 최악 O(n²)이지만 16KB 상한이라 실용 범위다. 비용 분석과 최적화 방향은 5절 `has_header_end()` 참고.
 - **CGI 타임아웃은 idle 기준이다.** 전체 실행 시간 제한이 아니다.

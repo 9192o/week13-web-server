@@ -4,7 +4,8 @@
 #include "config.h"
 #include "http.h"
 
-int cgi_handle(int connfd, const http_request_t *req, const config_t *cfg,
-               const char *remote_addr, int close_connection);
+handler_result_t cgi_handle(int connfd, const http_request_t *req,
+                            const config_t *cfg, const char *remote_addr,
+                            int close_connection);
 
 #endif

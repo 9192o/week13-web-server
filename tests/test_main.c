@@ -28,6 +28,9 @@ void test_response_error_404(void);
 void test_response_reason(void);
 void test_response_add_header_overflow(void);
 
+void test_send_file_exact_size(void);
+void test_send_file_short_eof(void);
+
 int g_tests_run = 0;
 int g_tests_failed = 0;
 
@@ -59,6 +62,9 @@ int main(void) {
     RUN_TEST(test_response_error_404);
     RUN_TEST(test_response_reason);
     RUN_TEST(test_response_add_header_overflow);
+
+    RUN_TEST(test_send_file_exact_size);
+    RUN_TEST(test_send_file_short_eof);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

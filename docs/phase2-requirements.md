@@ -106,3 +106,41 @@
 - 스레드 풀 크기, 연결 수 제한, 타임아웃 값.
 - 이벤트 루프 선택 시 `poll` vs `kqueue`/`epoll` (`#ifdef`).
 - 부하 테스트 도구(`ab`/`wrk`/`hey`)와 목표 수치.
+
+## 8. 동시성 구현 메모
+
+### 8.1 `FD_CLOEXEC`와 멀티스레드 경쟁
+
+- `open()`/`socket()` 후 `fcntl(fd, F_SETFD, FD_CLOEXEC)`를 호출하는 방식은 **원자적이지 않다.**
+- 두 호출 사이에 다른 스레드가 `fork()` + `execve()`를 하면, 그 짧은 구간에 fd가 자식에게 상속될 수 있다.
+- 가능하면 **생성 시점에 원자적으로** 설정한다.
+  - `open(path, O_CLOEXEC)`
+  - `pipe2(fds, O_CLOEXEC)` (Linux)
+  - `accept4(fd, ..., SOCK_CLOEXEC)` (Linux)
+- macOS에는 `accept4()`가 없어 `accept()` 후 `fcntl()`을 쓰게 된다. 이 경쟁을 없애려면 CGI 자식에서 `execve()` 전에 **필요한 fd만 남기고 나머지를 닫는다.**
+  - macOS/BSD: `closefrom(3)`
+  - Linux: `close_range(3, ~0U, 0)` (5.9+) 또는 `/dev/fd` 순회
+- `dup2()`로 만든 새 fd는 `FD_CLOEXEC`가 **꺼진 상태**가 된다. CGI 자식의 stdin/stdout은 exec 후에도 살아 있어야 하므로 이 동작을 활용한다.
+- Phase 1의 `fcntl(listenfd, F_SETFD, FD_CLOEXEC)`는 단일 스레드라 안전하다. Phase 2에서 스레드를 도입하면 위 경쟁을 함께 설계해야 한다.
+
+### 8.2 멀티스레드 `fork`와 async-signal-safe
+
+- Phase 1은 단일 스레드라 `fork` 후 `setenv`/`malloc`/`printf`가 문제되지 않는다.
+- Phase 2에서 스레드 풀을 쓰면 `fork()`는 **워커 스레드**에서 호출된다. 이때:
+  - 자식에는 **`fork()`를 호출한 스레드만** 복사된다.
+  - 메모리는 fork 시점의 스냅샷(COW)이라, 다른 스레드가 잡고 있던 뮤텍스/`malloc`/`stdio`/`environ` 락이 **잠긴 상태로** 남는다.
+  - 락을 풀어줄 스레드가 자식에 없으므로, 자식이 그 락을 잡으려 하면 **영원히 대기**한다.
+- POSIX 규칙: 멀티스레드 프로세스에서 `fork()`한 자식은 `execve()` 전까지 **async-signal-safe 함수만** 호출할 수 있다.
+  - 안전: `execve`, `_exit`, `dup2`, `close`, `read`, `write`, `open`, `fcntl`, `pipe`, `waitpid`, `kill`
+  - 위험: `malloc`/`free`, `printf`/`fprintf`/`snprintf`, `setenv`/`putenv`/`getenv`, `strerror`, `exit`
+- `pthread_atfork`로 우리 코드의 락은 정리할 수 있지만, `malloc`/`stdio`/`environ` 같은 **libc 내부 락**은 해결하지 못한다.
+- 현재 `cgi.c`의 문제:
+  - 자식에서 `set_cgi_env()`가 `setenv()`를 호출한다. → 멀티스레드 fork 후 unsafe.
+- 향후 `envp`를 부모에서 만드는 방식으로 바꿀 때:
+  - 여러 워커가 `setenv()`를 공유하면 `environ` 레이스가 생기므로, 스레드별 `envp` 배열을 써야 한다.
+- Phase 2 리팩터링:
+  1. **fork 전에 부모에서 `envp` 배열을 만든다.** `malloc`/`strdup`은 부모에서 정상 락으로 안전하다.
+  2. 자식은 `dup2`/`close`/`execve`/`_exit`만 호출한다.
+  3. 또는 `posix_spawn()` + `posix_spawn_file_actions_*`로 fork+exec를 라이브러리에 맡긴다.
+- 증상: 부하가 걸릴 때만 CGI가 간헐적으로 멈추고 `504`가 난다. `gdb -p`/`sample`로 보면 자식이 `__lll_lock_wait`, `malloc`, `setenv` 등에서 대기한다.
+- 결론: **스레드 풀 도입 전에 `cgi.c`의 `setenv`를 `envp` 기반으로 바꾸는 작업이 선행되어야 한다.**

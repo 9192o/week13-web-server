@@ -154,39 +154,44 @@ static void set_cgi_env(const http_request_t *req, const config_t *cfg,
     setenv("REMOTE_ADDR", remote_addr != NULL ? remote_addr : "", 1);
 }
 
-int cgi_handle(int connfd, const http_request_t *req, const config_t *cfg,
-               const char *remote_addr, int close_connection) {
+static handler_result_t send_close_error(int connfd, int status) {
+    if (http_response_send_error(connfd, status, 1) < 0)
+        return HANDLER_ERROR;
+    return HANDLER_CLOSE;
+}
+
+handler_result_t cgi_handle(int connfd, const http_request_t *req,
+                            const config_t *cfg, const char *remote_addr,
+                            int close_connection) {
     if (strncmp(req->path, CGI_PREFIX, strlen(CGI_PREFIX)) != 0)
-        return http_response_send_error(connfd, HTTP_NOT_FOUND, 1);
+        return send_close_error(connfd, HTTP_NOT_FOUND);
 
     const char *name = req->path + strlen(CGI_PREFIX);
     if (*name == '\0')
-        return http_response_send_error(connfd, HTTP_NOT_FOUND, 1);
+        return send_close_error(connfd, HTTP_NOT_FOUND);
 
     char cgi_root[PATH_MAX];
     if (realpath(cfg->cgi_dir, cgi_root) == NULL)
-        return http_response_send_error(
-            connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
 
     char script[PATH_MAX];
     int n = snprintf(script, sizeof script, "%s/%s", cfg->cgi_dir, name);
     if (n < 0 || (size_t)n >= sizeof script)
-        return http_response_send_error(connfd, HTTP_URI_TOO_LONG, 1);
+        return send_close_error(connfd, HTTP_URI_TOO_LONG);
 
     char resolved[PATH_MAX];
     if (realpath(script, resolved) == NULL)
-        return http_response_send_error(connfd, HTTP_NOT_FOUND, 1);
+        return send_close_error(connfd, HTTP_NOT_FOUND);
 
     if (!path_within_root(cgi_root, resolved))
-        return http_response_send_error(connfd, HTTP_FORBIDDEN, 1);
+        return send_close_error(connfd, HTTP_FORBIDDEN);
 
     if (access(resolved, X_OK) < 0)
-        return http_response_send_error(connfd, HTTP_NOT_FOUND, 1);
+        return send_close_error(connfd, HTTP_NOT_FOUND);
 
     int out_pipe[2];
     if (pipe(out_pipe) < 0)
-        return http_response_send_error(
-            connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
 
     FILE *body_tmp = NULL;
     int in_fd = -1;
@@ -195,16 +200,14 @@ int cgi_handle(int connfd, const http_request_t *req, const config_t *cfg,
         if (body_tmp == NULL) {
             close(out_pipe[0]);
             close(out_pipe[1]);
-            return http_response_send_error(
-                connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+            return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
         }
         if (fwrite(req->body, 1, req->body_len, body_tmp) != req->body_len ||
             fflush(body_tmp) != 0) {
             fclose(body_tmp);
             close(out_pipe[0]);
             close(out_pipe[1]);
-            return http_response_send_error(
-                connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+            return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
         }
         rewind(body_tmp);
         in_fd = fileno(body_tmp);
@@ -216,8 +219,7 @@ int cgi_handle(int connfd, const http_request_t *req, const config_t *cfg,
             fclose(body_tmp);
         close(out_pipe[0]);
         close(out_pipe[1]);
-        return http_response_send_error(
-            connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
     }
 
     if (pid == 0) {
@@ -253,8 +255,7 @@ int cgi_handle(int connfd, const http_request_t *req, const config_t *cfg,
         close(out_pipe[0]);
         kill(pid, SIGTERM);
         waitpid(pid, NULL, 0);
-        return http_response_send_error(
-            connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
     }
 
     size_t out_len = 0;
@@ -313,18 +314,18 @@ int cgi_handle(int connfd, const http_request_t *req, const config_t *cfg,
 
     if (timed_out) {
         free(output);
-        return http_response_send_error(
-            connfd, HTTP_GATEWAY_TIMEOUT, 1);
+        return send_close_error(connfd, HTTP_GATEWAY_TIMEOUT);
     }
 
     if (too_large || out_len == 0) {
         free(output);
-        return http_response_send_error(
-            connfd, HTTP_INTERNAL_SERVER_ERROR, 1);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
     }
 
     output[out_len] = '\0';
     int rc = send_cgi_response(connfd, output, out_len, close_connection);
     free(output);
-    return rc;
+    if (rc < 0)
+        return HANDLER_ERROR;
+    return close_connection ? HANDLER_CLOSE : HANDLER_OK;
 }
