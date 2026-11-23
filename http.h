@@ -95,10 +95,12 @@ struct http_response
     /* Borrowed bytes, or a file's snapshot length when file_fd >= 0. */
     struct http_slice body;
     int file_fd;
+    int keep_alive; /* HTTP/1.1 persistence; zero selects Connection: close. */
 };
 
 const char *http_reason_phrase(int status);
 size_t http_format_response_head(const struct http_response *response, char *buffer, size_t capacity);
+int http_connection_wants_close(const struct http_headers *headers);
 
 enum http_body_state
 {

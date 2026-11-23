@@ -558,6 +558,25 @@ static void test_internal_error_format(void)
     assert_response_head_contains(buffer, "Content-Length: 21\r\n");
 }
 
+static void test_connection_policy(void)
+{
+    const char wire[] = "Connection: disclose, Keep-Alive \r\n"
+                        "cOnNeCtIoN: , \tClOsE\t , other\r\n\r\n";
+    struct http_headers_result parsed = http_parse_headers(wire, sizeof(wire) - 1, 0);
+    assert(parsed.status == HTTP_PARSE_COMPLETE);
+    assert(http_connection_wants_close(&parsed.headers));
+    parsed.headers.count = 1;
+    assert(!http_connection_wants_close(&parsed.headers));
+
+    struct http_response response = {
+        .status = 200, .content_type = "text/plain", .file_fd = -1, .keep_alive = 1};
+    char buffer[512];
+    size_t length = http_format_response_head(&response, buffer, sizeof(buffer));
+    assert(length > 0 && !strstr(buffer, "\r\nConnection:"));
+    assert_response_head_contains(buffer, "Content-Length: 0\r\n");
+    assert(strstr(buffer, "\r\n\r\n") == buffer + length - 4);
+}
+
 int main(void)
 {
     test_request_line();
@@ -581,6 +600,7 @@ int main(void)
     test_method_not_allowed_format();
     test_directory_redirect_format();
     test_internal_error_format();
+    test_connection_policy();
     puts("HTTP_RESPONSE_FORMAT_TESTS_PASS");
     return 0;
 }

@@ -794,6 +794,33 @@ const char *http_reason_phrase(int status)
     }
 }
 
+int http_connection_wants_close(const struct http_headers *headers)
+{
+    for (size_t i = 0; i < headers->count; ++i)
+    {
+        const struct http_header *field = &headers->fields[i];
+        if (!equal_case(field->name, "connection") || !field->value.length)
+            continue;
+        const char *cursor = field->value.data;
+        const char *end = cursor + field->value.length;
+        while (cursor < end)
+        {
+            skip_ows(&cursor, end);
+            const char *start = cursor;
+            while (cursor < end && *cursor != ',')
+                ++cursor;
+            const char *last = cursor;
+            while (last > start && (last[-1] == ' ' || last[-1] == '\t'))
+                --last;
+            if (equal_case((struct http_slice){start, (size_t)(last - start)}, "close"))
+                return 1;
+            if (cursor < end)
+                ++cursor;
+        }
+    }
+    return 0;
+}
+
 size_t http_format_response_head(const struct http_response *response, char *buffer, size_t capacity)
 {
     time_t now = time(NULL);
@@ -807,11 +834,12 @@ size_t http_format_response_head(const struct http_response *response, char *buf
         "Date: %s\r\n"
         "Content-Type: %s\r\n"
         "Content-Length: %zu\r\n"
-        "Connection: close\r\n"
+        "%s"
         "X-Content-Type-Options: nosniff\r\n"
         "%s%s%s%s%s%s\r\n",
         response->status, http_reason_phrase(response->status), date,
         response->content_type, response->body.length,
+        response->keep_alive ? "" : "Connection: close\r\n",
         response->allow ? "Allow: " : "",
         response->allow ? response->allow : "",
         response->allow ? "\r\n" : "",
