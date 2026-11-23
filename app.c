@@ -109,23 +109,38 @@ int main(int argc, char **argv)
     return status;
 }
 
+static struct http_response handle_echo(const struct http_request *request)
+{
+    return (struct http_response){
+        .status = 200,
+        .content_type = "application/octet-stream",
+        .body = request->body,
+        .file_fd = -1};
+}
+
+static const struct route routes[] = {
+    {"POST", "/echo", handle_echo},
+};
+
+struct router_result app_match_request(const struct http_request *request)
+{
+    return router_match_request(request, routes, sizeof(routes) / sizeof(routes[0]));
+}
+
 struct http_response app_handle_request(int root_fd,
                                         const struct http_request *request,
                                         const struct router_result *route,
                                         char location[HTTP_REQUEST_LINE_MAX + 2])
 {
+    if (route->handler)
+        return route->handler(request);
+
     struct http_response response = {
         .status = route->status,
         .content_type = "text/plain; charset=utf-8",
         .allow = route->allow,
         .file_fd = -1};
-    if (route->handler == ROUTER_ECHO)
-    {
-        response.content_type = "application/octet-stream";
-        response.body = request->body;
-        return response;
-    }
-    if (route->handler == ROUTER_STATIC)
+    if (route->status == 200)
         response = static_response(root_fd, request, route->path, location);
     if (response.status < 400)
         return response;

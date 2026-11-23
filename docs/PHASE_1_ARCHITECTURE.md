@@ -168,11 +168,13 @@ P1-27과 함께 Phase 2 시작에 구현한다.
 
 관련 요구사항: P1-06, P1-17, P1-19~23.
 
-`router_match_request()`는 미구현 메서드를 먼저 거부하고, origin/absolute-form의
-경로를 한 번 디코딩한다. 정확히 `/echo`면 예약 라우트로, 나머지 허용 경로는 정적 자원 후보로 분류한다.
-query는 무시한다. `router_result`는 handler/status/Allow와 정적 경로를 전달하며 I/O하지 않는다.
-서버는 프레이밍·Expect 초기화 뒤 라우터를 호출한다. 정적 응답은 앱이 본문 전에 준비하고,
-echo는 본문 완료 뒤 바이트를 빌린다.
+`app_match_request()`는 `app.c`의 정적 테이블(메서드·경로·함수 포인터)을
+`router_match_request()`에 넘긴다. 라우터는 미구현 메서드를 먼저 거부하고,
+origin/absolute-form 경로를 한 번 디코딩해 동적 라우트(`/echo`) 또는 정적 자원 후보를 선택한다.
+query는 무시한다. 라우터는 I/O 없이 함수 포인터 또는 정적 경로와 상태·Allow를 전달한다.
+서버는 프레이밍·Expect 초기화 뒤 앱에 경로 판정을 요청한다. 앱은 정적 응답과 오류를
+본문 전에 준비하며, 본문 완료 후에만 선택된 동적 핸들러를 호출한다.
+`handle_echo()`는 디코딩된 본문 바이트를 응답 송신이 끝날 때까지 빌린다.
 `http_response`는 상태/Content-Type/Allow/Location/본문 slice/file_fd를 담는다.
 file_fd >= 0이면 slice.length는 fstat 크기 스냅샷이며 서버가 FD를 소유한다.
 서버는 HEAD에서 헤더만, echo에서 명시적 바이트 길이만, 파일에서 1,024바이트 버퍼로

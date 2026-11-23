@@ -67,7 +67,7 @@ static struct http_request request_for(const char *method, const char *path)
 
 static struct http_response prepare(int root_fd, const struct http_request *request)
 {
-    struct router_result route = router_match_request(request);
+    struct router_result route = app_match_request(request);
     char unused_location[HTTP_REQUEST_LINE_MAX + 2];
     struct http_response response = app_handle_request(root_fd, request, &route, unused_location);
     assert(response.location == NULL);
@@ -81,44 +81,44 @@ static void test_matches(void)
         const char *method;
         const char *path;
         int status;
-        enum router_handler handler;
+        int dynamic;
         const char *allow;
     } cases[] = {
-        {"GET", "/", 200, ROUTER_STATIC, NULL},
-        {"HEAD", "/index.html", 200, ROUTER_STATIC, NULL},
-        {"GET", "/ind%65x.html", 200, ROUTER_STATIC, NULL},
-        {"POST", "/%65cho", 200, ROUTER_ECHO, NULL},
-        {"GET", "/echo", 405, ROUTER_ERROR, "POST"},
-        {"HEAD", "/echo", 405, ROUTER_ERROR, "POST"},
-        {"POST", "/", 200, ROUTER_STATIC, NULL},
-        {"GET", "/missing", 200, ROUTER_STATIC, NULL},
-        {"POST", "/missing", 200, ROUTER_STATIC, NULL},
-        {"PUT", "/echo", 501, ROUTER_ERROR, NULL},
-        {"get", "/", 501, ROUTER_ERROR, NULL},
-        {"GET", "/../index.html", 403, ROUTER_ERROR, NULL},
-        {"GET", "/%2e%2e/index.html", 403, ROUTER_ERROR, NULL},
-        {"GET", "//index.html", 403, ROUTER_ERROR, NULL},
-        {"GET", "/echo/", 200, ROUTER_STATIC, NULL},
-        {"GET", "/%2565cho", 200, ROUTER_STATIC, NULL},
-        {"GET", "/%ed%95%9c%20file.CSS", 200, ROUTER_STATIC, NULL},
-        {"GET", "/%ed%a0%80.png", 400, ROUTER_ERROR, NULL},
-        {"GET", "/%00", 400, ROUTER_ERROR, NULL},
-        {"GET", "/bad%", 400, ROUTER_ERROR, NULL},
+        {"GET", "/", 200, 0, NULL},
+        {"HEAD", "/index.html", 200, 0, NULL},
+        {"GET", "/ind%65x.html", 200, 0, NULL},
+        {"POST", "/%65cho", 200, 1, NULL},
+        {"GET", "/echo", 405, 0, "POST"},
+        {"HEAD", "/echo", 405, 0, "POST"},
+        {"POST", "/", 200, 0, NULL},
+        {"GET", "/missing", 200, 0, NULL},
+        {"POST", "/missing", 200, 0, NULL},
+        {"PUT", "/echo", 501, 0, NULL},
+        {"get", "/", 501, 0, NULL},
+        {"GET", "/../index.html", 403, 0, NULL},
+        {"GET", "/%2e%2e/index.html", 403, 0, NULL},
+        {"GET", "//index.html", 403, 0, NULL},
+        {"GET", "/echo/", 200, 0, NULL},
+        {"GET", "/%2565cho", 200, 0, NULL},
+        {"GET", "/%ed%95%9c%20file.CSS", 200, 0, NULL},
+        {"GET", "/%ed%a0%80.png", 400, 0, NULL},
+        {"GET", "/%00", 400, 0, NULL},
+        {"GET", "/bad%", 400, 0, NULL},
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
     {
         struct http_request request = request_for(cases[i].method, cases[i].path);
         request.target.query = (struct http_slice){"ignored=1", 9};
-        struct router_result result = router_match_request(&request);
+        struct router_result result = app_match_request(&request);
         assert(result.status == cases[i].status);
-        assert(result.handler == cases[i].handler);
+        assert((result.handler != NULL) == cases[i].dynamic);
         if (cases[i].allow)
             assert(result.allow && strcmp(result.allow, cases[i].allow) == 0);
         else
             assert(result.allow == NULL);
     }
     struct http_request request = request_for("GET", "/%2565cho");
-    struct router_result result = router_match_request(&request);
+    struct router_result result = app_match_request(&request);
     assert(strcmp(result.path, "/%65cho") == 0);
 }
 

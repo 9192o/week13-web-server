@@ -221,8 +221,8 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
         .line = line.request,
         .headers = headers.headers,
         .target = target};
-    struct router_result route = router_match_request(&request);
-    if (route.handler != ROUTER_ECHO)
+    struct router_result route = app_match_request(&request);
+    if (!route.handler)
     {
         app_response = app_handle_request(root_fd, &request, &route, location);
         if (app_response.status != 200)
@@ -265,7 +265,7 @@ static void handle_client(int client_fd, int root_fd, int log_fd)
         goto respond_error;
     }
     request.body = (struct http_slice){body.data, body.length};
-    if (route.handler == ROUTER_ECHO)
+    if (route.handler)
         app_response = app_handle_request(root_fd, &request, &route, location);
 
 respond_app:

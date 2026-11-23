@@ -148,10 +148,19 @@ ssize_t __wrap_send(int sockfd, const void *buf, size_t len, int flags)
 }
 
 /* This harness isolates transport; test_router and real sockets use the router. */
-struct router_result router_match_request(const struct http_request *request)
+static struct http_response stub_response(const struct http_request *request)
 {
     (void)request;
-    return (struct router_result){.handler = index_fd >= 0 ? ROUTER_STATIC : ROUTER_ECHO,
+    return (struct http_response){
+        .status = 200,
+        .content_type = "application/octet-stream",
+        .file_fd = index_fd};
+}
+
+struct router_result app_match_request(const struct http_request *request)
+{
+    (void)request;
+    return (struct router_result){.handler = index_fd >= 0 ? NULL : stub_response,
                                   .status = 200};
 }
 
@@ -161,7 +170,6 @@ struct http_response app_handle_request(int root_fd,
                                         char location[HTTP_REQUEST_LINE_MAX + 2])
 {
     (void)root_fd;
-    (void)route;
     (void)location;
     app_stub.called++;
     assert(request->line.method.length < sizeof(app_stub.method));
@@ -187,10 +195,7 @@ struct http_response app_handle_request(int root_fd,
     if (request->body.length)
         memcpy(app_stub.body, request->body.data, request->body.length);
     app_stub.body_length = request->body.length;
-    return (struct http_response){
-        .status = 200,
-        .content_type = "application/octet-stream",
-        .file_fd = index_fd};
+    return route->handler ? route->handler(request) : stub_response(request);
 }
 
 static void assert_response_prefix(const char *prefix)

@@ -3,22 +3,25 @@
 
 #include "http.h"
 
-enum router_handler
+typedef struct http_response (*route_handler)(const struct http_request *request);
+
+struct route
 {
-    ROUTER_ERROR,
-    ROUTER_STATIC,
-    ROUTER_ECHO
+    const char *method;
+    const char *path;
+    route_handler handler;
 };
 
 struct router_result
 {
-    enum router_handler handler;
+    route_handler handler; /* NULL for static candidates and routing errors. */
     int status;
     const char *allow;
     char path[HTTP_REQUEST_LINE_MAX];
 };
 
-/* Requires validated head. Decodes and classifies the path; no I/O. */
-struct router_result router_match_request(const struct http_request *request);
+/* Requires validated head and one non-null handler per distinct dynamic path. No I/O. */
+struct router_result router_match_request(const struct http_request *request,
+                                          const struct route *routes, size_t route_count);
 
 #endif

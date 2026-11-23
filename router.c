@@ -58,18 +58,20 @@ static struct router_result route_error(int status, const char *allow)
     return (struct router_result){.status = status, .allow = allow};
 }
 
-struct router_result router_match_request(const struct http_request *request)
+struct router_result router_match_request(const struct http_request *request,
+                                          const struct route *routes, size_t route_count)
 {
-    int get = slice_is(request->line.method, "GET");
-    int head = slice_is(request->line.method, "HEAD");
-    int post = slice_is(request->line.method, "POST");
-    if (!get && !head && !post)
+    int supported = slice_is(request->line.method, "GET") ||
+                    slice_is(request->line.method, "HEAD");
+    for (size_t i = 0; !supported && i < route_count; ++i)
+        supported = slice_is(request->line.method, routes[i].method);
+    if (!supported)
         return route_error(501, NULL);
     if (request->target.form != HTTP_TARGET_ORIGIN &&
         request->target.form != HTTP_TARGET_ABSOLUTE)
         return route_error(404, NULL);
 
-    struct router_result result = {.handler = ROUTER_STATIC, .status = 200};
+    struct router_result result = {.status = 200};
     char *path = result.path;
     if (request->target.path.length >= sizeof(result.path))
         return route_error(414, NULL);
@@ -97,11 +99,13 @@ struct router_result router_match_request(const struct http_request *request)
     struct http_slice decoded = {path, length};
     if (!valid_utf8((const unsigned char *)path, length))
         return route_error(400, NULL);
-    if (slice_is(decoded, "/echo"))
+    for (size_t i = 0; i < route_count; ++i)
     {
-        if (post)
-            return (struct router_result){.handler = ROUTER_ECHO, .status = 200};
-        return route_error(405, "POST");
+        if (!slice_is(decoded, routes[i].path))
+            continue;
+        if (!slice_is(request->line.method, routes[i].method))
+            return route_error(405, routes[i].method);
+        return (struct router_result){.handler = routes[i].handler, .status = 200};
     }
     for (size_t start = 1; start < length;)
     {
