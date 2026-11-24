@@ -26,12 +26,20 @@ static const char *public_content_type(const char *path)
 {
     const char *name = strrchr(path, '/');
     const char *ext = strrchr(name ? name + 1 : path, '.');
-    if (!ext) return NULL;
-    if (extension_is(ext, ".html")) return "text/html; charset=utf-8";
-    if (extension_is(ext, ".css")) return "text/css; charset=utf-8";
-    if (extension_is(ext, ".js")) return "text/javascript; charset=utf-8";
-    if (extension_is(ext, ".png")) return "image/png";
-    if (extension_is(ext, ".jpg") || extension_is(ext, ".jpeg")) return "image/jpeg";
+    if (!ext)
+        return NULL;
+    if (extension_is(ext, ".html"))
+        return "text/html; charset=utf-8";
+    if (extension_is(ext, ".css"))
+        return "text/css; charset=utf-8";
+    if (extension_is(ext, ".js"))
+        return "text/javascript; charset=utf-8";
+    if (extension_is(ext, ".png"))
+        return "image/png";
+    if (extension_is(ext, ".gif"))
+        return "image/gif";
+    if (extension_is(ext, ".jpg") || extension_is(ext, ".jpeg"))
+        return "image/jpeg";
     return NULL;
 }
 
@@ -39,9 +47,16 @@ static int static_error(int error)
 {
     switch (error)
     {
-    case ENOENT: case ENOTDIR: case ENAMETOOLONG:
+    case ENOENT:
+    case ENOTDIR:
+    case ENAMETOOLONG:
         return 404;
-    case EPERM: case EACCES: case ELOOP: case EXDEV: case ENXIO: case ENODEV:
+    case EPERM:
+    case EACCES:
+    case ELOOP:
+    case EXDEV:
+    case ENXIO:
+    case ENODEV:
         return 403;
     default:
         fputs("Static file lookup failed.\n", stderr);

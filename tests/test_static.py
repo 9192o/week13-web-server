@@ -35,6 +35,9 @@ def check_static(port: int, payload: bytes) -> None:
     assert (status, headers["Content-Length"], body) == (200, str(len(payload)), b"")
     assert request(port, "GET", "/assets/large.png")[2] == payload
 
+    status, headers, body = request(port, "GET", "/assets/sample.GIF")
+    assert (status, headers["Content-Type"], body) == (200, "image/gif", b"GIF89a")
+
     for path in ("/assets/alias.png", "/absolute.png", "/directory/large.png"):
         assert request(port, "GET", path)[2] == payload, path
     for path, expected in (
@@ -72,6 +75,7 @@ def main() -> None:
         (root / "empty").mkdir()
         (root / "assets/index.html").write_bytes(b"nested index")
         (root / "assets/large.png").write_bytes(payload)
+        (root / "assets/sample.GIF").write_bytes(b"GIF89a")
         (root / "한 file.CSS").write_bytes(payload)
         (root / "private.txt").write_bytes(b"not a public extension")
         (root / ".hidden.png").touch()

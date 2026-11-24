@@ -20,7 +20,8 @@
 static void print_usage(void)
 {
     fputs("Usage: ./webserver --port <1-65535> --root <directory>"
-          " [--max-connections <1-65535>]\n", stderr);
+          " [--max-connections <1-65535>]\n",
+          stderr);
 }
 
 static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd,

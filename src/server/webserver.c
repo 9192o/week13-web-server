@@ -23,8 +23,7 @@ static int create_listener(unsigned short port)
     }
     const int enable = 1;
     const struct sockaddr_in address = {
-        .sin_family = AF_INET, .sin_port = htons(port),
-        .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+        .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0 ||
         bind(fd, (const struct sockaddr *)&address, sizeof(address)) < 0 ||
         listen(fd, SOMAXCONN) < 0)

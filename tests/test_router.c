@@ -14,7 +14,7 @@
 #include <unistd.h>
 
 #define main app_main
-#include "../app.c"
+#include "../src/app/app.c"
 #undef main
 
 extern int __real_open(const char *pathname, int flags, ...);

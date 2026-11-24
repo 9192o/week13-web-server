@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <fcntl.h>
 
-#include "client_session.c"
+#include "../src/server/client_session.c"
 
 static void handle_client(int unused_fd, int root)
 {

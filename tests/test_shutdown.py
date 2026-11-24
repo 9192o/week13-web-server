@@ -7,19 +7,25 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Final
+
+
+SERVER_INCLUDE_FLAGS: Final = ("-Isrc/app", "-Isrc/http", "-Isrc/server", "-Isrc/static")
+SERVER_SOURCES: Final = (
+    "src/app/app.c", "src/server/webserver.c", "src/server/epoll_loop.c",
+    "src/server/client_session.c", "src/http/http.c", "src/app/router.c",
+    "src/static/static_file.c", "src/static/static_response.c",
+    "src/server/connection.c", "src/server/shutdown.c",
+)
 
 
 def build_server(src_dir, grace_seconds=2):
     exe = os.path.join(src_dir, "webserver-shutdown-test")
-    sources = [
-        "app.c", "webserver.c", "epoll_loop.c", "client_session.c", "http.c", "router.c",
-        "static_file.c", "static_response.c", "connection.c", "shutdown.c",
-    ]
     cmd = [
         "gcc", "-std=c17", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         f"-DSHUTDOWN_GRACE_SECONDS={grace_seconds}",
-        "-I.",
-    ] + sources + ["-o", exe]
+        *SERVER_INCLUDE_FLAGS, *SERVER_SOURCES, "-o", exe,
+    ]
     subprocess.run(cmd, cwd=src_dir, check=True)
     return exe
 
@@ -171,9 +177,7 @@ def test_validated_request_honors_existing_deadline(signum, label):
             "-DPHASE1_IDLE_MS=500",
             "-DPHASE1_TOTAL_MS=2000",
             "-DPHASE1_SEND_MS=2000",
-            "-I.",
-            "app.c", "webserver.c", "epoll_loop.c", "client_session.c", "http.c", "router.c",
-            "static_file.c", "static_response.c", "connection.c", "shutdown.c",
+            *SERVER_INCLUDE_FLAGS, *SERVER_SOURCES,
             "-o", test_exe,
         ]
         subprocess.run(cmd, cwd=src_dir, check=True)

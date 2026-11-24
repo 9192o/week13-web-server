@@ -2,8 +2,10 @@
 
 CC = gcc
 CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -Werror
-SOURCES = app.c webserver.c epoll_loop.c client_session.c http.c router.c static_file.c static_response.c connection.c shutdown.c
-HEADERS = app.h webserver.h epoll_loop.h client_session.h http.h router.h static_file.h static_response.h connection.h shutdown.h
+override CPPFLAGS += -Isrc/app -Isrc/http -Isrc/server -Isrc/static
+
+SOURCES = src/app/app.c src/server/webserver.c src/server/epoll_loop.c src/server/client_session.c src/http/http.c src/app/router.c src/static/static_file.c src/static/static_response.c src/server/connection.c src/server/shutdown.c
+HEADERS = src/app/app.h src/server/webserver.h src/server/epoll_loop.h src/server/client_session.h src/http/http.h src/app/router.h src/static/static_file.h src/static/static_response.h src/server/connection.h src/server/shutdown.h
 
 .PHONY: help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll test-keepalive
 
@@ -14,17 +16,17 @@ test-unit:
 	@set -eu; \
 		http_bin=$$(mktemp); body_bin=$$(mktemp); server_bin=$$(mktemp); router_bin=$$(mktemp); static_bin=$$(mktemp); conn_bin=$$(mktemp); \
 		trap 'rm -f "$$http_bin" "$$body_bin" "$$server_bin" "$$router_bin" "$$static_bin" "$$conn_bin"' EXIT HUP INT TERM; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_http.c http.c $(LDLIBS) -o "$$http_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_http.c src/http/http.c $(LDLIBS) -o "$$http_bin"; \
 		$(UNIT_RUNNER) "$$http_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c http.c $(LDLIBS) -o "$$body_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c src/http/http.c $(LDLIBS) -o "$$body_bin"; \
 		$(UNIT_RUNNER) "$$body_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c http.c connection.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c src/http/http.c src/server/connection.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
 		$(UNIT_RUNNER) "$$server_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c router.c http.c static_response.c static_file.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c src/app/router.c src/http/http.c src/static/static_response.c src/static/static_file.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
 		$(UNIT_RUNNER) "$$router_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_static_file.c static_file.c $(LDLIBS) -o "$$static_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_static_file.c src/static/static_file.c $(LDLIBS) -o "$$static_bin"; \
 		$(UNIT_RUNNER) "$$static_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -DCONNECTION_TESTABLE -I. $(LDFLAGS) tests/test_connection.c connection.c $(LDLIBS) -o "$$conn_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -DCONNECTION_TESTABLE -I. $(LDFLAGS) tests/test_connection.c src/server/connection.c $(LDLIBS) -o "$$conn_bin"; \
 		$(UNIT_RUNNER) "$$conn_bin"
 
 test-integration: webserver

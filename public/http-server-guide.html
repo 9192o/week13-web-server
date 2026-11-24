@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>C HTTP 서버 코드 읽기</title>
+    <style>
+      :root { color-scheme: light dark; --ink: light-dark(#152437, #e8edf3); --bg: light-dark(#f8f9fc, #101821); --panel: light-dark(#edf2f8, #1a2837); --line: light-dark(#ccd7e5, #36495d); --link: light-dark(#155475, #8ed6ff); }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--ink); font: 1rem/1.7 system-ui, sans-serif; overflow-wrap: anywhere; }
+      main { max-width: 54rem; margin: auto; padding: 2rem clamp(1rem, 4vw, 2.5rem) 4rem; }
+      header { padding-bottom: 1.5rem; border-bottom: 1px solid var(--line); }
+      h1, h2, h3 { line-height: 1.24; word-break: keep-all; }
+      h1 { margin: .4rem 0 .8rem; font-size: clamp(2rem, 6vw, 3.4rem); }
+      h2 { margin-top: 0; }
+      section { border-top: 1px solid var(--line); padding: 1.8rem 0 .6rem; }
+      nav ul { display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; padding-left: 0; list-style: none; }
+      a { color: var(--link); text-underline-offset: .19em; }
+      a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+      code { font: .92em ui-monospace, monospace; }
+      pre, .flow { background: var(--panel); padding: .8rem 1.1rem; border-radius: .5rem; }
+      pre { white-space: pre-wrap; }
+      .flow { padding-left: 2.6rem; }
+      li + li { margin-top: .35rem; }
+      nav li + li { margin-top: 0; }
+      dt { font-weight: 700; }
+      dd { margin: .1rem 0 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p>C17 · Linux Docker · Phase 2</p>
+        <h1>HTTP 서버 코드 읽기</h1>
+        <p>브라우저가 보낸 바이트가 어떻게 요청이 되고, 그 요청이 어떻게 파일이나 에코 응답을 만드는지 따라갑니다. 코드를 열 때는 아래의 파일명과 함수명을 검색하세요.</p>
+      </header>
+      <nav aria-label="목차">
+        <ul>
+          <li><a href="#socket">01 소켓과 이벤트</a></li>
+          <li><a href="#parse">02 HTTP 파싱</a></li>
+          <li><a href="#routes">03 요청별 분기</a></li>
+          <li><a href="#finish">04 송신과 종료</a></li>
+          <li><a href="#practice">05 실습과 제출 범위</a></li>
+        </ul>
+      </nav>
+      <section id="socket">
+        <h2>01. 연결이 들어오면 누가 깨우나?</h2>
+        <ol class="flow">
+          <li><code>src/app/app.c → main()</code>: 포트와 루트 인자를 검사하고 정적 루트를 FD(파일 디스크립터)로 연다.</li>
+          <li><code>src/server/webserver.c → webserver_run() → create_listener()</code>: <code>socket → bind → listen</code>. <code>SO_REUSEADDR</code>는 재시작 때 주소 재사용에 도움을 주지만, 이미 열린 리스너를 덮어쓰지는 않는다.</li>
+          <li><code>src/server/epoll_loop.c → epoll_loop_run()</code>: 리스너와 종료 신호 FD를 등록하고 <code>epoll_wait()</code>로 기다린다. 리스너가 준비되면 <code>accept_ready_clients()</code>가 <code>accept4()</code>로 논블로킹 소켓을 얻고 세션을 등록한다.</li>
+          <li><code>dispatch_events() → client_session_advance()</code>: 읽거나 쓸 수 있는 연결만 진행한다. 기본 256개를 관리하면 리스너 감시를 끄고, 자리가 생기면 다시 켠다. 대기는 커널의 유한한 큐에 맡긴다.</li>
+        </ol>
+        <p>TCP의 3-way handshake(SYN → SYN/ACK → ACK)는 커널이 수행한다. <code>accept()</code>는 연결을 꺼내는 함수이지 HTTP 요청을 받는 함수가 아니다. 블로킹 방식에서는 한 소켓을 기다리는 동안 다음 연결의 처리가 밀릴 수 있다. 여기서는 소켓을 논블로킹으로 두고 <code>EAGAIN</code>이면 진행 위치를 저장해 루프로 돌아간다.</p>
+        <p>LT는 준비 상태가 남으면 다시 알려주므로 한 번에 처리하는 양을 제한할 수 있다. ET는 준비 상태 변화에 알려주는 방식이며 <code>examples/epoll_modes.c</code>에서만 실험한다. 프로세스별/스레드 풀 방식과 달리 이 서버는 여러 연결을 한 스레드에서 번갈아 처리한다. C10K 관점에서는 연결당 메모리, FD 한도, 가장 가까운 마감 계산에 드는 비용과 동기 파일 I/O도 살펴봐야 한다. 현재 부하 결과가 1만 연결 지원을 보장하지는 않는다.</p>
+      </section>
+      <section id="parse">
+        <h2>02. TCP 바이트에서 HTTP 경계 찾기</h2>
+        <p>TCP는 바이트 스트림이다. 한 번의 <code>recv()</code>에 헤더의 일부만 오거나, 본문 뒤에 다음 요청까지 올 수 있다. 아래 예에서는 헤더 뒤 세 바이트(<code>abc</code>)를 본문으로 읽는다.</p>
+        <pre><code>POST /echo HTTP/1.1\r\n
+Host: localhost\r\n
+Content-Length: 3\r\n
+\r\n
+abc</code></pre>
+        <ol>
+          <li><code>src/server/client_session.c → cs_read_head() / cs_process_head()</code>: 누적한 바이트를 <code>src/http/http.c</code>의 <code>http_parse_request_line()</code>, <code>http_parse_headers()</code>에 준다. 요청 라인은 메서드·대상·버전, 그 뒤 빈 줄까지는 헤더다.</li>
+          <li><code>http_validate_request_head()</code>: 지원 버전, 대상 구문, <code>Host</code> 등을 확인한다. 이어 <code>app_match_request()</code>로 경로를 분류하고 <code>http_body_init()</code>로 프레이밍을 검사한다. 경로를 골랐다고 즉시 핸들러를 실행하지는 않는다.</li>
+          <li><code>cs_feed_body_chunk()</code>: 새로 받은 바이트를 본문 파서에 준다. <code>Content-Length</code>면 정해진 바이트 수, <code>Transfer-Encoding: chunked</code>면 청크 크기와 마지막 청크·트레일러 경계까지 처리한다. 두 헤더의 충돌은 거부한다. 추가 바이트를 받아야 하는 유효한 <code>Expect: 100-continue</code>만 중간 응답을 보낸다.</li>
+        </ol>
+        <p>요청 라인 8 KiB, 요청 라인 포함 전체 헤더 32 KiB, 디코딩 본문 1 MiB는 이 프로젝트의 제한이다. 문법 오류는 보통 <code>400</code>, 초과는 각각 <code>414</code>, <code>431</code>, <code>413</code>으로 구분한다.</p>
+      </section>
+      <section id="routes">
+        <h2>03. 라우터가 고른 요청의 세 갈래</h2>
+        <h3>정적 GET·HEAD</h3>
+        <p><code>src/app/router.c → router_match_request()</code>가 경로를 한 번 디코딩하고 정적 분기를 고른다. <code>app_handle_request() → static_response() → static_file_open()</code>이 지정한 루트 안에서 파일을 열고 <code>index.html</code>, 일반 파일 여부, 공개 확장자를 확인한다. <code>/about</code>은 공개 가능한 인덱스가 있으면 <code>308 Location: /about/</code>, <code>/about/</code>은 그 인덱스를 제공한다. GET은 파일 바이트를 쓰고 HEAD는 표현의 <code>Content-Length</code>만 유지한 채 본문을 생략한다.</p>
+        <p><code>src/static/static_response.c → public_content_type()</code>은 경로의 마지막 확장자를 대소문자 구분 없이 비교한다. 요청 쪽 이름과 실제 해석된 경로가 둘 다 공개 목록에 있어야 하며, 응답 타입은 실제 해석된 경로 기준이다. 현재 <code>.html</code>, <code>.css</code>, <code>.js</code>, <code>.png</code>, <code>.gif</code>, <code>.jpg/.jpeg</code>를 허용한다. GIF 애니메이션을 재생하는 건 브라우저다. 서버는 <code>image/gif</code>를 붙이고 같은 파일 송신 경로로 바이트를 보낸다.</p>
+        <h3>동적 POST /echo</h3>
+        <p><code>src/app/app.c</code>의 라우트 표에서 <code>handle_echo()</code>를 고른다. <code>cs_finalize_body()</code>가 본문 완료를 확인한 뒤 앱을 호출한다. 입력을 문자열이나 JSON으로 바꾸지 않고 받은 본문을 <code>application/octet-stream</code>으로 돌려준다. <code>chunked</code> 요청이라면 청크 메타데이터가 아니라 디코딩된 본문이다. 본문 버퍼는 응답 송신이 끝날 때까지 살아 있어야 한다.</p>
+        <h3>오류와 이른 응답</h3>
+        <p>등록 경로의 메서드 불일치(예: <code>GET /echo</code>)는 <code>405</code>와 <code>Allow</code>, 미구현 메서드는 <code>501</code>이다. 없는 파일은 <code>404</code>, 존재하지만 공개할 수 없는 파일은 <code>403</code>, 예상하지 못한 파일 열기 오류는 <code>500</code>이 될 수 있다. 정적/라우터가 헤더만으로 오류나 리다이렉트를 알면 본문을 기다리지 않고 응답을 준비한다. 정상 정적 응답은 유효하게 프레이밍된 요청 본문이 있으면 소비한 뒤 내보낸다.</p>
+      </section>
+      <section id="finish">
+        <h2>04. 응답을 끝내고 연결을 계속 쓸까?</h2>
+        <dl>
+          <dt>공통 응답 / 부분 송신</dt>
+          <dd><code>queue_final_response() → cs_build_header() → cs_write_response()</code>. 상태 라인과 <code>Content-Type</code>, <code>Content-Length</code>, <code>Connection</code> 등을 만들고 헤더와 본문을 순서대로 전송한다. 일부만 전송되면 다음 이벤트에서 이어 쓴다. <code>MSG_NOSIGNAL</code>은 소켓 송신 실패가 프로세스 전체의 SIGPIPE 종료로 번지는 것을 막는다.</dd>
+          <dt>keep-alive / 파이프라이닝</dt>
+          <dd>요청 경계를 소비했고 닫을 이유가 없다면 같은 TCP 연결을 다시 쓴다. <code>404</code>만으로 닫지는 않지만, 읽지 않은 본문이 있으면 재사용하지 않는다. 이미 받은 다음 요청은 보존했다가 이전 응답 송신이 끝나면 처리한다. 아무 요청도 없으면 5초 후 조용히 닫고, 100번째 요청의 최종 응답 뒤에도 닫는다. 이 수치는 서버 정책이지 HTTP 표준값이 아니다.</dd>
+          <dt>마감과 자원 회수</dt>
+          <dd>헤더·본문 무진행·전체 수신·송신에는 서로 다른 마감이 있다. <code>update_deadlines()</code>가 다음 만료를 이벤트 루프 대기에 반영한다. 세션이 끝나면 파일과 소켓 FD, 요청 버퍼를 회수한다. 접근 로그는 요청당 JSONL 한 줄이며 유휴 종료 자체에는 로그를 추가하지 않는다.</dd>
+          <dt>정상 종료</dt>
+          <dd><code>src/server/shutdown.c → shutdown_init()</code>은 SIGINT/SIGTERM을 <code>signalfd</code>로 이벤트 루프에서 읽게 한다. <code>begin_shutdown()</code>은 리스너를 닫고 검증이 끝나지 않은 세션을 무응답으로 정리한다. 검증된 요청은 기존 마감과 종료 후 30초 중 더 이른 시점까지 진행하되 다음 요청은 시작하지 않는다.</dd>
+        </dl>
+      </section>
+      <section id="practice">
+        <h2>05. 관찰할 것과 아직 구현하지 않은 것</h2>
+        <p>개발 컨테이너에서 <code>make</code>와 <code>./webserver --port 8080 --root public</code>을 실행한 뒤 다른 터미널에서 아래를 비교한다. 브라우저 Network 탭에서는 타입·상태·전송 크기를 확인할 수 있다.</p>
+        <pre><code>curl -i http://127.0.0.1:8080/about
+curl -I http://127.0.0.1:8080/assets/aris_kei.gif
+printf hello | curl -i --data-binary @- http://127.0.0.1:8080/echo</code></pre>
+        <p><strong>과제 제출은 아직 아니다.</strong> <code>/echo</code>는 현재 서버 안에서 실행되는 동적 로직이고, 다른 서버로 요청을 전달하지는 않는다. Forward Proxy는 클라이언트를 대신해 원 서버에 요청하고, Reverse Proxy는 서비스 입구에서 설정에 따라 백엔드에 요청을 전달한다. 과제는 둘 중 하나를 필수로 요구한다. 프록시 타임아웃·실패 검증은 Phase 3이며, 라운드 로빈은 Reverse Proxy의 확장 항목이다.</p>
+        <p>참고: RFC 9110 §§8·9(표현과 메서드), RFC 9112 §§2–7·9(메시지와 연결), IANA Media Types, Linux <code>epoll(7)</code>. 저장소에서 <code>docs/PHASE_2_TESTING.md</code>를 열면 자동 검증과 성능 결과를 볼 수 있다.</p>
+        <p><a href="index.html">라우팅 실습 홈</a></p>
+      </section>
+    </main>
+  </body>
+</html>
