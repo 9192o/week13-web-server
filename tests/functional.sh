@@ -36,6 +36,7 @@ ADDER=$REPO/www/cgi-bin/adder
 checks=0
 failures=0
 SRV=
+SRV3=      # P2-S3 용 두 번째 서버 (-w 2 -q 2)
 
 # ---------------------------------------------------------------- 판정 도우미
 
@@ -98,6 +99,10 @@ cleanup() {
     if [ -n "$SRV" ] && kill -0 "$SRV" 2>/dev/null; then
         kill -KILL "$SRV" 2>/dev/null
         wait "$SRV" 2>/dev/null
+    fi
+    if [ -n "$SRV3" ] && kill -0 "$SRV3" 2>/dev/null; then
+        kill -KILL "$SRV3" 2>/dev/null
+        wait "$SRV3" 2>/dev/null
     fi
     rm -rf "$WORK"
 }
@@ -368,6 +373,71 @@ cat <&3 2>/dev/null | wc -c' > "$WORK/p2s2.a" &
 head -1 <&3' | tr -d '\r')
     expect "slowloris (1바이트씩 계속) → 408"    "HTTP/1.1 408 Request Timeout" "$S"
     expect_ms "slowloris 408 까지 약 ${HEADER_MS}ms" "$HEADER_MS" $(( $(now_ms) - T0 ))
+
+    # P2-S3: 워커 2 / 큐 2 서버를 따로 띄워, 워커와 큐가 모두 찼을 때 503
+    P3=$((PORT + 1))
+    U3=http://127.0.0.1:$P3
+    LOG3=$WORK/server3.log
+    (
+        for fd in $(ls "/proc/$BASHPID/fd"); do
+            [ "$fd" -gt 2 ] && eval "exec $fd>&-"
+        done
+        exec "$BIN" -p "$P3" -r "$R" -w 2 -q 2
+    ) 2>"$LOG3" &
+    SRV3=$!
+    for _ in $(seq 50); do
+        [ "$(code "$U3/index.html")" = 200 ] && break
+        sleep 0.1
+    done
+    S3FD0=$(ls "/proc/$SRV3/fd" 2>/dev/null | wc -l | tr -d ' ')
+
+    # hold 파일 : 연결만 하고 아무것도 안 보냄, 끊길 때까지 받은 바이트 수를 파일에
+    hold() {
+        timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$P3"'
+cat <&3 2>/dev/null | wc -c' > "$1"
+    }
+    T0=$(now_ms)
+    hold "$WORK/a1" & A1=$!
+    hold "$WORK/a2" & A2=$!
+    sleep_ms $(( HEADER_MS / 5 ))          # 워커 2개가 A1, A2 를 붙잡을 시간 (A 가 끊기기 전에)
+    curl -s -o "$WORK/c1.body" -w '%{http_code}' "$U3/index.html" > "$WORK/c1" & C1=$!
+    curl -s -o "$WORK/c2.body" -w '%{http_code}' "$U3/index.html" > "$WORK/c2" & C2=$!
+    sleep_ms $(( HEADER_MS / 5 ))          # C1, C2 가 큐 2칸을 채울 시간
+    T1=$(now_ms)
+    D=$(code "$U3/index.html")
+    ED=$(( $(now_ms) - T1 ))
+    wait "$C1" "$C2"
+    EC=$(( $(now_ms) - T0 ))
+    wait "$A1" "$A2"
+    expect "P2-S3 D → 503"                        503 "$D"
+    expect_between "P2-S3 D 응답 1초 안 (ms)"    0 1000 "$ED"
+    if grep -qF "(queue full)" "$LOG3"; then
+        ok "P2-S3 로그 (queue full)"
+    else
+        fail "P2-S3 로그 (queue full)" "로그에 없음"
+    fi
+    expect "P2-S3 C1 → 200"                       200 "$(cat "$WORK/c1")"
+    expect "P2-S3 C2 → 200"                       200 "$(cat "$WORK/c2")"
+    if cmp -s "$WORK/c1.body" "$R/index.html" && cmp -s "$WORK/c2.body" "$R/index.html"; then
+        ok "P2-S3 C1, C2 본문 = index.html"
+    else
+        fail "P2-S3 C1, C2 본문 = index.html" "내용이 다름"
+    fi
+    expect_ms "P2-S3 C 는 A 가 끊긴 뒤 (약 ${HEADER_MS}ms)" "$HEADER_MS" "$EC"
+    expect "P2-S3 A1 받은 바이트 0 (무응답 close)" 0 "$(tr -d ' ' < "$WORK/a1")"
+    expect "P2-S3 A2 받은 바이트 0 (무응답 close)" 0 "$(tr -d ' ' < "$WORK/a2")"
+
+    for _ in $(seq 20); do
+        [ "$(ls "/proc/$SRV3/fd" 2>/dev/null | wc -l | tr -d ' ')" = "$S3FD0" ] && break
+        sleep 0.1
+    done
+    expect "P2-S3 서버 fd 수 그대로"              "$S3FD0" "$(ls "/proc/$SRV3/fd" 2>/dev/null | wc -l | tr -d ' ')"
+    kill -TERM "$SRV3"
+    wait "$SRV3"
+    RC=$?
+    SRV3=
+    expect "P2-S3 서버 SIGTERM → exit 0"          0 "$RC"
+    expect "P2-S3 서버 sanitizer 보고 없음"       0 "$(grep -cE 'Sanitizer|runtime error' "$LOG3")"
 fi
 
 # ---------------------------------------------------------------- fd 누수
