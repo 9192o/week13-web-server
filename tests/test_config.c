@@ -13,6 +13,30 @@ static void test_defaults(void)
     CHECK_EQ_INT(cfg.port, 8080);
     CHECK(cfg.root[0] == '/');                      /* 절대경로로 정규화 */
     CHECK(strstr(cfg.root, "/www") != NULL);
+    CHECK_EQ_INT(cfg.workers, 8);
+    CHECK_EQ_INT(cfg.queue_cap, 64);
+}
+
+static void test_workers_and_queue(void)
+{
+    char *ok[]    = {"server", "-w", "2", "-q", "2", NULL};
+    char *maxv[]  = {"server", "-w", "256", "-q", "4096", NULL};
+    char *w0[]    = {"server", "-w", "0", NULL};
+    char *wbig[]  = {"server", "-w", "257", NULL};
+    char *q0[]    = {"server", "-q", "0", NULL};
+    char *qbig[]  = {"server", "-q", "4097", NULL};
+    char *wtext[] = {"server", "-w", "4x", NULL};
+    CHECK_EQ_INT(config_parse(ARGC(ok), ok, &cfg, err, sizeof err), 0);
+    CHECK_EQ_INT(cfg.workers, 2);
+    CHECK_EQ_INT(cfg.queue_cap, 2);
+    CHECK_EQ_INT(config_parse(ARGC(maxv), maxv, &cfg, err, sizeof err), 0);
+    CHECK_EQ_INT(cfg.workers, 256);
+    CHECK_EQ_INT(cfg.queue_cap, 4096);
+    CHECK_EQ_INT(config_parse(ARGC(w0), w0, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(wbig), wbig, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(q0), q0, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(qbig), qbig, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(wtext), wtext, &cfg, err, sizeof err), -1);
 }
 
 static void test_port_and_root(void)
@@ -76,6 +100,7 @@ int main(void)
 {
     RUN_TEST(test_defaults);
     RUN_TEST(test_port_and_root);
+    RUN_TEST(test_workers_and_queue);
     RUN_TEST(test_port_bounds);
     RUN_TEST(test_port_not_number);
     RUN_TEST(test_missing_value_and_unknown);

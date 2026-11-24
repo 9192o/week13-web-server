@@ -49,7 +49,10 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
 
     fprintf(stderr, "listening on 0.0.0.0:%d, root=%s\n", cfg.port, cfg.root);
-    server_run(listen_fd, cfg.root);
+    if (server_run(listen_fd, cfg.root, cfg.workers, cfg.queue_cap) < 0) {
+        close(listen_fd);
+        return EXIT_FAILURE;
+    }
     fprintf(stderr, "shutting down\n");
     close(listen_fd);
     return EXIT_SUCCESS;

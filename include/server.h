@@ -66,11 +66,18 @@ int server_listen(int port);
  */
 extern volatile sig_atomic_t server_stop;
 
+/* 큐가 가득 차서 accept 스레드가 기다릴 때, 종료 플래그를 다시 확인하는 간격 */
+#define QUEUE_PUSH_RETRY_MS 200
+
 /*
- * accept 루프. 연결을 하나씩 순차 처리한다 (Phase 1).
- * server_stop 이 켜지면 반환 (처리 중인 요청은 끝까지 처리). listen_fd 는 닫지 않는다.
+ * accept 루프 + 워커 스레드 풀 (Phase 2).
+ * accept 한 연결을 큐(queue_cap 칸)에 넣고, 워커 workers 개가 꺼내 server_handle 한다.
+ * 큐가 가득 차면 자리가 날 때까지 기다린다.
+ * server_stop 이 켜지면: accept 를 멈추고, 워커는 들고 있던 연결만 끝내고 종료(join),
+ * 큐에 남아 있던 연결은 응답 없이 닫는다. listen_fd 는 닫지 않는다.
+ * 반환: 0 정상 종료, -1 큐/워커를 만들지 못함.
  */
-void server_run(int listen_fd, const char *root);
+int server_run(int listen_fd, const char *root, int workers, int queue_cap);
 
 /*
  * 연결 하나 처리: 헤더를 읽고 파싱한 뒤 응답하고 닫는다.

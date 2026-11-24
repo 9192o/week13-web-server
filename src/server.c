@@ -3,6 +3,8 @@
 #include "cgi.h"
 #include "http_parser.h"
 #include "http_response.h"
+#include "pool.h"
+#include "queue.h"
 #include "static.h"
 #include "url.h"
 
@@ -619,14 +621,35 @@ void server_handle(int conn_fd, const char *peer, const char *root)
 
 volatile sig_atomic_t server_stop = 0;
 
-void server_run(int listen_fd, const char *root)
+/* 워커 스레드에서 연결 하나 처리 */
+static void handle_item(const struct conn_item *item, void *root)
 {
-    /* 처리 중에 신호가 와도 그 요청은 끝까지 처리하고, 다음 accept 전에 확인 */
+    server_handle(item->fd, item->peer, root);
+}
+
+int server_run(int listen_fd, const char *root, int workers, int queue_cap)
+{
+    struct conn_queue q;
+    struct worker_pool pool;
+    int dropped;
+
+    if (queue_init(&q, queue_cap) < 0) {
+        fprintf(stderr, "queue_init(%d): failed\n", queue_cap);
+        return -1;
+    }
+    if (pool_start(&pool, workers, &q, handle_item, (void *)root) < 0) {
+        queue_destroy(&q);
+        return -1;
+    }
+    fprintf(stderr, "workers=%d queue=%d\n", workers, queue_cap);
+
+    /* 종료 신호는 이 스레드만 받는다 (워커는 막아 둠): accept 가 EINTR 로 깨어남 */
     while (!server_stop) {
         struct sockaddr_in peer;
         socklen_t peer_len = sizeof peer;
         char ip[INET_ADDRSTRLEN];
-        char peer_str[INET_ADDRSTRLEN + 8];
+        struct conn_item item;
+        enum queue_result qr;
         int conn_fd;
 
         conn_fd = accept(listen_fd, (struct sockaddr *)&peer, &peer_len);
@@ -642,8 +665,21 @@ void server_run(int listen_fd, const char *root)
 
         if (inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof ip) == NULL)
             strcpy(ip, "?");
-        snprintf(peer_str, sizeof peer_str, "%s:%u", ip, ntohs(peer.sin_port));
+        item.fd = conn_fd;
+        snprintf(item.peer, sizeof item.peer, "%s:%u", ip, ntohs(peer.sin_port));
 
-        server_handle(conn_fd, peer_str, root);
+        /* 가득 차 있으면 자리가 날 때까지. 기다리는 동안에도 종료 신호를 확인 */
+        do {
+            qr = queue_push(&q, &item, QUEUE_PUSH_RETRY_MS);
+        } while (qr == QUEUE_TIMEOUT && !server_stop);
+        if (qr != QUEUE_OK)
+            close(conn_fd);        /* 종료 중: 넣지 못한 연결은 응답 없이 닫음 */
     }
+
+    pool_stop(&pool);              /* 큐를 닫고, 처리 중인 연결이 끝나길 기다림 */
+    dropped = queue_drain(&q);
+    if (dropped > 0)
+        fprintf(stderr, "closed %d queued connection(s) without response\n", dropped);
+    queue_destroy(&q);
+    return 0;
 }
