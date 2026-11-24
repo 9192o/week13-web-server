@@ -1,9 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "client_session.h"
-#include "app.h"
 #include "connection.h"
 #include "http.h"
+#include "session_app.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -34,6 +34,7 @@ enum cs_state {
     CS_IDLE,      /* successful previous request, waiting for a new one */
     CS_READ_HEAD, /* accumulating request line + headers in head_buf */
     CS_READ_BODY, /* decoding request body */
+    CS_STREAM,    /* driving an application response stream */
     CS_WRITING,   /* sending final response head/body */
     CS_CLOSED     /* fd closed, awaiting destroy */
 };
@@ -47,7 +48,7 @@ enum cs_status {
 
 struct client_session {
     int fd;
-    int root_fd;
+    const struct session_app *app;
     int log_fd;
     enum cs_state state;
     int logged;
@@ -85,7 +86,7 @@ struct client_session {
     int body_initialized;
 
     struct http_request request;
-    struct router_result route;
+    struct session_stream *stream;
     char location[HTTP_REQUEST_LINE_MAX + 2];
 
     char method_log[HTTP_REQUEST_LINE_MAX];
@@ -303,6 +304,37 @@ static void cs_queue_error_response(struct client_session *c, int status)
     queue_final_response(c, &error_response);
 }
 
+static bool cs_advance_stream(struct client_session *c, bool upstream_readable,
+                              bool upstream_writable, bool downstream_writable)
+{
+    const struct session_stream_ops *ops = c->app->stream_ops;
+    size_t sent = 0;
+    int result = ops->pump(c->stream, upstream_readable, upstream_writable,
+                           c->fd, downstream_writable, &sent);
+    c->access.bytes_sent += sent;
+    if (ops->started(c->stream))
+        c->access.status = ops->status(c->stream);
+    if (!result)
+        return true;
+    bool started = ops->started(c->stream);
+    ops->destroy(c->stream);
+    c->stream = NULL;
+    if (result >= 400 && !started)
+    {
+        cs_queue_error_response(c, result);
+        return c->state != CS_CLOSED;
+    }
+    if (result == 1)
+    {
+        size_t discarded;
+        c->access.complete = 1;
+        shutdown(c->fd, SHUT_WR);
+        connection_drain(c->fd, HTTP_REQUEST_HEAD_MAX, &discarded);
+    }
+    cs_close_client(c);
+    return false;
+}
+
 static void cs_handle_timeout(struct client_session *c)
 {
     if (c->have_shutdown_deadline)
@@ -322,6 +354,17 @@ static void cs_handle_timeout(struct client_session *c)
     case CS_WRITING:
         cs_close_client(c);
         break;
+    case CS_STREAM:
+    {
+        bool started = c->app->stream_ops->started(c->stream);
+        c->app->stream_ops->destroy(c->stream);
+        c->stream = NULL;
+        if (started)
+            cs_close_client(c);
+        else
+            cs_queue_error_response(c, 504);
+        break;
+    }
     default:
         break;
     }
@@ -452,11 +495,19 @@ static enum cs_status cs_write_response(struct client_session *c)
 static void cs_finalize_body(struct client_session *c)
 {
     c->request.body = (struct http_slice){c->body_parser.data, c->body_parser.length};
-    if (c->route.handler)
+    if (!c->response_queued)
     {
-        struct http_response app_response =
-            app_handle_request(c->root_fd, &c->request, &c->route, c->location);
-        queue_final_response(c, &app_response);
+        struct http_response response = {.file_fd = -1};
+        c->stream = c->app->finish(c->app->config, &c->request, c->head,
+                                   c->location, &response);
+        if (!c->stream)
+        {
+            queue_final_response(c, &response);
+            return;
+        }
+        if (c->have_shutdown_deadline)
+            c->app->stream_ops->cap_deadline(c->stream, &c->shutdown_deadline);
+        c->state = CS_STREAM;
     }
     else
     {
@@ -642,8 +693,6 @@ static enum cs_status cs_process_head(struct client_session *c)
         .headers = c->headers.headers,
         .target = c->target,
     };
-    c->route = app_match_request(&c->request);
-
     err = http_body_init(&c->body_parser, &c->headers.headers);
     c->body_initialized = 1;
     if (err)
@@ -653,7 +702,8 @@ static enum cs_status cs_process_head(struct client_session *c)
     }
     c->validated = 1;
     ++c->request_count;
-    c->wants_close = http_connection_wants_close(&c->headers.headers);
+    c->wants_close = c->app->close_after_response ||
+                     http_connection_wants_close(&c->headers.headers);
 
     if (connection_deadline_from_now(PHASE1_IDLE_MS, &c->total_deadline,
                                      &c->body_deadline) < 0)
@@ -665,10 +715,9 @@ static enum cs_status cs_process_head(struct client_session *c)
     c->stage_deadline = c->body_deadline;
     c->body_feed_offset = c->line.consumed + c->headers.consumed;
 
-    if (!c->route.handler)
+    struct http_response app_response = {.file_fd = -1};
+    if (c->app->prepare(c->app->config, &c->request, c->location, &app_response))
     {
-        struct http_response app_response =
-            app_handle_request(c->root_fd, &c->request, &c->route, c->location);
         if (app_response.status != 200)
         {
             /* An early route error may reuse only a request known to have no body. */
@@ -747,14 +796,15 @@ static enum cs_status cs_read_head(struct client_session *c, bool readable)
     return CS_STATUS_OK;
 }
 
-struct client_session *client_session_create(int fd, int root_fd, int log_fd)
+struct client_session *client_session_create(int fd, int log_fd,
+                                             const struct session_app *app)
 {
     struct client_session *c = calloc(1, sizeof(*c));
     if (c == NULL)
         return NULL;
 
     c->fd = fd;
-    c->root_fd = root_fd;
+    c->app = app;
     c->log_fd = log_fd;
     c->state = CS_READ_HEAD;
     c->access.status = -1;
@@ -788,6 +838,8 @@ void client_session_destroy(struct client_session *client)
         return;
 
     cs_release_response(client);
+    if (client->stream)
+        client->app->stream_ops->destroy(client->stream);
     if (client->body_initialized)
         http_body_destroy(&client->body_parser);
     cs_close_client(client);
@@ -807,6 +859,8 @@ short client_session_interest(const struct client_session *client)
         return client->need_continue ? POLLOUT : POLLIN;
     case CS_WRITING:
         return POLLOUT;
+    case CS_STREAM:
+        return client->app->stream_ops->has_output(client->stream) ? POLLOUT : 0;
     default:
         return 0;
     }
@@ -816,6 +870,8 @@ int64_t client_session_remaining_ms(const struct client_session *client)
 {
     if (client->state == CS_CLOSED)
         return -1;
+    if (client->state == CS_STREAM)
+        return client->app->stream_ops->remaining_ms(client->stream);
     return (int64_t)connection_deadline_remaining_ms(&client->stage_deadline);
 }
 
@@ -841,6 +897,8 @@ bool client_session_begin_shutdown(struct client_session *client,
     cs_cap_at_shutdown(client, &client->body_deadline);
     cs_cap_at_shutdown(client, &client->send_deadline);
     cs_cap_at_shutdown(client, &client->stage_deadline);
+    if (client->stream)
+        client->app->stream_ops->cap_deadline(client->stream, shutdown_deadline);
 
     return true;
 }
@@ -861,7 +919,7 @@ bool client_session_advance(struct client_session *client, bool readable,
         if (client->state == CS_CLOSED)
             return false;
 
-        if (connection_deadline_remaining_ms(&client->stage_deadline) == 0)
+        if (client_session_remaining_ms(client) == 0)
         {
             cs_handle_timeout(client);
             continue;
@@ -869,6 +927,8 @@ bool client_session_advance(struct client_session *client, bool readable,
 
         switch (client->state)
         {
+        case CS_STREAM:
+            return cs_advance_stream(client, false, false, writable);
         case CS_IDLE:
         case CS_READ_HEAD:
         {
@@ -953,4 +1013,24 @@ bool client_session_advance(struct client_session *client, bool readable,
     }
 
     return true;
+}
+
+int client_session_upstream_fd(const struct client_session *client)
+{
+    return client->stream ? client->app->stream_ops->fd(client->stream) : -1;
+}
+
+short client_session_upstream_interest(const struct client_session *client)
+{
+    return client->stream ? client->app->stream_ops->interest(client->stream) : 0;
+}
+
+bool client_session_advance_upstream(struct client_session *client, bool readable,
+                                     bool writable)
+{
+    if (client->state != CS_STREAM)
+        return true;
+    if (client_session_remaining_ms(client) == 0)
+        return client_session_advance(client, false, false);
+    return cs_advance_stream(client, readable, writable, false);
 }

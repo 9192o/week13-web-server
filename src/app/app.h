@@ -3,6 +3,9 @@
 
 #include "http.h"
 #include "router.h"
+#include "session_app.h"
+
+struct session_app web_app(const int *root_fd);
 
 struct router_result app_match_request(const struct http_request *request);
 

@@ -19,12 +19,23 @@
 #define EVENT_BATCH 64
 #define ACCEPT_BATCH 32
 
+struct loop_client;
+struct loop_endpoint
+{
+    struct loop_client *client;
+    bool upstream;
+};
+
 struct loop_client
 {
     struct loop_client *next;
     struct client_session *session;
     int fd;
     uint32_t interest;
+    int upstream_fd;
+    short upstream_interest;
+    struct loop_endpoint downstream_event;
+    struct loop_endpoint upstream_event;
     bool dead;
 };
 
@@ -33,10 +44,10 @@ struct event_loop
     int fd;
     int listener_fd;
     int signal_fd;
-    int root_fd;
     int log_fd;
     size_t limit;
     size_t active;
+    const struct session_app *app;
     struct loop_client *clients;
     bool listening;
     bool stopping;
@@ -56,22 +67,47 @@ static int set_listener_interest(struct event_loop *loop)
     return 0;
 }
 
+static int update_upstream_interest(struct event_loop *loop, struct loop_client *client)
+{
+    const int fd = client_session_upstream_fd(client->session);
+    const short want = client_session_upstream_interest(client->session);
+    if (fd != client->upstream_fd)
+    {
+        /* The session closes an old upstream before replacing it. */
+        client->upstream_fd = fd;
+        client->upstream_interest = 0;
+    }
+    if (want == client->upstream_interest)
+        return 0;
+    int op = want == 0 ? EPOLL_CTL_DEL :
+             client->upstream_interest == 0 ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
+    struct epoll_event event = {
+        .events = (want & POLLIN ? EPOLLIN : 0) | (want & POLLOUT ? EPOLLOUT : 0),
+        .data.ptr = &client->upstream_event,
+    };
+    if (epoll_ctl(loop->fd, op, fd, want ? &event : NULL) < 0)
+        return -1;
+    client->upstream_interest = want;
+    return 0;
+}
+
 static int update_client_interest(struct event_loop *loop, struct loop_client *client)
 {
     short want = client_session_interest(client->session);
-    uint32_t interest = 0;
+    uint32_t interest = EPOLLERR;
     if (want & POLLIN)
         interest |= EPOLLIN | EPOLLRDHUP;
     if (want & POLLOUT)
         interest |= EPOLLOUT;
-    if (interest == client->interest)
-        return 0;
-    struct epoll_event event = {.events = interest, .data.ptr = client};
-    if (epoll_ctl(loop->fd, client->interest ? EPOLL_CTL_MOD : EPOLL_CTL_ADD,
-                  client->fd, &event) < 0)
-        return -1;
-    client->interest = interest;
-    return 0;
+    if (interest != client->interest)
+    {
+        struct epoll_event event = {.events = interest, .data.ptr = &client->downstream_event};
+        if (epoll_ctl(loop->fd, client->interest ? EPOLL_CTL_MOD : EPOLL_CTL_ADD,
+                      client->fd, &event) < 0)
+            return -1;
+        client->interest = interest;
+    }
+    return update_upstream_interest(loop, client);
 }
 
 static int accept_ready_clients(struct event_loop *loop)
@@ -93,7 +129,7 @@ static int accept_ready_clients(struct event_loop *loop)
             close(fd);
             return -1;
         }
-        client->session = client_session_create(fd, loop->root_fd, loop->log_fd);
+        client->session = client_session_create(fd, loop->log_fd, loop->app);
         if (client->session == NULL)
         {
             free(client);
@@ -101,6 +137,9 @@ static int accept_ready_clients(struct event_loop *loop)
             return -1;
         }
         client->fd = fd;
+        client->upstream_fd = -1;
+        client->downstream_event.client = client;
+        client->upstream_event = (struct loop_endpoint){client, true};
         client->next = loop->clients;
         loop->clients = client;
         ++loop->active;
@@ -191,14 +230,17 @@ static int dispatch_events(struct event_loop *loop, struct epoll_event *events, 
             continue;
         }
 
-        struct loop_client *client = key;
+        struct loop_endpoint *endpoint = key;
+        struct loop_client *client = endpoint->client;
         if (client->dead)
             continue;
         const uint32_t bits = events[i].events;
         bool readable = (bits & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR)) != 0;
         bool writable = (bits & (EPOLLOUT | EPOLLHUP | EPOLLERR)) != 0;
-        if (!client_session_advance(client->session, readable, writable) ||
-            (bits & (EPOLLHUP | EPOLLERR)))
+        bool alive = endpoint->upstream
+            ? client_session_advance_upstream(client->session, readable, writable)
+            : client_session_advance(client->session, readable, writable);
+        if (!alive || (!endpoint->upstream && (bits & (EPOLLHUP | EPOLLERR))))
             client->dead = true;
         else if (update_client_interest(loop, client) < 0)
             return -1;
@@ -213,13 +255,14 @@ static int dispatch_events(struct event_loop *loop, struct epoll_event *events, 
     return 0;
 }
 
-int epoll_loop_run(int listener_fd, int signal_fd, int root_fd, int log_fd,
-                   unsigned short port, size_t connection_limit)
+int epoll_loop_run(int listener_fd, int signal_fd, int log_fd,
+                   unsigned short port, size_t connection_limit,
+                   const struct session_app *app)
 {
     struct event_loop loop = {
         .fd = epoll_create1(EPOLL_CLOEXEC),
         .listener_fd = listener_fd, .signal_fd = signal_fd,
-        .root_fd = root_fd, .log_fd = log_fd, .limit = connection_limit};
+        .log_fd = log_fd, .limit = connection_limit, .app = app};
     if (loop.fd < 0)
     {
         perror("Creating epoll Failed");

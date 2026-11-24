@@ -56,11 +56,12 @@ static size_t parsed_connection_limit;
 #define cli_parse(argc, argv, port, root) \
     cli_parse(argc, argv, port, root, &parsed_connection_limit)
 
-int webserver_run(unsigned short port, int root_fd, size_t connection_limit)
+int http_server_run(unsigned short port, size_t connection_limit,
+                    const struct session_app *app)
 {
     (void)port;
-    (void)root_fd;
     (void)connection_limit;
+    (void)app;
     return 0;
 }
 

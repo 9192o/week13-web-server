@@ -17,7 +17,8 @@ static void handle_client(int unused_fd, int root)
     (void)unused_fd;
     int fd = open("/dev/null", O_RDONLY);
     assert(fd >= 0);
-    struct client_session *session = client_session_create(fd, root, -1);
+    const struct session_app app = web_app(&root);
+    struct client_session *session = client_session_create(fd, -1, &app);
     assert(session);
     bool alive = true;
     for (size_t steps = 0; steps < 128 && alive &&

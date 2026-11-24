@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
-int webserver_run(unsigned short port, int root_fd, size_t connection_limit);
+struct session_app;
+int http_server_run(unsigned short port, size_t connection_limit,
+                    const struct session_app *app);
 
 #endif

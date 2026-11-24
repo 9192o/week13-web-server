@@ -16,12 +16,14 @@ extern "C" {
  * any opened response file descriptor, and the access-log record.
  */
 struct client_session;
+struct session_app;
 
 /*
  * Take ownership of a non-blocking-ready client socket.  On failure the
  * fd is left untouched and the caller must close it.
  */
-struct client_session *client_session_create(int fd, int root_fd, int log_fd);
+struct client_session *client_session_create(int fd, int log_fd,
+                                             const struct session_app *app);
 
 /*
  * Close the socket, free all resources, and emit exactly one access-log
@@ -41,6 +43,10 @@ short client_session_interest(const struct client_session *client);
  * process deadlines only.  Returns true while the session is still alive.
  */
 bool client_session_advance(struct client_session *client, bool readable, bool writable);
+int client_session_upstream_fd(const struct client_session *client);
+short client_session_upstream_interest(const struct client_session *client);
+bool client_session_advance_upstream(struct client_session *client, bool readable,
+                                     bool writable);
 
 /*
  * Milliseconds until the nearest active deadline, or -1 when terminal.

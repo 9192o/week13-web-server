@@ -35,7 +35,8 @@ static int create_listener(unsigned short port)
     return fd;
 }
 
-int webserver_run(unsigned short port, int root_fd, size_t connection_limit)
+int http_server_run(unsigned short port, size_t connection_limit,
+                    const struct session_app *app)
 {
     struct sigaction ignored = {.sa_handler = SIG_IGN};
     if (sigemptyset(&ignored.sa_mask) < 0 || sigaction(SIGPIPE, &ignored, NULL) < 0)
@@ -61,8 +62,8 @@ int webserver_run(unsigned short port, int root_fd, size_t connection_limit)
         }
         else
         {
-            result = epoll_loop_run(listener_fd, signal_fd, root_fd, log_fd,
-                                    port, connection_limit);
+            result = epoll_loop_run(listener_fd, signal_fd, log_fd,
+                                    port, connection_limit, app);
             close(log_fd);
         }
     }

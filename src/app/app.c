@@ -25,7 +25,7 @@ static void print_usage(void)
 }
 
 static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd,
-                     size_t *connection_limit)
+                      size_t *connection_limit)
 {
     const char *port_arg = NULL;
     const char *root_arg = NULL;
@@ -124,7 +124,6 @@ int main(int argc, char **argv)
     unsigned short port;
     int root_fd;
     size_t connection_limit;
-
     if (cli_parse(argc, argv, &port, &root_fd, &connection_limit) < 0)
         return EXIT_FAILURE;
 
@@ -138,7 +137,8 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
     close(probe_fd);
-    int status = webserver_run(port, root_fd, connection_limit);
+    const struct session_app app = web_app(&root_fd);
+    int status = http_server_run(port, connection_limit, &app);
     close(root_fd);
     return status;
 }
