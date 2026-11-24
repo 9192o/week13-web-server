@@ -111,6 +111,11 @@ int http_response_set_status(http_response_t *res, int status);
 int http_response_add_header(http_response_t *res,
                              const char *name, const char *value);
 int http_response_send_headers(int fd, const http_response_t *res);
+int http_response_format(const http_response_t *res, char *buf, size_t cap,
+                         size_t *out_len);
+int http_response_build_error(int status, int close_connection,
+                              http_response_t *res, char *body,
+                              size_t body_cap, size_t *body_len);
 int http_response_send_error(int fd, int status, int close_connection);
 int http_response_send_error_ex(int fd, int status, int close_connection,
                                 int head);

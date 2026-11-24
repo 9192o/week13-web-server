@@ -30,6 +30,12 @@ typedef struct {
 
 /* Create/destroy the backend loop. Returns NULL on failure. */
 ev_loop_t *ev_create(void);
+
+/*
+ * Create a specific backend: "poll", "epoll", "kqueue", or NULL/"auto".
+ * Returns NULL with errno=ENOTSUP when the backend is not available.
+ */
+ev_loop_t *ev_create_backend(const char *name);
 void       ev_destroy(ev_loop_t *loop);
 
 /*
@@ -52,5 +58,8 @@ int ev_wait(ev_loop_t *loop, ev_event_t *out, int maxevents, int timeout_ms);
 
 /* "epoll", "kqueue", or "poll" for startup logs. */
 const char *ev_backend_name(void);
+
+/* Actual backend name for a loop created by ev_create_backend(). */
+const char *ev_loop_backend_name(const ev_loop_t *loop);
 
 #endif

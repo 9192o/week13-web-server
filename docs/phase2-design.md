@@ -24,6 +24,7 @@
 | 작업 큐 | **64** 기본, bounded | `--task-queue` |
 | 최대 연결 | **1024** 기본 | `--max-conns` |
 | keep-alive | idle **5초**, max **100** | Phase 2 튜닝 |
+| 정적 파일 | **이벤트 루프 (A)**, MVP | 대안 B/C/D는 §7.1. 데모 페이지 성격/부하 테스트에 따라 재검토 |
 | 과부하 | 작업 큐 full / 연결 상한 → **503** | `Retry-After: 1` |
 | CGI | 작업 풀에서 **`posix_spawn` + `envp`** | 결과를 버퍼로 반환 |
 | 종료 | self-pipe + drain + **5초 유예** | 강제 종료 watchdog |
@@ -168,6 +169,31 @@ typedef struct conn {
 - 304/416/301은 기존 로직 재사용.
 - 파일 fd는 연결이 닫힐 때 정리.
 
+### 7.1 결정: A — 이벤트 루프 (MVP)
+
+Phase 2 MVP는 **정적 파일을 이벤트 루프에서 처리**한다. `static_file_prepare`가 정책/보안/헤더를 준비하고, 루프가 파일을 64KB 청크로 읽어 non-blocking write 한다.
+
+**선택 이유**
+
+- 로컬 파일은 page cache에 있어 `read`가 빠르고, Phase 1 `static_file.c`의 경로/보안/캐시/Range 로직을 거의 그대로 재사용한다.
+- CGI 작업자 4개를 정적 파일이 점유하지 않아 "느린 CGI + 정적 요청"이 자연스럽게 통과한다.
+- 구현이 가장 빠르고, Phase 1 통합 테스트를 거의 그대로 쓸 수 있다.
+
+**대안**
+
+| 대안 | 장점 | 단점 | MVP |
+|---|---|---|---|
+| A. 이벤트 루프 | 단순, Phase 1 재사용, 작은 파일 빠름, CGI 워커 비점유 | 디스크 read가 루프를 막을 수 있음 | **채택** |
+| B. 작업 풀 | 루프 비블로킹, 느린 디스크/큰 파일에 안전 | 버퍼/큐/복사/취소/순서 관리 복잡, CGI와 큐 공유 시 starvation | 보류 |
+| C. `sendfile` | zero-copy, 큰 파일 처리량/CPU 유리 | 플랫폼별 API, partial send, 디스크 read는 여전히 블로킹 가능 | 후속 최적화 |
+| D. 하이브리드 | 작은 파일은 루프, 큰 파일은 sendfile/풀 | 경로 2개, 임계값 튜닝, 테스트 표면 증가 | 필요 시 |
+
+**재검토 트리거**
+
+- 데모 페이지가 큰 이미지/동영상/파일 다운로드 위주이거나 동시 다운로드가 많으면 **C/D**를 검토한다.
+- 부하 테스트에서 정적 파일 서빙 중 다른 연결의 지연이 튀면(이벤트 루프 블로킹) **C/D**로 승격한다.
+- B는 디스크가 실제로 느린 환경(네트워크 FS 등)에서 A/C로 해결되지 않을 때만 검토한다.
+
 ## 8. CGI + 작업 스레드 풀
 
 ### 8.1 작업
@@ -193,7 +219,7 @@ typedef struct {
 
 - 이벤트 루프가 요청을 복사해 작업 큐에 넣는다.
 - 큐가 가득 차면 **503**.
-- 작업 워커는 `posix_spawn`으로 CGI를 실행하고, 출력/타임아웃/크래시를 처리해 **응답 버퍼**를 만든다.
+- 작업 워커는 `posix_spawn`으로 CGI를 실행하고 (S2c 목표; S2b는 `fork`+`execve`), 출력/타임아웃/크래시를 처리해 **응답 버퍼**를 만든다.
 - 완료되면 결과 큐에 넣고 **completion pipe에 1바이트** 쓴다.
 - 이벤트 루프가 결과를 꺼내 `conn_id`로 연결을 찾고, `out`에 붙인 뒤 `WRITE`로 전이.
 - 연결이 이미 닫혔으면 결과를 버린다.
@@ -201,18 +227,19 @@ typedef struct {
 
 ### 8.2 CGI 실행
 
-- `posix_spawn` + 부모에서 만든 `envp`.
+- **S2b 현재 구현**: 작업 워커가 `fork` + `execve`로 CGI를 실행하고, Phase 1 `cgi_handle`의 출력은 임시 파일에 캡처해 응답 버퍼로 만든다. `posix_spawn` 전환은 S2c.
+- **macOS signal mask**: macOS는 signal mask를 프로세스 단위로 공유하고 `fork()`가 그 주변에서 signal을 블록한다. 동시 fork가 겹치면 SIGINT/SIGTERM이 영구히 블록될 수 있으므로, `cgi.c`의 fork를 뮤텍스로 직렬화하고 이벤트 루프가 `ev_wait` 전에 shutdown signal을 unblock한다.
 - stdin은 POST 본문 임시 파일, stdout은 파이프.
-- `poll`로 출력 대기, `request_timeout_sec` 초과 시 `SIGTERM` → 504.
+- `poll`로 출력 대기, `request_timeout_sec` 초과 시 `SIGKILL` → 504.
 - 출력 1MB 제한, 0바이트/크래시 → 500.
 - CGI 헤더 파싱, `Status:`, `Content-Type` 기본값, `Content-Length` 재계산은 기존 로직 재사용.
 - `waitpid`로 회수. 좀비 금지.
 
 ### 8.3 정적 파일과 CGI의 차이
 
-- 정적 파일: 이벤트 루프에서 처리(디스크 블로킹 가능).
+- 정적 파일: **이벤트 루프에서 처리 (A, §7.1)**. 디스크 read가 루프를 막을 수 있다.
 - CGI: 작업 풀에서 처리(블로킹 허용).
-- 디스크 I/O가 병목이면 후속으로 정적 파일도 작업 풀에 위임할 수 있다.
+- 디스크 I/O가 병목이면 후속으로 C(`sendfile`) 또는 D(하이브리드)를 검토한다. B(작업 풀)는 큐/메모리 복잡도 때문에 최후 수단.
 
 ## 9. keep-alive와 타이머
 
@@ -235,16 +262,14 @@ typedef struct {
 
 ## 11. 종료/시그널
 
-- SIGINT/SIGTERM 핸들러는 **self-pipe에 1바이트**만 쓴다 (`write`는 async-signal-safe).
-- 이벤트 루프가 self-pipe를 읽고 종료 절차 시작:
-  1. `listenfd` close, 새 연결 중단
-  2. 진행 중 연결은 현재 요청을 마치게 함
-  3. idle/read 연결은 `shutdown`/close
-  4. 작업 큐에 새 작업 금지
-  5. 진행 중 작업 완료 대기 (5초 유예)
-  6. 연결/작업/로거 정리
-  7. 5초 넘으면 watchdog `_exit`
-- 작업 워커와 로거는 SIGINT/SIGTERM을 블록.
+- SIGINT/SIGTERM 핸들러는 **self-pipe에 1바이트**만 쓴다 (`write`는 async-signal-safe). S1에서 구현 완료.
+- 이벤트 루프가 self-pipe를 읽고 종료 절차 시작. 현재 S2b 구현:
+  1. 루프 종료 후 모든 연결 close
+  2. `task_pool_shutdown`으로 진행 중 작업 완료 대기
+  3. 결과 큐 drain 후 풀/이벤트 루프 정리
+- S2c 목표: listenfd close → 진행 중 요청 완료 → idle/read 연결 close → 새 작업 금지 → 5초 유예 → watchdog `_exit`.
+- macOS는 signal mask가 프로세스 공유라 워커의 `fork()`가 SIGINT를 블록한 채 남길 수 있다. `ev_wait` 전에 SIGINT/SIGTERM을 unblock하고 fork를 직렬화한다.
+- 작업 워커와 로거는 SIGINT/SIGTERM을 블록한다 (로거 도입 시).
 - `SIGPIPE` 무시.
 - `SIGCHLD`는 기본 동작. CGI 작업 워커가 자기 자식 `waitpid`.
 
@@ -271,14 +296,29 @@ typedef struct {
 
 ## 14. 변경 파일/선행 작업
 
+> 구현 상태 (S0): `src/event_backend.c` + `event_poll.c` + `event_epoll.c` + `event_kqueue.c`와 `tests/test_event_backend.c` 완료. macOS에서 poll/kqueue PASS, epoll은 Linux CI에서 확인 예정.
+>
+> 구현 상태 (S1): `server_ev` (이벤트 루프 + 연결 상태 머신 + 정적 파일 A)와 `tests/integration_s1.sh` 완료. Phase 1 `server`는 그대로 유지하고, S2에서 `server_ev`에 작업 풀/CGI를 붙인 뒤 통합한다. S1의 CGI는 `503` 스캐폴드다.
+> S1 스캐폴드 한계: signal은 `EINTR` 폴링으로 처리하고 self-pipe/drain은 아직 없다. max-conns 초과는 즉시 close(503 아님), access log/로거 스레드도 S2.
+> 구현 상태 (S2a): `src/task_pool.c` + `include/task_pool.h` + `tests/test_task_pool.c` 완료. bounded queue/workers/completion pipe/queue-full/timeout 테스트 PASS. CGI job 연결은 S2b.
+>
+> 구현 상태 (S2b): `cgi_job_t`/`cgi_result_t` + task pool 연결 완료. CGI GET/POST/crash/10 concurrent/keep-alive/timeout 504, SIGTERM 무시 CGI 504, SIGINT 종료 테스트 PASS. `posix_spawn`, 로거 스레드, max-conns/queue-full 503은 S2c.
+>
+> `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
+
 | 파일 | 변경 |
 |---|---|
-| `src/server.c` | 이벤트 루프, 연결 상태 머신, 타이머, accept |
+| `src/server.c` | Phase 1 서버 (S2c에서 `server_ev`로 교체/통합) |
+| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | S1 이벤트 루프 + S2b CGI 작업 제출/완료 |
+| `src/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
+| `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 테스트 |
 | `include/event_backend.h` | `ev_add`/`ev_mod`/`ev_del`/`ev_wait` 인터페이스 |
+| `src/event_backend.c` | 백엔드 선택/auto fallback, 공통 API |
+| `src/event_internal.h` | 백엔드 ops/state 내부 인터페이스 |
 | `src/event_poll.c` | `poll` 폴백 |
 | `src/event_epoll.c` | Linux `epoll` |
 | `src/event_kqueue.c` | macOS/BSD `kqueue` |
-| `src/task_pool.c`, `include/task_pool.h` | 작업 큐/워커/완료 파이프 (신규) |
+| `src/task_pool.c`, `include/task_pool.h` | 작업 큐/워커/완료 파이프 (S2a 완료) |
 | `src/http_request.c`, `include/http.h` | 논블로킹 본문 누적 API |
 | `src/http_response.c` | 응답을 메모리로 직렬화 |
 | `src/static_file.c` | 정책/prepare와 I/O 분리 |
@@ -303,7 +343,7 @@ typedef struct {
 - `EPOLLET`/`EV_CLEAR` edge-triggered 도입 여부 (Phase 2는 level만).
 - 백엔드별 타이머 최적화(`timerfd`/`EVFILT_TIMER`) 도입 여부.
 - task workers 4 vs 8.
-- 정적 파일을 이벤트 루프에서 처리할지, 작업 풀/`sendfile`로 위임할지.
+- ~~정적 파일을 이벤트 루프에서 처리할지, 작업 풀/`sendfile`로 위임할지.~~ → **결정: A (이벤트 루프, §7.1)**. 데모 페이지/부하 테스트에 따라 C/D 재검토.
 - 최대 연결 1024가 적절한지.
 - 연결 상한 초과 시 503 vs accept 중단.
 

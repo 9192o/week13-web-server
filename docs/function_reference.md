@@ -188,7 +188,7 @@
 
 ### `http_request_get_header()`
 
-`src/http_request.c:543` · `const char *` · ← `static_file_handle`, `build_cgi_env`
+`src/http_request.c:543` · `const char *` · ← `static_file_prepare`, `build_cgi_env`
 
 - **헤더 배열을 선형 탐색하며 대소문자 무시 비교한다.** 헤더가 100개 이하라 선형으로 충분하다.
 - **값 포인터와 길이를 함께 돌려준다.** zero-copy라 NUL-terminate가 없어서 길이가 필수다.
@@ -269,10 +269,13 @@
 
 ---
 
-## 3. 정적 파일 흐름 — `static_file_handle()`
+## 3. 정적 파일 흐름 — `static_file_prepare()`
 
-`src/static_file.c:194` · `handler_result_t` · ← `handle_connection`
+`src/static_file.c:207` · `handler_result_t` · ← `static_file_handle`, `server_ev`
 
+> Phase 2 S1에서 `static_file_handle`이 `static_file_prepare` + 전송 wrapper로 분리됐다. 아래 line number는 이동했으니 함수 이름으로 찾는 걸 권장한다.
+
+- **소켓에 쓰지 않고 `static_result_t`를 채운다.** `res` 헤더, `file_fd`, `file_offset`, `content_length`, 에러 `body`, `head_only`.
 - **반환값은 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`.** 에러 응답(404/403/416 등)은 `HANDLER_CLOSE`라서 연결을 재사용하지 않는다.
 - **GET/HEAD가 아니면 `405`.** 정적 파일은 읽기 전용이다.
 - **dotfile 세그먼트가 있으면 `404`.** `.env`, `.git` 같은 파일은 존재 자체를 숨긴다 (403이 아니라 404).
@@ -289,14 +292,21 @@
 - **`Last-Modified`를 만들고 `If-Modified-Since`와 비교한다.** `ims >= mtime`이면 **`304`** (본문 없음).
 - **`Range`가 있으면 `parse_range_header`로 검증한다.** 유효하면 `206`, 아니면 `416`.
 - **헤더**: `Content-Type`(확장자 기반), `Content-Length`, (Range 시) `Content-Range`, `Accept-Ranges: bytes`, `Last-Modified`, `Connection`.
+- **파일 fd는 결과에 담고, 호출자가 닫는다.**
+
+### `static_file_handle()`
+
+`src/static_file.c:426` · `handler_result_t` · ← `handle_connection`
+
+- **`static_file_prepare` 결과를 소켓에 쓴다.** 헤더 → 에러 body 또는 파일 본문.
 - **GET이면 `send_file`로 본문을 보내고, HEAD면 헤더만 보낸다.**
 - **모든 경로에서 `filefd`를 닫는다.** 조기 반환이 많아 close 누락이 생기기 쉬운 구조라 각 분기마다 명시했다.
 
 ### `send_file()`
 
-`src/static_file.c:17` · `int` · ← `static_file_handle`
+`src/static_file.c:18` · `int` · ← `static_file_handle`
 
-- **64KB 청크로 읽어서 `writen`으로 보낸다.** 파일 전체를 메모리에 올리지 않는다. 2MB 파일도 64KB씩 나간다.
+- **64KB 청크로 읽어서 `write_body`로 보낸다.** 파일 전체를 메모리에 올리지 않는다. 2MB 파일도 64KB씩 나간다.
 - **`EINTR`은 재시도.** 시그널로 깬 읽기는 실패가 아니다.
 - **읽기가 0이면 `-1`.** 파일이 중간에 잘린 경우다. `Content-Length`보다 적게 보냈으므로 연결을 닫는다.
 - **쓰기 실패는 `-1`.** 클라이언트가 끊긴 경우다.
@@ -318,17 +328,18 @@
 
 ### `status_from_errno()`
 
-`src/static_file.c:64` · `static int` · ← `send_error_for_errno`, `static_file_handle`
+`src/static_file.c:78` · `static int` · ← `prepare_error_errno`, `static_file_prepare`
 
 - **`ENOENT`/`ENOTDIR` → `404`, `EACCES` → `403`, 나머지 → `500`.**
 - **"없음"과 "권한 없음"을 구분한다.** 권한 없는 파일은 존재를 알려주는 셈이지만, 403이 404보다 디버깅에 유용하다는 판단이다.
 
-### `send_error_for_errno()`
+### `prepare_error_errno()`
 
-`src/static_file.c:72` · `static int` · ← `static_file_handle`
+`src/static_file.c:95` · `static handler_result_t` · ← `static_file_prepare`
 
-- **`status_from_errno` + `http_response_send_error`를 합친다.** `errno`를 보존한 채로 응답해야 해서 래퍼를 둔다.
+- **`status_from_errno` + `http_response_build_error`를 합친다.** `errno`를 보존한 채로 응답을 메모리에 준비한다.
 - **항상 `close_connection = 1`.** 파일 시스템 에러 후에는 연결 상태를 신뢰하지 않는다.
+- **소켓에 쓰지 않고 `static_result_t`의 `res`/`body`를 채운다.**
 
 ### `parse_size_value()`
 
@@ -352,12 +363,13 @@
 - **`end`가 파일 크기를 넘으면 `file_size - 1`로 clamp.** RFC가 허용하는 동작이다.
 - **`last < start`면 `-1`.** 역순 범위는 거절.
 
-### `send_range_error()`
+### `prepare_range_error()`
 
-`src/static_file.c:151` · `static int` · ← `static_file_handle`
+`src/static_file.c:175` · `static handler_result_t` · ← `static_file_prepare`
 
-- **`416` + `Content-Range: bytes */<size>` + `Accept-Ranges: bytes` + `Content-Length: 0`.**
+- **`416` + `Content-Range: bytes */<size>` + `Accept-Ranges: bytes` + `Content-Length: 0`을 `out->res`에 채운다.**
 - **`bytes */size` 형식이 포인트다.** "전체 크기는 이만큼인데 네가 요청한 범위는 만족 불가"라는 뜻이다.
+- **소켓에 쓰지 않는다.** 전송은 `static_file_handle` 또는 `server_ev`가 한다.
 
 ---
 
@@ -489,7 +501,7 @@
 
 ### `mime_type()`
 
-`src/util.c:68` · `const char *` · ← `static_file_handle`
+`src/util.c:68` · `const char *` · ← `static_file_prepare`
 
 - **마지막 `.` 이후 확장자로 MIME을 정한다.** 대소문자 무시.
 - **텍스트 계열은 `charset=utf-8`을 붙인다.** 브라우저의 인코딩 추측을 막는다.
@@ -520,7 +532,7 @@
 
 ### `http_date_format()`
 
-`src/util.c:128` · `int` · ← `static_file_handle`
+`src/util.c:128` · `int` · ← `static_file_prepare`
 
 - **`gmtime_r`로 UTC를 구하고 IMF-fixdate로 포맷한다.** `Fri, 20 Nov 2026 10:47:19 GMT`.
 - **`gmtime_r`을 쓰는 이유**: `gmtime`은 정적 버퍼를 돌려줘 스레드 안전하지 않다. Phase 2에서 스레드를 붙일 때를 대비한 선택이다.
@@ -528,7 +540,7 @@
 
 ### `http_date_parse()`
 
-`src/util.c:149` · `int` · ← `static_file_handle`
+`src/util.c:149` · `int` · ← `static_file_prepare`
 
 - **`sscanf`로 `Wdy, DD Mon YYYY HH:MM:SS GMT` 형식만 받는다.** `%n`으로 문자열 끝까지 소비됐는지 확인해 뒤에 쓰레기가 붙은 입력을 거절한다.
 - **요일(`%*3s`)은 검증하지 않는다.** 날짜 계산에 필요 없기 때문이다.
@@ -598,15 +610,16 @@
 | `http_response_send_options` | `src/http_response.c:101` | 200 + Allow |
 | `http_response_send_memory` | `src/http_response.c:119` | 메모리 본문 응답 |
 | `http_response_send_error` | `src/http_response.c:220` | HTML 에러 |
-| `send_file` | `src/static_file.c:17` | 64KB 스트리밍 |
-| `has_dotfile_segment` | `src/static_file.c:37` | dotfile 검사 |
-| `path_within_root` | `src/static_file.c:55` | root 포함 검사 |
-| `status_from_errno` | `src/static_file.c:64` | errno → 상태 |
-| `send_error_for_errno` | `src/static_file.c:72` | errno 기반 에러 응답 |
-| `parse_size_value` | `src/static_file.c:81` | Range 숫자 파싱 |
-| `parse_range_header` | `src/static_file.c:99` | Range 해석 |
-| `send_range_error` | `src/static_file.c:151` | 416 |
-| `static_file_handle` | `src/static_file.c:194` | 정적 파일 서빙 |
+| `send_file` | `src/static_file.c:18` | 64KB 스트리밍 |
+| `has_dotfile_segment` | `src/static_file.c:39` | dotfile 검사 |
+| `path_within_root` | `src/static_file.c:69` | root 포함 검사 |
+| `status_from_errno` | `src/static_file.c:78` | errno → 상태 |
+| `prepare_error_errno` | `src/static_file.c:95` | errno 기반 에러 준비 |
+| `parse_size_value` | `src/static_file.c:105` | Range 숫자 파싱 |
+| `parse_range_header` | `src/static_file.c:123` | Range 해석 |
+| `prepare_range_error` | `src/static_file.c:175` | 416 준비 |
+| `static_file_prepare` | `src/static_file.c:207` | 정적 응답 준비 |
+| `static_file_handle` | `src/static_file.c:426` | 정적 파일 서빙 |
 | `path_within_root` (cgi) | `src/cgi.c:22` | cgi_dir 포함 검사 |
 | `send_cgi_response` | `src/cgi.c:39` | CGI 출력 → HTTP |
 | `build_cgi_env` | `src/cgi.c:189` | CGI 환경변수 |

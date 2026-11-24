@@ -8,7 +8,7 @@
 make test          # 단위 테스트
 make integration   # 실제 서버 + curl/nc 통합 테스트
 make shutdown-test # SIGINT/SIGTERM/keep-alive/CGI 종료 테스트
-make sanitize      # ASan/UBSan 빌드로 test + integration + shutdown-test
+make sanitize      # ASan/UBSan 빌드로 test + integration + integration-s1 + shutdown-test
 make fdtest        # fd 누수 검사
 make load          # ab 부하 테스트
 ```
@@ -109,8 +109,30 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 
 - **access log logger**: `access_log_end`의 `fprintf`가 블로킹이고, `g_current`가 thread-local 포인터라 이벤트 루프에서 요청이 interleave되면 로그가 섞일 수 있다. per-connection log + logger thread/bounded queue로 전환한다.
 - **lingering close**: `lingering_close`가 최대 1초 blocking이다. 이벤트 루프에서는 non-blocking `POLLIN` + deadline 상태로 바꾼다.
+- **정적 파일 A 모델**: 이벤트 루프가 디스크 read로 막힐 수 있다. 큰 파일 + 동시 요청 부하 테스트에서 다른 연결의 지연이 튀면 C(`sendfile`)/D(하이브리드)로 승격한다. B(작업 풀)는 최후 수단.
 - **early header error logging**: 위 Phase 1 한계와 같은 항목. Phase 2에서 헤더 read 시작 시 log context를 연다.
 - 상세: [phase2-design.md](phase2-design.md) §15.
+
+### Phase 2 S1 (2026-11-24)
+
+- **`server_ev`**: 이벤트 루프(`poll`/`epoll`/`kqueue`) + 연결 상태 머신 + 정적 파일 A 모델 + keep-alive + 타이머.
+- **S1 스캐폴드**: CGI는 `503` + `Retry-After: 1`; max conns 초과는 즉시 close (503/작업 풀은 S2).
+- **검증**: 단위 **236 assertions**, Phase 1 `make integration` PASS, `make integration-s1` PASS, `make sanitize` PASS, `make fdtest` PASS.
+- **다음(S2)**: 작업 스레드 풀 + `posix_spawn` CGI + 로거 스레드, `server_ev`를 최종 `server`로 통합.
+
+### Phase 2 S2a (2026-11-24)
+
+- **task pool**: `src/task_pool.c` — bounded job queue, 4 workers 기본, completion pipe, result queue.
+- **검증**: `tests/test_task_pool.c` (basic/queue-full/timeout/empty/invalid) PASS. 전체 **273 assertions**, sanitize PASS.
+- **다음(S2b)**: CGI job + `posix_spawn` + 응답 버퍼를 task pool에 연결.
+
+### Phase 2 S2b (2026-11-24)
+
+- **CGI task 연결**: `cgi_job_t`/`cgi_result_t`, `src/cgi_task.c`. GET/POST/crash/10 concurrent/keep-alive PASS.
+- **타임아웃**: `--timeout 1`에서 `sleep`과 SIGTERM 무시 CGI 모두 **504**, 이후 서버 생존.
+- **종료**: SIGINT self-pipe로 idle 서버가 즉시 종료. macOS는 signal mask가 프로세스 공유라 워커 fork가 SIGINT를 블록한 채 남길 수 있어, fork 뮤텍스 + `ev_wait` 전 shutdown signal unblock으로 고정.
+- **검증**: `make test` 273 assertions, `make integration` PASS, `make integration-s1` PASS, `make sanitize` PASS, `make fdtest` PASS.
+- **다음(S2c)**: `posix_spawn`, 로거 스레드/access log, max-conns/queue-full 503, 단계별 drain/watchdog, CLI 옵션, `server_ev`를 최종 `server`로 통합.
 
 ## 남은 품질 항목
 

@@ -44,6 +44,14 @@
 | BACKEND-04 | FR-13 | 통합 | 같은 요청 시퀀스를 백엔드별로 실행 | 상태/헤더/본문 동일 |
 | BACKEND-05 | FR-13 | 통합 | level-triggered에서 partial read | 다음 이벤트에서 나머지 읽기 |
 
+> 구현 상태 (S0): `tests/test_event_backend.c`에서 `poll`과 native(`epoll`/`kqueue`)의 add/mod/del/wait/timeout/에러를 검증. macOS poll/kqueue PASS, Linux epoll은 CI에서 확인 예정.
+>
+> 구현 상태 (S1): `tests/integration_s1.sh` — 정적/HEAD/Range/304/OPTIONS/keep-alive/20 concurrent/느린 헤더/431/414 PASS. S1 `server_ev`의 CGI는 S2 전까지 `503` + `Retry-After: 1`.
+>
+> 구현 상태 (S2a): `tests/test_task_pool.c` — bounded queue/workers/completion pipe/queue-full/timeout PASS. CGI job 연결은 S2b.
+>
+> 구현 상태 (S2b): `tests/integration_s1.sh` — CGI GET/POST/crash/10 concurrent/keep-alive, `--timeout 1`에서 `sleep`/SIGTERM 무시 CGI 504, CGI 타임아웃 후 서버 생존, SIGINT 종료 PASS. 큐 full 503/max-conns 503은 S2c.
+
 ## 3. 연결 상한/백프레셔
 
 | ID | 요구사항 | 유형 | 시나리오 | 기대 |
@@ -78,6 +86,7 @@
 | CGI-07 | FR-13 | 통합 | CGI 환경변수 | METHOD/QUERY/CONTENT_LENGTH 정확 |
 | CGI-08 | FR-13 | 스트레스 | CGI 100회 반복 | 좀비 없음, fd 안정 |
 | CGI-09 | FR-13 | 통합 | 작업 도중 클라이언트 끊김 | 결과 폐기, 워커 생존, fd 정리 |
+| CGI-10 | FR-12/13 | 통합 | SIGTERM을 무시하는 CGI + `--timeout 1` | SIGKILL 후 504, 서버 생존 |
 
 ## 6. 종료/시그널
 
@@ -90,6 +99,8 @@
 | SHUT-05 | FR-30 | 통합 | 종료 후 즉시 재시작 | 포트 재사용 성공 |
 | SHUT-06 | FR-30 | 통합 | 두 번째 SIGINT (선택) | 즉시 강제 종료 |
 | SHUT-07 | FR-30 | 스트레스 | 시작/종료 10회 | fd/스레드/좀비 누수 없음 |
+
+> 구현 상태 (S2b): SHUT-01(idle SIGINT) PASS. SHUT-02/03/05/06/07은 S2c의 drain/watchdog 작업에서 다룬다.
 
 ## 7. 로그
 
@@ -140,5 +151,6 @@
 - 이벤트 루프 테스트는 **partial read/write**를 반드시 포함한다. 한 번에 다 보내면 버그를 놓친다.
 - 느린 CGI 테스트는 **정적 요청이 막히지 않는지**를 핵심으로 본다.
 - 타이머 테스트는 `sleep`만으로 순서를 가정하지 않는다. 5초 idle은 6초 기다린다.
+- **정적 파일 A 모델**: 큰 파일 + 느린 클라이언트 + 동시 작은 요청으로 이벤트 루프 지연을 측정한다. 지연이 크면 C(`sendfile`)/D(하이브리드)를 재검토한다.
 - TSan은 느리므로 `-n 200 -c 8`부터.
 - `ab`는 keep-alive(`-k`)와 close를 각각 측정한다.

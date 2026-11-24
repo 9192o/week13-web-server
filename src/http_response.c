@@ -79,6 +79,21 @@ int http_response_add_header(http_response_t *res,
     return 0;
 }
 
+int http_response_format(const http_response_t *res, char *buf, size_t cap,
+                         size_t *out_len) {
+    if (res == NULL || buf == NULL || out_len == NULL)
+        return -1;
+
+    int n = snprintf(buf, cap, "HTTP/1.1 %d %s\r\n%s\r\n",
+                     res->status, http_status_reason(res->status),
+                     res->headers);
+    if (n < 0 || (size_t)n >= cap)
+        return -1;
+
+    *out_len = (size_t)n;
+    return 0;
+}
+
 int http_response_send_headers(int fd, const http_response_t *res) {
     if (res == NULL)
         return -1;
@@ -87,19 +102,11 @@ int http_response_send_headers(int fd, const http_response_t *res) {
     if (log != NULL)
         access_log_set_status(log, res->status);
 
-    char status_line[128];
-    int n = snprintf(status_line, sizeof status_line,
-                     "HTTP/1.1 %d %s\r\n",
-                     res->status, http_status_reason(res->status));
-    if (n < 0 || (size_t)n >= sizeof status_line)
+    char buf[HTTP_MAX_RESPONSE_HEADERS + 128];
+    size_t len = 0;
+    if (http_response_format(res, buf, sizeof buf, &len) < 0)
         return -1;
-
-    if (writen(fd, status_line, (size_t)n) < 0)
-        return -1;
-    if (res->headers_len > 0 &&
-        writen(fd, res->headers, res->headers_len) < 0)
-        return -1;
-    if (writen(fd, "\r\n", 2) < 0)
+    if (writen(fd, buf, len) < 0)
         return -1;
 
     return 0;
@@ -174,44 +181,60 @@ int http_response_send_memory(int fd, int status, const char *content_type,
     return 0;
 }
 
-int http_response_send_error_ex(int fd, int status, int close_connection,
-                                int head) {
+int http_response_build_error(int status, int close_connection,
+                              http_response_t *res, char *body,
+                              size_t body_cap, size_t *body_len) {
+    if (res == NULL || body == NULL || body_len == NULL)
+        return -1;
+
     const char *reason = http_status_reason(status);
 
-    char body[512];
-    int n = snprintf(body, sizeof body,
+    int n = snprintf(body, body_cap,
                      "<!DOCTYPE html>\n"
                      "<html><head><title>%d %s</title></head>"
                      "<body><h1>%d %s</h1></body></html>\n",
                      status, reason, status, reason);
-    if (n < 0 || (size_t)n >= sizeof body)
+    if (n < 0 || (size_t)n >= body_cap)
         return -1;
 
-    http_response_t res;
-    http_response_init(&res);
-    res.status = status;
-    res.close_connection = close_connection;
+    http_response_init(res);
+    res->status = status;
+    res->close_connection = close_connection;
 
     char lenbuf[32];
     int m = snprintf(lenbuf, sizeof lenbuf, "%d", n);
     if (m < 0 || (size_t)m >= sizeof lenbuf)
         return -1;
 
-    if (http_response_add_header(&res, "Content-Type",
+    if (http_response_add_header(res, "Content-Type",
                                  "text/html; charset=utf-8") < 0)
         return -1;
     if (status == HTTP_METHOD_NOT_ALLOWED &&
-        http_response_add_header(&res, "Allow", "GET, HEAD") < 0)
+        http_response_add_header(res, "Allow", "GET, HEAD") < 0)
         return -1;
-    if (http_response_add_header(&res, "Content-Length", lenbuf) < 0)
+    if (http_response_add_header(res, "Content-Length", lenbuf) < 0)
         return -1;
-    if (http_response_add_header(&res, "Connection",
+    if (http_response_add_header(res, "Connection",
                                  close_connection ? "close" : "keep-alive") < 0)
+        return -1;
+
+    *body_len = (size_t)n;
+    return 0;
+}
+
+int http_response_send_error_ex(int fd, int status, int close_connection,
+                                int head) {
+    http_response_t res;
+    char body[512];
+    size_t body_len = 0;
+
+    if (http_response_build_error(status, close_connection, &res, body,
+                                  sizeof body, &body_len) < 0)
         return -1;
 
     if (http_response_send_headers(fd, &res) < 0)
         return -1;
-    if (!head && write_body(fd, body, (size_t)n) < 0)
+    if (!head && write_body(fd, body, body_len) < 0)
         return -1;
 
     return 0;

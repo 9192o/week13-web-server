@@ -38,9 +38,28 @@ void test_response_send_memory(void);
 void test_response_error_404(void);
 void test_response_reason(void);
 void test_response_add_header_overflow(void);
+void test_response_format(void);
+void test_response_format_overflow(void);
+void test_response_build_error(void);
 
 void test_send_file_exact_size(void);
 void test_send_file_short_eof(void);
+
+void test_event_poll_read(void);
+void test_event_poll_mod(void);
+void test_event_poll_timeout(void);
+void test_event_poll_multi(void);
+void test_event_poll_errors(void);
+void test_event_native_read(void);
+void test_event_native_mod(void);
+void test_event_named_backend(void);
+void test_event_unknown_backend(void);
+
+void test_task_pool_basic(void);
+void test_task_pool_queue_full(void);
+void test_task_pool_timeout(void);
+void test_task_pool_empty(void);
+void test_task_pool_invalid(void);
 
 int g_tests_run = 0;
 int g_tests_failed = 0;
@@ -84,9 +103,28 @@ int main(void) {
     RUN_TEST(test_response_error_404);
     RUN_TEST(test_response_reason);
     RUN_TEST(test_response_add_header_overflow);
+    RUN_TEST(test_response_format);
+    RUN_TEST(test_response_format_overflow);
+    RUN_TEST(test_response_build_error);
 
     RUN_TEST(test_send_file_exact_size);
     RUN_TEST(test_send_file_short_eof);
+
+    RUN_TEST(test_event_poll_read);
+    RUN_TEST(test_event_poll_mod);
+    RUN_TEST(test_event_poll_timeout);
+    RUN_TEST(test_event_poll_multi);
+    RUN_TEST(test_event_poll_errors);
+    RUN_TEST(test_event_native_read);
+    RUN_TEST(test_event_native_mod);
+    RUN_TEST(test_event_named_backend);
+    RUN_TEST(test_event_unknown_backend);
+
+    RUN_TEST(test_task_pool_basic);
+    RUN_TEST(test_task_pool_queue_full);
+    RUN_TEST(test_task_pool_timeout);
+    RUN_TEST(test_task_pool_empty);
+    RUN_TEST(test_task_pool_invalid);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

@@ -25,6 +25,9 @@ jobs:
       - name: Integration tests
         run: make integration
 
+      - name: Integration tests (S1 event loop)
+        run: make integration-s1
+
       - name: Shutdown tests
         run: make shutdown-test
 

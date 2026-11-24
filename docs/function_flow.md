@@ -61,7 +61,7 @@ main
             │       ├─ http_request_get_header
             │       ├─ parse_range_header
             │       │   └─ parse_size_value
-            │       ├─ send_range_error
+            │       ├─ prepare_range_error
             │       ├─ http_response_send_headers
             │       └─ send_file
             ├─ http_request_free

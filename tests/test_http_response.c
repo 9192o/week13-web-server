@@ -80,3 +80,54 @@ void test_response_add_header_overflow(void) {
 
     TEST_ASSERT_EQ_INT(http_response_add_header(&res, "X-Big", big), -1);
 }
+
+void test_response_format(void) {
+    http_response_t res;
+    http_response_init(&res);
+    res.status = 200;
+    TEST_ASSERT_EQ_INT(
+        http_response_add_header(&res, "X-Test", "yes"), 0);
+
+    char buf[512];
+    size_t len = 0;
+    TEST_ASSERT_EQ_INT(
+        http_response_format(&res, buf, sizeof buf, &len), 0);
+    TEST_ASSERT(len > 0);
+    TEST_ASSERT(strstr(buf, "HTTP/1.1 200 OK\r\n") != NULL);
+    TEST_ASSERT(strstr(buf, "X-Test: yes\r\n") != NULL);
+    TEST_ASSERT(strstr(buf, "\r\n\r\n") != NULL);
+}
+
+void test_response_format_overflow(void) {
+    http_response_t res;
+    http_response_init(&res);
+    res.status = 200;
+    TEST_ASSERT_EQ_INT(
+        http_response_add_header(&res, "X-Test", "yes"), 0);
+
+    char small[8];
+    size_t len = 0;
+    TEST_ASSERT_EQ_INT(
+        http_response_format(&res, small, sizeof small, &len), -1);
+}
+
+void test_response_build_error(void) {
+    http_response_t res;
+    char body[512];
+    size_t body_len = 0;
+
+    TEST_ASSERT_EQ_INT(
+        http_response_build_error(404, 1, &res, body, sizeof body,
+                                  &body_len), 0);
+    TEST_ASSERT_EQ_INT(res.status, 404);
+    TEST_ASSERT(body_len > 0);
+    TEST_ASSERT(strstr(body, "404 Not Found") != NULL);
+
+    char buf[1024];
+    size_t len = 0;
+    TEST_ASSERT_EQ_INT(
+        http_response_format(&res, buf, sizeof buf, &len), 0);
+    TEST_ASSERT(strstr(buf, "HTTP/1.1 404 Not Found\r\n") != NULL);
+    TEST_ASSERT(strstr(buf, "Content-Type: text/html; charset=utf-8\r\n") != NULL);
+    TEST_ASSERT(strstr(buf, "Connection: close\r\n") != NULL);
+}

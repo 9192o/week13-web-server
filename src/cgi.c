@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,15 @@
 
 #define CGI_MAX_OUTPUT (1024 * 1024)
 #define CGI_PREFIX "/cgi-bin/"
+
+/*
+ * macOS keeps the signal mask per process rather than per thread, and fork()
+ * blocks signals around the fork and restores them afterwards. Concurrent
+ * forks from task-pool workers can therefore race and leave SIGINT/SIGTERM
+ * blocked for the whole server. Serialize fork so each block/restore pair
+ * completes before the next one starts.
+ */
+static pthread_mutex_t g_fork_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int path_within_root(const char *root, const char *resolved) {
     size_t root_len = strlen(root);
@@ -336,8 +346,12 @@ handler_result_t cgi_handle(int connfd, const http_request_t *req,
     }
 
     char *argv[] = { resolved, NULL };
+    pthread_mutex_lock(&g_fork_mutex);
     pid_t pid = fork();
+    int fork_errno = errno;
+    pthread_mutex_unlock(&g_fork_mutex);
     if (pid < 0) {
+        errno = fork_errno;
         close(script_fd);
         free_env(envp);
         if (body_tmp != NULL)

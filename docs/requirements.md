@@ -52,6 +52,7 @@ Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시�
 | D12 | 정적 파일 정책 | 1 | **결정: A안** (`/dir`→301, index 없음→404, symlink docroot만, dotfile 차단, `index.html`만) |
 | D13 | 테스트 전략 | 1 | **결정: 커스텀 단위 하네스 + 셸 통합** |
 | D14 | 이식성 목표 | 1 | **결정: macOS + Linux, POSIX 코어** |
+| D15 | Phase 2 정적 파일 처리 | 2 | **결정: A (이벤트 루프, MVP)**. 대안 B/C/D 문서화. 데모 페이지 성격에 따라 재검토 |
 
 ## Phase별 핵심 결정 메모
 
@@ -99,6 +100,26 @@ Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시�
 - 파일 수가 적고 외부 의존성이 없어 Makefile로 충분하다.
 - CMake는 IDE/의존성 관리에 좋지만 이 프로젝트에는 과하다.
 - 상세: [phase1-requirements.md](phase1-requirements.md)
+
+### D15 — Phase 2 정적 파일: 이벤트 루프 (A) (확정)
+
+- **Phase 2 MVP는 정적 파일을 이벤트 루프에서 처리한다.**
+  - `static_file_prepare`가 경로 검증/`stat`/`open`/MIME/캐시/Range/헤더를 준비.
+  - 이벤트 루프가 헤더를 쓰고, 파일 본문을 64KB 청크로 non-blocking write.
+  - `write`가 `EAGAIN`이면 남은 청크를 들고 `POLLOUT`을 등록한다.
+- **선택 이유**
+  - 로컬 파일은 page cache에 있어 `read`가 빠르고, Phase 1 `static_file.c` 정책을 거의 그대로 재사용한다.
+  - CGI 작업자 4개를 정적 파일이 점유하지 않아 "느린 CGI + 정적 요청"이 자연스럽게 통과한다.
+  - 구현 속도가 가장 빠르고, Phase 1 통합 테스트를 거의 그대로 쓸 수 있다.
+- **대안 (문서화만, MVP에서는 미사용)**
+  - **B. 작업 풀 위임**: 이벤트 루프는 안 막히지만, 연결별 버퍼/큐·복사·취소·순서 관리가 복잡하고 CGI 작업자와 큐를 공유하면 starvation이 생긴다.
+  - **C. `sendfile`**: zero-copy로 큰 파일에 유리하지만, 플랫폼별 API/partial send 처리가 필요하고 디스크 read는 여전히 블로킹될 수 있다.
+  - **D. 하이브리드**: 작은 파일은 루프, 큰 파일은 `sendfile`/작업 풀. 성능은 좋지만 코드 경로가 두 개다.
+- **재검토 트리거**
+  - 데모 페이지가 큰 이미지/동영상/파일 다운로드 위주이거나, 동시 다운로드가 많으면 C/D를 검토한다.
+  - 부하 테스트에서 정적 파일 서빙 중 다른 연결의 지연이 튀면(이벤트 루프 블로킹) C/D로 승격한다.
+  - B는 디스크가 실제로 느린 환경(네트워크 FS 등)에서 A/C로 해결되지 않을 때만 검토한다.
+- 상세: [phase2-design.md](phase2-design.md) §7.1
 
 ## 공통 품질 기준
 
