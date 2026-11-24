@@ -22,7 +22,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define EV_MAX_CONNS 1024
 #define EV_FILE_CHUNK 65536
 
 static volatile sig_atomic_t g_stop = 0;
@@ -841,6 +840,23 @@ static int on_writable(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
     return 0;
 }
 
+static void reject_overloaded(int fd) {
+    static const char response[] =
+        "HTTP/1.1 503 Service Unavailable\r\n"
+        "Retry-After: 1\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+
+    if (set_nonblocking(fd) < 0) {
+        close(fd);
+        return;
+    }
+    ssize_t n = send(fd, response, sizeof response - 1, 0);
+    (void)n;
+    close(fd);
+}
+
 static void accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
                        int *count, const config_t *cfg) {
     for (;;) {
@@ -860,8 +876,8 @@ static void accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
             break;
         }
 
-        if (*count >= EV_MAX_CONNS) {
-            close(fd);
+        if (*count >= cfg->max_conns) {
+            reject_overloaded(fd);
             continue;
         }
         if (set_nonblocking(fd) < 0 || set_cloexec(fd) < 0) {
@@ -969,7 +985,7 @@ int server_ev_run(const config_t *cfg) {
         return -1;
     }
 
-    task_pool_t *pool = task_pool_create(4, 64);
+    task_pool_t *pool = task_pool_create(cfg->task_workers, cfg->task_queue_size);
     if (pool == NULL) {
         close(listenfd);
         ev_destroy(loop);
@@ -989,8 +1005,9 @@ int server_ev_run(const config_t *cfg) {
         return -1;
     }
 
-    log_error("listening on 0.0.0.0:%d (loop=%s, docroot: %s)",
-              cfg->port, ev_loop_backend_name(loop), cfg->docroot);
+    log_error("listening on 0.0.0.0:%d (loop=%s, task_workers=%d, max_conns=%d, docroot: %s)",
+              cfg->port, ev_loop_backend_name(loop), cfg->task_workers,
+              cfg->max_conns, cfg->docroot);
 
     conn_t *head = NULL;
     int count = 0;

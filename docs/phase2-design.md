@@ -254,11 +254,11 @@ typedef struct {
 
 ## 10. 백프레셔/503
 
-- **최대 연결 수**: 1024. 초과 시 새 연결에 503 후 close.
-- **작업 큐 full**: CGI 요청에 503.
+- **최대 연결 수**: 기본 1024 (`--max-conns`). 초과 시 새 연결에 **503 + `Retry-After: 1`** 후 close. (S2c-1 구현)
+- **작업 큐 full**: CGI 요청에 **503 + `Retry-After: 1`**. (S2b 구현)
 - **출력 버퍼 상한**: 넘으면 close.
 - 503 응답: `Connection: close`, `Retry-After: 1`.
-- `HTTP_SERVICE_UNAVAILABLE = 503`과 reason은 추가됐다. Phase 2에서 503 응답 path와 `Retry-After`를 연결해야 한다.
+- `HTTP_SERVICE_UNAVAILABLE = 503`과 reason은 추가됐다.
 
 ## 11. 종료/시그널
 
@@ -304,14 +304,17 @@ typedef struct {
 >
 > 구현 상태 (S2b): `cgi_job_t`/`cgi_result_t` + task pool 연결 완료. CGI GET/POST/crash/10 concurrent/keep-alive/timeout 504, SIGTERM 무시 CGI 504, SIGINT 종료 테스트 PASS. `posix_spawn`, 로거 스레드, max-conns/queue-full 503은 S2c.
 >
+> 구현 상태 (S2c-1): `--task-workers`, `--task-queue`, `--max-conns` config/CLI 추가. max-conns 초과 503 + `Retry-After: 1`, queue-full 503. `tests/integration_s2.sh` PASS.
+>
 > `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
 
 | 파일 | 변경 |
 |---|---|
 | `src/server.c` | Phase 1 서버 (S2c에서 `server_ev`로 교체/통합) |
-| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | S1 이벤트 루프 + S2b CGI 작업 제출/완료 |
+| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | S1 이벤트 루프 + S2b CGI 작업 제출/완료 + S2c-1 백프레셔 |
 | `src/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
 | `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 테스트 |
+| `tests/integration_s2.sh` | S2c-1 max-conns/queue-full 503 테스트 |
 | `include/event_backend.h` | `ev_add`/`ev_mod`/`ev_del`/`ev_wait` 인터페이스 |
 | `src/event_backend.c` | 백엔드 선택/auto fallback, 공통 API |
 | `src/event_internal.h` | 백엔드 ops/state 내부 인터페이스 |

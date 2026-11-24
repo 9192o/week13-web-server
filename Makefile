@@ -65,6 +65,9 @@ integration: $(SERVER_BIN) cgi
 integration-s1: $(EV_SERVER_BIN) cgi
 	sh tests/integration_s1.sh
 
+integration-s2: $(EV_SERVER_BIN) cgi
+	sh tests/integration_s2.sh
+
 shutdown-test: $(SERVER_BIN) cgi
 	sh tests/shutdown.sh
 
@@ -72,7 +75,7 @@ sanitize:
 	$(MAKE) clean
 	ASAN_OPTIONS=halt_on_error=1 \
 	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
-	$(MAKE) CFLAGS="$(SAN_CFLAGS)" LDFLAGS="$(SAN_LDFLAGS)" all test integration integration-s1 shutdown-test
+	$(MAKE) CFLAGS="$(SAN_CFLAGS)" LDFLAGS="$(SAN_LDFLAGS)" all test integration integration-s1 integration-s2 shutdown-test
 
 fdtest: $(SERVER_BIN) cgi
 	sh tests/fd_leak.sh
@@ -82,7 +85,7 @@ load: $(SERVER_BIN)
 
 linux-test:
 	docker run --rm -v "$(PWD)":/src -w /src gcc:13 \
-		sh -c "apt-get update && apt-get install -y curl netcat-openbsd && make test && make integration && make integration-s1 && make shutdown-test"
+		sh -c "apt-get update && apt-get install -y curl netcat-openbsd && make test && make integration && make integration-s1 && make integration-s2 && make shutdown-test"
 
 clean:
 	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(CGI_BINS) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o

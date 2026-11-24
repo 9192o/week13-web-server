@@ -7,8 +7,10 @@
 ```bash
 make test          # 단위 테스트
 make integration   # 실제 서버 + curl/nc 통합 테스트
+make integration-s1 # 이벤트 루프 + CGI/타임아웃/종료 테스트
+make integration-s2 # max-conns/queue-full 503 테스트
 make shutdown-test # SIGINT/SIGTERM/keep-alive/CGI 종료 테스트
-make sanitize      # ASan/UBSan 빌드로 test + integration + integration-s1 + shutdown-test
+make sanitize      # ASan/UBSan 빌드로 test + integration + integration-s1 + integration-s2 + shutdown-test
 make fdtest        # fd 누수 검사
 make load          # ab 부하 테스트
 ```
@@ -133,6 +135,14 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 - **종료**: SIGINT self-pipe로 idle 서버가 즉시 종료. macOS는 signal mask가 프로세스 공유라 워커 fork가 SIGINT를 블록한 채 남길 수 있어, fork 뮤텍스 + `ev_wait` 전 shutdown signal unblock으로 고정.
 - **검증**: `make test` 273 assertions, `make integration` PASS, `make integration-s1` PASS, `make sanitize` PASS, `make fdtest` PASS.
 - **다음(S2c)**: `posix_spawn`, 로거 스레드/access log, max-conns/queue-full 503, 단계별 drain/watchdog, CLI 옵션, `server_ev`를 최종 `server`로 통합.
+
+### Phase 2 S2c-1 (2026-11-24)
+
+- **config/CLI**: `--task-workers`(1..64), `--task-queue`(1..65536), `--max-conns`(1..65536). 기본 4/64/1024.
+- **max-conns**: 초과 연결에 `503` + `Retry-After: 1` + `Connection: close`, 연결 회수 후 정상 복귀.
+- **queue-full**: `task_pool_submit`의 `EAGAIN`을 CGI `503`으로 매핑. `--task-workers 1 --task-queue 1`에서 3번째 CGI 503.
+- **검증**: `tests/integration_s2.sh` PASS. `make sanitize`에 포함.
+- **다음(S2c-2)**: 로거 스레드/access log, `posix_spawn`, drain/watchdog, `server_ev` → `server` 통합.
 
 ## 남은 품질 항목
 

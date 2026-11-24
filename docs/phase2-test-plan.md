@@ -51,6 +51,8 @@
 > 구현 상태 (S2a): `tests/test_task_pool.c` — bounded queue/workers/completion pipe/queue-full/timeout PASS. CGI job 연결은 S2b.
 >
 > 구현 상태 (S2b): `tests/integration_s1.sh` — CGI GET/POST/crash/10 concurrent/keep-alive, `--timeout 1`에서 `sleep`/SIGTERM 무시 CGI 504, CGI 타임아웃 후 서버 생존, SIGINT 종료 PASS. 큐 full 503/max-conns 503은 S2c.
+>
+> 구현 상태 (S2c-1): `tests/integration_s2.sh` — `--max-conns 2`에서 3번째 연결 503 + `Retry-After: 1`, 연결 회수 후 200, `--task-workers 1 --task-queue 1`에서 3번째 CGI 503 + `Retry-After: 1`, 이후 서버 생존 PASS.
 
 ## 3. 연결 상한/백프레셔
 
@@ -61,6 +63,8 @@
 | CONN-03 | FR-29 | 통합 | 503 후 서버 생존 | 연결이 줄면 다시 200 |
 | TASK-01 | FR-29 | 통합 | `--task-queue 1` + 느린 CGI 다수 | 초과분 503 |
 | TASK-02 | FR-29 | 통합 | 작업 큐 full 후 정적 요청 | 정적 요청은 계속 200 (루프 비블로킹) |
+
+> 구현 상태 (S2c-1): CONN-01/02/03과 TASK-01 PASS (`tests/integration_s2.sh`). TASK-02는 큐 full 이후 정적 요청 200으로 확인.
 
 ## 4. keep-alive
 

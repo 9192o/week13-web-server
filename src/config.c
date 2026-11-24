@@ -20,6 +20,9 @@ void config_init(config_t *cfg) {
     cfg->request_timeout_sec = DEFAULT_REQUEST_TIMEOUT;
     cfg->keepalive_idle_sec = DEFAULT_KEEPALIVE_IDLE;
     cfg->keepalive_max_requests = DEFAULT_KEEPALIVE_MAX;
+    cfg->task_workers = DEFAULT_TASK_WORKERS;
+    cfg->task_queue_size = DEFAULT_TASK_QUEUE;
+    cfg->max_conns = DEFAULT_MAX_CONNS;
 }
 
 static int copy_path(char *dst, size_t dst_size, const char *src) {
@@ -95,6 +98,22 @@ int config_parse_cli(int argc, char **argv, config_t *cfg) {
             if (i >= argc ||
                 parse_int_arg(argv[i], 1, 1000000,
                               &cfg->keepalive_max_requests) < 0)
+                return -1;
+        } else if (strcmp(argv[i], "--task-workers") == 0) {
+            i++;
+            if (i >= argc ||
+                parse_int_arg(argv[i], 1, 64, &cfg->task_workers) < 0)
+                return -1;
+        } else if (strcmp(argv[i], "--task-queue") == 0) {
+            i++;
+            if (i >= argc ||
+                parse_int_arg(argv[i], 1, 65536,
+                              &cfg->task_queue_size) < 0)
+                return -1;
+        } else if (strcmp(argv[i], "--max-conns") == 0) {
+            i++;
+            if (i >= argc ||
+                parse_int_arg(argv[i], 1, 65536, &cfg->max_conns) < 0)
                 return -1;
         } else if (cfg->cgi_dir[0] == '\0') {
             if (copy_path(cfg->cgi_dir, sizeof cfg->cgi_dir, argv[i]) < 0)

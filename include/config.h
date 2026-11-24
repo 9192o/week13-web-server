@@ -15,6 +15,9 @@
 #define DEFAULT_REQUEST_TIMEOUT  20
 #define DEFAULT_KEEPALIVE_IDLE   10
 #define DEFAULT_KEEPALIVE_MAX    100
+#define DEFAULT_TASK_WORKERS     4
+#define DEFAULT_TASK_QUEUE       64
+#define DEFAULT_MAX_CONNS        1024
 
 typedef struct {
     int port;
@@ -29,6 +32,10 @@ typedef struct {
     int request_timeout_sec;
     int keepalive_idle_sec;
     int keepalive_max_requests;
+
+    int task_workers;
+    int task_queue_size;
+    int max_conns;
 } config_t;
 
 void config_init(config_t *cfg);
