@@ -64,6 +64,13 @@ struct proxy_route *proxy_match(struct proxy_table *t, const char *path);
 const struct proxy_backend *proxy_pick(struct proxy_route *r);
 
 /*
+ * 목록에서 b 다음 백엔드 (끝이면 처음으로). connect 실패 재시도용.
+ * 라운드로빈 카운터는 건드리지 않는다 (새 요청의 분배는 그대로).
+ */
+const struct proxy_backend *proxy_next(const struct proxy_route *r,
+                                       const struct proxy_backend *b);
+
+/*
  * 규칙의 백엔드 중 프록시 자기 자신을 가리키는 것: 루프백(127.0.0.0/8) 또는
  * 0.0.0.0 이고 포트가 listen_port 와 같은 첫 백엔드. 없으면 NULL.
  */

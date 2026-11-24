@@ -656,9 +656,11 @@ PP=$((PORT + 11))      # 프록시
 PD=$((PORT + 12))      # 아무도 listen 하지 않는 포트 (connect 거절)
 PX=$((PORT + 13))      # 자기 자신 규칙 거부 확인용 (실제로 listen 하지 않음)
 PB2=$((PORT + 14))     # 백엔드 B (라운드로빈)
+PD2=$((PORT + 15))     # 또 하나의 꺼진 포트 (모든 백엔드 실패)
 B=$WORK/backend
 B2=$WORK/backend2
-mkdir -p "$B/api" "$B/rr" "$B2/rr"
+mkdir -p "$B/api" "$B/rr" "$B2/rr" "$B/half"
+echo "backend $PB" > "$B/half/hello.txt"
 echo '<h1>backend</h1>' > "$B/index.html"
 echo '<h1>backend2</h1>' > "$B2/index.html"
 echo "backend $PB" > "$B/api/hello.txt"
@@ -673,7 +675,9 @@ SB=$XPID
 start_extra "$PB2" "$LOGB2" -r "$B2"
 SB2=$XPID
 start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD" \
-            -R "/rr/=127.0.0.1:$PB,127.0.0.1:$PB2"
+            -R "/rr/=127.0.0.1:$PB,127.0.0.1:$PB2" \
+            -R "/half/=127.0.0.1:$PD,127.0.0.1:$PB" \
+            -R "/alldown/=127.0.0.1:$PD,127.0.0.1:$PD2"
 SP=$XPID
 PURL=http://127.0.0.1:$PP
 
@@ -765,6 +769,28 @@ wait "${RRP[@]}"                            # 인자 없는 wait 는 띄워 둔 
 cat "$WORK"/rr[1-4].out > "$WORK/rr.out"
 expect "P2 동시 40개 → A 20개" 20 "$(grep -c "^backend $PB\$" "$WORK/rr.out")"
 expect "P2 동시 40개 → B 20개" 20 "$(grep -c "^backend $PB2\$" "$WORK/rr.out")"
+
+# P3: /half/ = [꺼진 포트, A]. 꺼진 쪽이 골려도 connect 실패라 A 로 재시도 → 4번 모두 200
+RR=
+for _ in 1 2 3 4; do
+    RR="$RR$(curl -s -w ':%{http_code}' "$PURL/half/hello.txt" | tr -d '\n') "
+done
+expect "P3 한 대가 꺼져도 4번 모두 A 가 200" \
+       "backend $PB:200 backend $PB:200 backend $PB:200 backend $PB:200 " "$RR"
+if wait_log "$LOGP" "(proxy retry: 127.0.0.1:$PD connect: Connection refused, trying 127.0.0.1:$PB)"; then
+    ok "P3 재시도 로그"
+else
+    fail "P3 재시도 로그" "프록시 로그에 없음"
+fi
+expect "P3 재시도는 2번 (4번 중 꺼진 쪽이 골린 2번)" 2 \
+       "$(grep -cF "(proxy retry: 127.0.0.1:$PD connect" "$LOGP")"
+# 모두 꺼짐 → 502
+expect "P3 백엔드가 모두 꺼짐 → 502"                 502 "$(code "$PURL/alldown/x")"
+if wait_log "$LOGP" "(proxy all 2 backends failed)"; then
+    ok "P3 502 로그 (proxy all 2 backends failed)"
+else
+    fail "P3 502 로그 (proxy all 2 backends failed)" "프록시 로그에 없음"
+fi
 
 # 자기 자신을 가리키는 규칙은 시작할 때 거부
 "$BIN" -p "$PX" -r "$R" -R "/a/=127.0.0.1:$PX" 2>"$WORK/self.err"

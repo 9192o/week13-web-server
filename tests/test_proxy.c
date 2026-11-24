@@ -115,6 +115,21 @@ static void test_pick_round_robin(void)
     CHECK(proxy_pick(&one) == &one.backends[0]);
 }
 
+/* P3 재시도: 목록의 다음 백엔드로 (끝이면 처음), 카운터는 그대로 */
+static void test_next(void)
+{
+    struct proxy_route r;
+
+    proxy_parse_rule("/a/=127.0.0.1:8001,127.0.0.1:8002,127.0.0.1:8003", &r, err, sizeof err);
+    CHECK(proxy_next(&r, &r.backends[0]) == &r.backends[1]);
+    CHECK(proxy_next(&r, &r.backends[2]) == &r.backends[0]);
+    CHECK_EQ_INT((long long)atomic_load(&r.next), 0);
+    CHECK(proxy_pick(&r) == &r.backends[0]);       /* 새 요청은 여전히 처음부터 */
+
+    proxy_parse_rule("/b/=127.0.0.1:9000", &r, err, sizeof err);
+    CHECK(proxy_next(&r, &r.backends[0]) == &r.backends[0]);
+}
+
 /* 규칙마다 카운터가 따로: 한 규칙을 써도 다른 규칙의 순서는 그대로 */
 static void test_pick_per_route(void)
 {
@@ -368,6 +383,7 @@ int main(void)
     RUN_TEST(test_parse_rule_list);
     RUN_TEST(test_pick_round_robin);
     RUN_TEST(test_pick_per_route);
+    RUN_TEST(test_next);
     RUN_TEST(test_pick_concurrent);
     RUN_TEST(test_is_self);
     RUN_TEST(test_build_request);

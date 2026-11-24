@@ -138,6 +138,14 @@ const struct proxy_backend *proxy_pick(struct proxy_route *r)
     return &r->backends[k % (unsigned long long)r->nbackends];
 }
 
+const struct proxy_backend *proxy_next(const struct proxy_route *r,
+                                       const struct proxy_backend *b)
+{
+    int i = (int)(b - r->backends);
+
+    return &r->backends[(i + 1) % r->nbackends];
+}
+
 const struct proxy_backend *proxy_find_self(const struct proxy_route *r,
                                             int listen_port)
 {
