@@ -41,11 +41,11 @@ Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시�
 | D1 | Phase 1 동적 처리 | 1 | **결정: CGI (C 프로그램)** |
 | D2 | Phase 2 동시성 모델 | 2 | **결정: 이벤트 루프 + 작업 스레드 풀** |
 | D3 | Phase 3 프록시 종류 | 3 | **결정: Reverse Proxy** |
-| D4 | Reverse 라우팅 | 3 | **미확정** (추천: 경로 기반) |
-| D5 | 프록시 정적 서빙 | 3 | **미확정** (추천: 직접 서빙) |
-| D6 | 설정 방식 | 1/3 | **결정: CLI (Phase 1) + Phase 3 설정 파일** |
+| D4 | Reverse 라우팅 | 3 | **결정: 경로 기반 (longest prefix)** |
+| D5 | 프록시 정적 서빙 | 3 | **결정: 프록시 직접 서빙** |
+| D6 | 설정 방식 | 1/3 | **결정: CLI (Phase 1) + Phase 3 INI 유사 설정 파일** |
 | D7 | 빌드 | 1 | **결정: Makefile** |
-| D8 | 캐싱 | 3 | **미확정** (선택) |
+| D8 | 캐싱 | 3 | **결정: Phase 3 MVP는 캐싱 없음** (작은 LRU는 future) |
 | D9 | Phase 1 keep-alive 시점 | 1/2 | **결정: B+** |
 | D10 | Phase 1 HTTP 기능 범위 | 1 | **결정:** HEAD, Last-Modified, OPTIONS, Range(단일). 100-continue 선택. ETag 보류 |
 | D11 | Phase 1 요청 한계 | 1 | **결정: 커스텀 확정** (4KB/16KB/100/8MB/20s/10s/100) |
@@ -53,6 +53,8 @@ Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시�
 | D13 | 테스트 전략 | 1 | **결정: 커스텀 단위 하네스 + 셸 통합** |
 | D14 | 이식성 목표 | 1 | **결정: macOS + Linux, POSIX 코어** |
 | D15 | Phase 2 정적 파일 처리 | 2 | **결정: A (이벤트 루프, MVP)**. 대안 B/C/D 문서화. 데모 페이지 성격에 따라 재검토 |
+| D16 | Phase 3 업스트림 연결 | 3 | **결정: keep-alive 풀** (기본 중계 완성 후 2차) |
+| D17 | Phase 3 헬스체크 | 3 | **결정: passive only** (active `/health`는 future) |
 
 ## Phase별 핵심 결정 메모
 
