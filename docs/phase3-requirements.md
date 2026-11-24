@@ -1,6 +1,7 @@
 # Phase 3 요구사항 — 프록시
 
 > 상위 인덱스: [requirements.md](requirements.md)
+> 설계: [phase3-design.md](phase3-design.md)
 > Phase 1의 HTTP 서버와 Phase 2의 동시성을 기반으로 Proxy 또는 Reverse Proxy를 구현한다.
 
 ## 0. 범위
