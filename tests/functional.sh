@@ -749,8 +749,11 @@ if cmp -s "$WORK/p1.mid" "$R/mid.bin"; then
 else
     fail "10MB 본문 중계 (cmp 일치)" "내용이 다름 ($(wc -c < "$WORK/p1.mid") 바이트)"
 fi
-expect "규칙에 없는 경로는 프록시 자신이 처리 (P7 결정 전 현재 동작)" '<h1>hi</h1>' \
+# P7: 규칙에 없는 경로는 프록시가 직접 서빙 (있는 파일로 확인해야 404 와 구분됨)
+expect "P7 규칙에 없는 /index.html → 프록시 자신의 파일" '<h1>hi</h1>' \
        "$(curl -s "$PURL/index.html")"
+expect "P7 규칙에 없는 /cgi-bin 도 프록시 자신이 실행" 5 \
+       "$(curl -s -X POST -d hello "$PURL/cgi-bin/len")"
 expect "POST 는 405 (본문 전달은 P8)"               405 "$(code -X POST -d 'a=1' "$PURL/api/hello.txt")"
 
 # 꺼진 백엔드: connect 가 바로 거절 → 502
