@@ -663,6 +663,7 @@ PB2=$((PORT + 14))     # 백엔드 B (라운드로빈)
 PD2=$((PORT + 15))     # 또 하나의 꺼진 포트 (모든 백엔드 실패)
 PN=$((PORT + 16))      # P4: nc -l (받기만 하고 응답 없음)
 PS=$((PORT + 17))      # P4: nc -l (헤더와 본문 일부만 보내고 멈춤)
+PK=$((PORT + 18))      # P5: nc -l (본문 일부만 보내고 연결을 닫음 = 전송 도중 죽음)
 BH=192.0.2.1:80        # P4: 응답 없는 IP (TEST-NET-1, 보통 패킷이 버려져 connect 가 멈춤)
 B=$WORK/backend
 B2=$WORK/backend2
@@ -674,6 +675,7 @@ echo "backend $PB" > "$B/api/hello.txt"
 echo "backend $PB" > "$B/rr/hello.txt"
 echo "backend $PB2" > "$B2/rr/hello.txt"
 cp "$R/mid.bin" "$B/api/mid.bin"
+ln "$R/big.bin" "$B/api/big.bin"   # P6: 100MB (소켓 버퍼에 다 들어가지 않는 크기). 하드 링크라 복사 안 함
 LOGB=$WORK/backend.log
 LOGB2=$WORK/backend2.log
 LOGP=$WORK/proxy.log
@@ -686,7 +688,8 @@ start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD" \
             -R "/half/=127.0.0.1:$PD,127.0.0.1:$PB" \
             -R "/alldown/=127.0.0.1:$PD,127.0.0.1:$PD2" \
             -R "/hang/=127.0.0.1:$PN" -R "/stall/=127.0.0.1:$PS" \
-            -R "/blackhole/=$BH" -R "/bhretry/=$BH,127.0.0.1:$PB"
+            -R "/blackhole/=$BH" -R "/bhretry/=$BH,127.0.0.1:$PB" \
+            -R "/dies/=127.0.0.1:$PK"
 SP=$XPID
 PURL=http://127.0.0.1:$PP
 
@@ -800,6 +803,36 @@ if wait_log "$LOGP" "(proxy all 2 backends failed)"; then
 else
     fail "P3 502 로그 (proxy all 2 backends failed)" "프록시 로그에 없음"
 fi
+
+# P5: 전송 도중 백엔드가 죽음. 헤더(Content-Length 100000)와 본문 1000바이트만 보내고 닫는
+# 백엔드로 흉내 낸다 (실제 서버를 Ctrl-C 하면 정상 종료가 진행 중인 전송을 끝까지 기다림).
+{ printf 'HTTP/1.0 200 OK\r\nContent-Length: 100000\r\n\r\n'; head -c 1000 /dev/zero; } |
+    nc -N -l 127.0.0.1 "$PK" > /dev/null &
+NCK=$!
+sleep 0.3                                    # nc 가 listen 할 시간
+curl -s -o "$WORK/dies.out" "$PURL/dies/big.png"
+RC=$?
+wait "$NCK" 2>/dev/null
+expect "P5 백엔드가 도중에 닫음 → curl exit 18 (transfer closed)" 18 "$RC"
+expect "P5 받은 본문 1000바이트 < Content-Length"  1000 "$(wc -c < "$WORK/dies.out" | tr -d ' ')"
+if wait_log "$LOGP" "200 1000 (proxy 127.0.0.1:$PK, backend closed early)"; then
+    ok "P5 로그 (200 1000, backend closed early)"
+else
+    fail "P5 로그 (200 1000, backend closed early)" "프록시 로그에 없음"
+fi
+expect "P5 백엔드가 죽은 뒤 다시 요청 → 502 (프록시는 살아 있음)" 502 "$(code "$PURL/dies/hello")"
+
+# P6: 전송 도중 클라이언트가 끊음. 100MB 를 요청하고 100KB 만 읽은 뒤 닫는다.
+timeout 10 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PP"'
+printf "GET /api/big.bin HTTP/1.1\r\nHost: x\r\n\r\n" >&3
+head -c 100000 <&3 > /dev/null'
+if wait_log "$LOGP" "(proxy 127.0.0.1:$PB, client closed)"; then
+    ok "P6 프록시 로그 (client closed)"
+else
+    fail "P6 프록시 로그 (client closed)" "프록시 로그에 없음"
+fi
+expect "P6 끊긴 뒤에도 프록시·백엔드 정상 → 200, 백엔드 A" "backend $PB:200" \
+       "$(curl -s -w ':%{http_code}' "$PURL/api/hello.txt" | tr -d '\n')"
 
 # P4: 백엔드가 늦음 → 504 (--timing: 프록시 시간 제한 PROXY_MS 만큼 기다림)
 if [ "$TIMING" = 1 ]; then
