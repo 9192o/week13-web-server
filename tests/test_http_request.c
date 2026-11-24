@@ -225,3 +225,147 @@ void test_get_header(void) {
 
     http_request_free(&req);
 }
+
+void test_duplicate_host_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET / HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "Host: b\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_host_space_before_colon_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET / HTTP/1.1\r\n"
+        "Host : x\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_header_name_token_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X(y): 1\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_header_value_ctl_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X-Test: a\x01b\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_content_length_plus_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length: +5\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_method_token_ctl_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GE\x01T / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_target_ctl_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET /a\nb HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_percent_encoded_trailing_slash(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET /demo%2f HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_OK);
+    TEST_ASSERT_EQ_STR(req.path, "/demo/");
+    http_request_free(&req);
+}
+
+void test_percent_encoded_ctl_rejected(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET /a%01b HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+
+    st = parse(
+        "GET /a%0d%0ab HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_BAD_REQUEST);
+    http_request_free(&req);
+}
+
+void test_parse_incomplete_headers(void) {
+    http_request_t req;
+    http_status_t st = parse(
+        "GET / HTTP/1.1\r\n"
+        "Host: x\r\n",
+        &req);
+    TEST_ASSERT_EQ_INT(st, HTTP_PARSE_INCOMPLETE);
+    http_request_free(&req);
+}
+
+void test_parse_split_points(void) {
+    const char *raw = "GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n";
+    size_t len = strlen(raw);
+
+    config_t cfg;
+    config_init(&cfg);
+
+    for (size_t i = 0; i < len; i++) {
+        http_request_t req;
+        http_request_init(&req);
+        http_status_t st = http_request_parse_buffer(raw, i, &cfg, &req);
+        TEST_ASSERT_EQ_INT(st, HTTP_PARSE_INCOMPLETE);
+        http_request_free(&req);
+    }
+
+    http_request_t req;
+    http_request_init(&req);
+    TEST_ASSERT_EQ_INT(
+        http_request_parse_buffer(raw, len, &cfg, &req), HTTP_OK);
+    http_request_free(&req);
+}

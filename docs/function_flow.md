@@ -28,7 +28,7 @@ main
         └─ handle_connection
             ├─ has_header_end
             ├─ set_send_timeout
-            ├─ set_recv_timeout
+            ├─ poll (deadline)
             ├─ http_request_init
             ├─ http_request_parse_buffer
             │   ├─ find_crlf
@@ -44,13 +44,13 @@ main
             │       │   └─ hexval
             │       └─ normalize_path
             ├─ http_request_read_body
-            │   └─ readn_stop
+            │   └─ readn_deadline
             ├─ 라우팅
             │   ├─ http_response_send_options
             │   ├─ cgi_handle
             │   │   ├─ path_within_root
             │   │   ├─ pipe / tmpfile / fork
-            │   │   ├─ set_cgi_env
+            │   │   ├─ build_cgi_env
             │   │   ├─ poll
             │   │   └─ send_cgi_response
             │   └─ static_file_handle
@@ -173,10 +173,10 @@ accept
 
 #### `util.c` — 전 구간에서 조금씩
 
-- **호출자는 거의 모든 모듈**이다. `server.c`(로그/타임아웃), `http_request.c`(`readn_stop`), `http_response.c`(`writen`), `static_file.c`(MIME/날짜/`writen`), `cgi.c`(`writen`).
+- **호출자는 거의 모든 모듈**이다. `server.c`(로그/타임아웃), `http_request.c`(`readn_deadline`), `http_response.c`(`writen`/`write_body`), `static_file.c`(MIME/날짜/`write_body`), `cgi.c`(`write_body`).
 - "여러 모듈이 똑같이 필요로 하는 바닥 지식"이다. 부분 읽기/쓰기 루프, IMF-fixdate 변환, 확장자→MIME.
 - 이게 없으면 `read`/`write` 루프가 모듈마다 복사되고, 한 곳의 버그를 고쳐도 다른 곳에 남는다.
-- `readn_stop`/`writen`이 특히 중요하다. 소켓은 "한 번에 다 읽고 쓰는" 것을 보장하지 않는다.
+- `readn_deadline`/`writen`/`write_body`가 특히 중요하다. 소켓은 "한 번에 다 읽고 쓰는" 것을 보장하지 않는다.
 
 #### `main.c` — 24줄짜리 지휘자
 
@@ -352,7 +352,7 @@ accept
   - keep-alive로 다음 요청 대기(`len == 0 && requests > 0`) → `keepalive_idle_sec`
   - 요청이 일부 들어온 상태(`len > 0`) → 다시 `request_timeout_sec`
 - **`EINTR`이면 `g_stop`을 확인한다.** 종료 중이면 바로 return하고, 아니면 재시도한다. 시그널로 `read`가 깨진 것은 에러가 아니다.
-- **`EAGAIN`/`EWOULDBLOCK`은 `SO_RCVTIMEO` 만료다.**
+- **`EAGAIN`/`EWOULDBLOCK`은 poll deadline 만료다.**
   - idle 대기 중이었으면 **응답 없이 조용히 close.** 클라이언트가 그냥 떠난 것과 같다.
   - 요청 도중이었으면 **`408 Request Timeout`.**
 - **`read == 0`은 클라이언트가 닫은 것.** 그대로 return.
@@ -445,10 +445,10 @@ SIGINT/SIGTERM (두 번째)
 
 - **에러 응답은 거의 항상 연결을 닫는다.** `http_response_send_error(..., 1)`이 대부분이다. 파싱 실패 후 남은 바이트를 신뢰할 수 없기 때문이다.
 - **응답 상태 라인은 항상 `HTTP/1.1`이다.** HTTP/1.0 요청에도 1.1로 응답한다.
-- **`SO_RCVTIMEO`와 `SO_SNDTIMEO`을 모두 설정한다.** 읽기/쓰기 **호출 한 번**이 `request_timeout_sec`까지만 기다린다. 전체 응답 시간 제한은 아니다. `writen`은 타임아웃 시 `-1`을 반환하고 호출자가 연결을 닫는다.
+- **수신은 `poll` + 절대 deadline, 송신은 `SO_SNDTIMEO`으로 제한한다.** 헤더/본문 전체 시간이 `request_timeout_sec`을 넘지 않는다. `writen`은 타임아웃 시 `-1`을 반환하고 호출자가 연결을 닫는다.
 - **Phase 1 종료 시 backlog 연결은 RST될 수 있다.** 단일 스레드라 요청 처리 중 `listenfd`를 즉시 닫을 수 없어서다. Phase 2에서 accept 담당 주체가 먼저 `listenfd`를 닫는 구조로 해결한다.
 - **`has_header_end`는 매 read마다 버퍼 전체를 다시 훑는다.** 최악 O(n²)이지만 16KB 상한이라 실용 범위다. 비용 분석과 최적화 방향은 5절 `has_header_end()` 참고.
-- **CGI 타임아웃은 idle 기준이다.** 전체 실행 시간 제한이 아니다.
+- **CGI 타임아웃은 시작 시점부터의 전체 실행 시간 제한이다.** `poll`을 다시 호출해도 deadline이 연장되지 않는다.
 - **`ci_contains`는 substring 검색이다.** 정식 토큰 파서가 아니다.
 - **`http_response_send_memory`는 keep-alive를 지원하지 않는다.** 테스트 전용 경로다.
 - **`server_request_stop`, `http_request_reset`, `http_response_set_status`는 현재 미사용이다.** Phase 2/테스트를 위한 여지다.

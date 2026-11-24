@@ -18,6 +18,17 @@ void test_chunked_rejected(void);
 void test_header_ows_trim(void);
 void test_connection_close_keepalive(void);
 void test_get_header(void);
+void test_duplicate_host_rejected(void);
+void test_host_space_before_colon_rejected(void);
+void test_header_name_token_rejected(void);
+void test_header_value_ctl_rejected(void);
+void test_content_length_plus_rejected(void);
+void test_method_token_ctl_rejected(void);
+void test_target_ctl_rejected(void);
+void test_percent_encoded_trailing_slash(void);
+void test_percent_encoded_ctl_rejected(void);
+void test_parse_incomplete_headers(void);
+void test_parse_split_points(void);
 
 void test_http_date_epoch(void);
 void test_http_date_roundtrip(void);
@@ -53,6 +64,17 @@ int main(void) {
     RUN_TEST(test_header_ows_trim);
     RUN_TEST(test_connection_close_keepalive);
     RUN_TEST(test_get_header);
+    RUN_TEST(test_duplicate_host_rejected);
+    RUN_TEST(test_host_space_before_colon_rejected);
+    RUN_TEST(test_header_name_token_rejected);
+    RUN_TEST(test_header_value_ctl_rejected);
+    RUN_TEST(test_content_length_plus_rejected);
+    RUN_TEST(test_method_token_ctl_rejected);
+    RUN_TEST(test_target_ctl_rejected);
+    RUN_TEST(test_percent_encoded_trailing_slash);
+    RUN_TEST(test_percent_encoded_ctl_rejected);
+    RUN_TEST(test_parse_incomplete_headers);
+    RUN_TEST(test_parse_split_points);
 
     RUN_TEST(test_http_date_epoch);
     RUN_TEST(test_http_date_roundtrip);

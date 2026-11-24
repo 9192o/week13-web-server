@@ -148,7 +148,7 @@
 - **이름이 비면 `400`.**
 - **zero-copy로 `buf` 안을 가리키는 포인터만 저장한다.** 헤더마다 malloc하면 요청당 수십 번 할당이 생긴다.
 - **특별 처리**: `Host`는 `has_host`, `Connection`은 `keep_alive`, `Content-Length`는 `parse_content_length`, `Transfer-Encoding`은 플래그, `Expect: 100-continue`는 `expect_continue`.
-- **`Expect`는 파싱만 하고 실제 `100 Continue` 전송은 하지 않는다.** 현재는 무시하고 본문을 바로 읽는다.
+- **`Expect`는 CGI body가 필요하고 아직 버퍼에 없을 때 `100 Continue`를 보낸다.** static/OPTIONS는 body를 읽지 않으므로 보내지 않는다.
 
 ### `http_request_init()`
 
@@ -173,21 +173,22 @@
 
 ### `http_request_read_body()`
 
-`src/http_request.c:403` · `http_status_t` · ← `handle_connection`
+`src/http_request.c:472` · `http_status_t` · ← `handle_connection`
 
 - **이전 본문을 먼저 해제한다.** 재사용 시나리오에서 누수를 막는다.
 - **`Content-Length`가 없거나 0이면 즉시 `HTTP_OK`.** GET 대부분이 여기서 끝난다.
 - **`max_body`를 한 번 더 검사한다.** 파서를 거치지 않은 경로에 대한 방어다.
 - **버퍼에 이미 들어온 본문을 먼저 복사한다.** keep-alive에서 다음 요청과 함께 본문이 도착한 경우다.
-- **모자란 만큼만 `readn_stop`으로 읽는다.** 이미 읽은 바이트를 다시 읽지 않는다.
+- **본문은 16KB부터 시작해 두 배씩 `realloc`한다.** `Content-Length` 전체를 한 번에 할당하지 않는다.
+- **모자란 만큼만 `readn_deadline`으로 읽는다.** 이미 읽은 바이트를 다시 읽지 않는다.
 - **`stop`이 세워지면 본문 읽기를 중단한다.** 시그널로 `read`가 `EINTR`로 깼을 때 `stop`을 확인하고 `-1`을 반환한다. 서버는 이때 에러 응답을 보내지 않고 연결을 닫는다.
-- **`EAGAIN`/`EWOULDBLOCK`이면 `408`.** `SO_RCVTIMEO` 만료다.
+- **`EAGAIN`/`EWOULDBLOCK`이면 `408`.** 절대 deadline 만료다.
 - **short read면 `400`.** 클라이언트가 본문을 덜 보내고 끊은 경우다.
 - **`body_len = content_length`로 확정한다.**
 
 ### `http_request_get_header()`
 
-`src/http_request.c:453` · `const char *` · ← `static_file_handle`, `set_cgi_env`
+`src/http_request.c:543` · `const char *` · ← `static_file_handle`, `build_cgi_env`
 
 - **헤더 배열을 선형 탐색하며 대소문자 무시 비교한다.** 헤더가 100개 이하라 선형으로 충분하다.
 - **값 포인터와 길이를 함께 돌려준다.** zero-copy라 NUL-terminate가 없어서 길이가 필수다.
@@ -259,7 +260,7 @@
 
 ### `http_response_send_error()`
 
-`src/http_response.c:149` · `int` · ← 모든 핸들러
+`src/http_response.c:220` · `int` · ← 모든 핸들러
 
 - **HTML 에러 본문을 만든다.** `<h1>404 Not Found</h1>` 형태.
 - **`Content-Type: text/html; charset=utf-8`, `Content-Length`, `Connection`을 붙인다.**
@@ -270,7 +271,7 @@
 
 ## 3. 정적 파일 흐름 — `static_file_handle()`
 
-`src/static_file.c:174` · `handler_result_t` · ← `handle_connection`
+`src/static_file.c:194` · `handler_result_t` · ← `handle_connection`
 
 - **반환값은 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`.** 에러 응답(404/403/416 등)은 `HANDLER_CLOSE`라서 연결을 재사용하지 않는다.
 - **GET/HEAD가 아니면 `405`.** 정적 파일은 읽기 전용이다.
@@ -362,7 +363,7 @@
 
 ## 4. CGI 흐름 — `cgi_handle()`
 
-`src/cgi.c:157` · `handler_result_t` · ← `handle_connection`
+`src/cgi.c:254` · `handler_result_t` · ← `handle_connection`
 
 - **반환값은 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`.** CGI 에러(404/500/504 등)는 `HANDLER_CLOSE`라서 연결을 재사용하지 않는다.
 - **`/cgi-bin/` 접두사 확인.** 아니면 `404`. 라우팅에서 이미 걸러지지만 이중 방어다.
@@ -380,7 +381,7 @@
 - **stdin을 본문 임시 파일(없으면 `/dev/null`)로 `dup2`.**
 - **stdout을 `out_pipe[1]`로 `dup2`.**
 - **`out_pipe[0]`, `out_pipe[1]`, `connfd`를 닫는다.** 자식이 클라이언트 소켓을 들고 있으면 연결이 예상보다 늦게 닫힌다.
-- **`set_cgi_env`로 요청 정보를 환경변수에 넣는다.**
+- **`build_cgi_env`로 요청 정보를 환경변수에 넣는다.**
 - **`execve`로 실행하고, 실패하면 `_exit(127)`.** 자식에서 `exit`가 아니라 `_exit`를 쓰는 이유는 부모의 stdio 버퍼를 복사/플러시하지 않기 위해서다.
 
 ### 부모 프로세스
@@ -393,7 +394,7 @@
 - **출력이 0바이트면 `500`.** 헤더조차 없는 출력은 정상 응답이 아니다.
 - **`waitpid`로 좀비를 거두고**, 정상 출력이면 `send_cgi_response`로 넘긴다.
 
-> **타임아웃의 정확한 의미**: `poll` 타임아웃은 **읽기 한 번마다 새로 주는 idle timeout**이다. 전체 실행 시간 제한이 아니다. 19초마다 1바이트씩 출력하는 CGI는 계속 살아남는다. 전체 시간 제한이 필요하면 시작 시각을 기록해 남은 시간을 계산해야 한다.
+> **타임아웃의 정확한 의미**: CGI 타임아웃은 **시작 시점부터의 전체 실행 시간 제한**이다. `poll`을 다시 호출해도 deadline이 연장되지 않는다. 19초마다 1바이트씩 출력하는 CGI도 결국 deadline에 걸린다.
 
 ### `path_within_root()` (cgi)
 
@@ -403,9 +404,9 @@
 - **`/cgi-bin`과 `/cgi-bin2`를 구분한다.** prefix 다음 문자가 `/` 또는 `\0`인지 확인한다.
 - **symlink로 cgi_dir 밖을 가리키는 스크립트를 차단한다.** `realpath` 결과에 적용된다.
 
-### `set_cgi_env()`
+### `build_cgi_env()`
 
-`src/cgi.c:124` · `static void` · ← 자식 프로세스
+`src/cgi.c` · `static char **` · ← `cgi_handle()` (fork 전)
 
 - **`GATEWAY_INTERFACE=CGI/1.1`**: 이 프로세스가 CGI 규약으로 불렸다는 표시.
 - **`REQUEST_METHOD`**: `GET`/`POST` 등.
@@ -416,16 +417,17 @@
 - **`SERVER_PROTOCOL`**: `HTTP/1.1` 형식.
 - **`SERVER_PORT`**: 설정 포트.
 - **`REMOTE_ADDR`**: 클라이언트 IP.
-- **`setenv`를 쓰므로 자식의 환경을 덮어쓴다.** 부모 환경은 복사본이라 영향이 없다 (fork 후 자식 메모리).
+- **`PATH=/usr/bin:/bin`만 남기고 서버 환경은 물려주지 않는다.**
+- **자식은 `setenv`를 호출하지 않는다.** 부모가 만든 `envp`를 `execve`에 그대로 넘긴다.
 
 ### `send_cgi_response()`
 
-`src/cgi.c:29` · `static int` · ← `cgi_handle`
+`src/cgi.c:39` · `static int` · ← `cgi_handle`
 
 - **`\r\n\r\n` 또는 `\n\n`으로 헤더/본문을 가른다.** CGI 프로그램이 CRLF를 안 쓰는 경우도 받아준다.
 - **구분자가 없으면 `500`.** CGI 출력의 최소 형식이다.
 - **`output`을 in-place로 자른다.** 어차피 곧 free할 버퍼라 복사하지 않는다.
-- **`Status:` 헤더는 HTTP 상태로 변환한다.** 100~599만 허용, 아니면 무시하고 200 유지.
+- **`Status:` 헤더는 HTTP 상태로 변환한다.** 3자리 숫자 200~599만 허용하고, 아니면 `500`. 중복 `Status`/`Content-Type`도 `500`.
 - **`Content-Length`와 `Connection`은 버린다.** 서버가 다시 계산한다. CGI가 틀린 길이를 써도 클라이언트가 깨지지 않는다.
 - **나머지 헤더는 그대로 전달한다.** `Set-Cookie` 같은 헤더를 살리기 위해서다.
 - **`Content-Type`이 없으면 `text/plain`.**
@@ -438,7 +440,7 @@
 
 ### `readn_stop()`
 
-`src/util.c:12` · `ssize_t` · ← `http_request_read_body`
+`src/util.c:114` · `ssize_t` · ← `readn()`
 
 - **`n`바이트를 채울 때까지 `read`를 반복한다.** `read` 한 번이 요청한 만큼 다 읽는다는 보장이 없다.
 - **`stop`이 `NULL`이 아니고 세워져 있으면 중단한다.** `EINTR`로 깼을 때 `stop`을 확인하고 `errno = EINTR`로 `-1`을 반환한다.
@@ -446,16 +448,32 @@
 - **반환값은 실제로 읽은 바이트 수.** 짧게 읽었는지는 호출자가 `n`과 비교해서 판단한다.
 - **에러 시 `-1`.** `errno`는 그대로 보존된다.
 
+### `readn_deadline()`
+
+`src/util.c` · `ssize_t` · ← `http_request_read_body`
+
+- **절대 deadline까지 `poll`로 기다린 뒤 `read`한다.** 매 read마다 timeout을 새로 주지 않는다.
+- **`EAGAIN`/`EWOULDBLOCK`이면 deadline 만료다.**
+- **`stop`이 세워지면 `EINTR`로 중단한다.**
+- **반환값은 실제로 읽은 바이트 수.** 짧게 읽었는지는 호출자가 `n`과 비교한다.
+
+### `write_body()`
+
+`src/util.c:84` · `ssize_t` · ← 응답 body 전송
+
+- **`writen`으로 body를 보내고, 성공한 바이트를 access log에 누적한다.**
+- **헤더 전송은 `writen`을 써서 access log의 body 바이트에 포함하지 않는다.**
+
 ### `readn()`
 
-`src/util.c:37` · `ssize_t` · 현재 미사용 (호환용)
+`src/util.c:139` · `ssize_t` · 현재 미사용 (호환용)
 
 - **`readn_stop(fd, buf, n, NULL)`을 부르는 얇은 래퍼다.** 종료 플래그가 필요 없는 곳에서 쓴다.
 - 동작은 `readn_stop`과 같다.
 
 ### `writen()`
 
-`src/util.c:41` · `ssize_t` · ← 모든 응답 전송
+`src/util.c:143` · `ssize_t` · ← 모든 응답 전송
 
 - **`write`가 부분 쓰기를 해도 남은 만큼 계속 쓴다.** 소켓은 요청한 크기만큼 한 번에 쓰지 않을 수 있다.
 - **`EINTR` 재시도, `0`이면 중단.**
@@ -536,14 +554,15 @@
 | `setup_signals` | `src/server.c:28` | SIGPIPE/SIGINT/SIGTERM 등록 |
 | `create_listen_socket` | `src/server.c:45` | socket/bind/listen |
 | `has_header_end` | `src/server.c:82` | `\r\n\r\n` 탐색 |
-| `set_recv_timeout` | `src/server.c:91` | `SO_RCVTIMEO` 설정 |
-| `set_send_timeout` | `src/server.c:101` | `SO_SNDTIMEO` 설정 |
-| `handle_connection` | `src/server.c:111` | 연결별 요청 루프 |
-| `server_run` | `src/server.c:230` | accept 루프 |
-| `server_request_stop` | `src/server.c:268` | 외부 종료 API (미사용) |
-| `readn_stop` | `src/util.c:12` | 종료 플래그 지원 n바이트 읽기 |
-| `readn` | `src/util.c:37` | `readn_stop(..., NULL)` 래퍼 |
-| `writen` | `src/util.c:41` | n바이트 쓰기 |
+| `set_send_timeout` | `src/server.c` | `SO_SNDTIMEO` 설정 |
+| `handle_connection` | `src/server.c` | 연결별 요청 루프 |
+| `server_run` | `src/server.c` | accept 루프 |
+| `server_request_stop` | `src/server.c` | 외부 종료 API (미사용) |
+| `now_ms` | `src/util.c` | monotonic 밀리초 |
+| `readn_deadline` | `src/util.c` | deadline 기반 n바이트 읽기 |
+| `readn_stop` | `src/util.c` | 종료 플래그 지원 n바이트 읽기 |
+| `readn` | `src/util.c:139` | `readn_stop(..., NULL)` 래퍼 |
+| `writen` | `src/util.c:143` | n바이트 쓰기 |
 | `log_error` | `src/util.c:60` | stderr 로그 |
 | `mime_type` | `src/util.c:68` | 확장자 → MIME |
 | `days_from_civil` | `src/util.c:99` | 날짜 → epoch 일수 |
@@ -568,8 +587,8 @@
 | `http_request_free` | `src/http_request.c:347` | 본문 해제 |
 | `http_request_reset` | `src/http_request.c:353` | 재사용 초기화 (미사용) |
 | `http_request_parse_buffer` | `src/http_request.c:358` | 헤더 파싱 진입점 |
-| `http_request_read_body` | `src/http_request.c:403` | 본문 읽기 |
-| `http_request_get_header` | `src/http_request.c:453` | 헤더 조회 |
+| `http_request_read_body` | `src/http_request.c:472` | 본문 읽기 |
+| `http_request_get_header` | `src/http_request.c:543` | 헤더 조회 |
 | `http_status_reason` | `src/http_response.c:7` | 상태 → reason |
 | `http_response_init` | `src/http_response.c:31` | 응답 초기화 |
 | `http_response_set_status` | `src/http_response.c:35` | 상태 설정 (미사용) |
@@ -578,7 +597,7 @@
 | `http_response_send_redirect` | `src/http_response.c:80` | 301 |
 | `http_response_send_options` | `src/http_response.c:101` | 200 + Allow |
 | `http_response_send_memory` | `src/http_response.c:119` | 메모리 본문 응답 |
-| `http_response_send_error` | `src/http_response.c:149` | HTML 에러 |
+| `http_response_send_error` | `src/http_response.c:220` | HTML 에러 |
 | `send_file` | `src/static_file.c:17` | 64KB 스트리밍 |
 | `has_dotfile_segment` | `src/static_file.c:37` | dotfile 검사 |
 | `path_within_root` | `src/static_file.c:55` | root 포함 검사 |
@@ -587,11 +606,11 @@
 | `parse_size_value` | `src/static_file.c:81` | Range 숫자 파싱 |
 | `parse_range_header` | `src/static_file.c:99` | Range 해석 |
 | `send_range_error` | `src/static_file.c:151` | 416 |
-| `static_file_handle` | `src/static_file.c:174` | 정적 파일 서빙 |
+| `static_file_handle` | `src/static_file.c:194` | 정적 파일 서빙 |
 | `path_within_root` (cgi) | `src/cgi.c:22` | cgi_dir 포함 검사 |
-| `send_cgi_response` | `src/cgi.c:29` | CGI 출력 → HTTP |
-| `set_cgi_env` | `src/cgi.c:124` | CGI 환경변수 |
-| `cgi_handle` | `src/cgi.c:157` | CGI 실행 |
+| `send_cgi_response` | `src/cgi.c:39` | CGI 출력 → HTTP |
+| `build_cgi_env` | `src/cgi.c:189` | CGI 환경변수 |
+| `cgi_handle` | `src/cgi.c:252` | CGI 실행 |
 
 ---
 

@@ -1,13 +1,115 @@
 #include "util.h"
+#include "access_log.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+uint64_t now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000u +
+           (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+ssize_t readn_deadline(int fd, void *buf, size_t n, uint64_t deadline_ms,
+                       const volatile sig_atomic_t *stop) {
+    size_t nleft = n;
+    char *p = buf;
+
+    while (nleft > 0) {
+        uint64_t now = now_ms();
+        if (now >= deadline_ms) {
+            errno = EAGAIN;
+            return -1;
+        }
+
+        uint64_t remaining = deadline_ms - now;
+        int timeout = remaining > INT_MAX ? INT_MAX : (int)remaining;
+
+        struct pollfd pfd;
+        pfd.fd = fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+
+        int pr = poll(&pfd, 1, timeout);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                if (stop != NULL && *stop) {
+                    errno = EINTR;
+                    return -1;
+                }
+                continue;
+            }
+            return -1;
+        }
+        if (pr == 0) {
+            errno = EAGAIN;
+            return -1;
+        }
+        if (pfd.revents & (POLLERR | POLLNVAL)) {
+            errno = EIO;
+            return -1;
+        }
+
+        ssize_t r = read(fd, p, nleft);
+        if (r < 0) {
+            if (errno == EINTR) {
+                if (stop != NULL && *stop) {
+                    errno = EINTR;
+                    return -1;
+                }
+                continue;
+            }
+            return -1;
+        }
+        if (r == 0)
+            break;
+        nleft -= (size_t)r;
+        p += r;
+    }
+    return (ssize_t)(n - nleft);
+}
+
+ssize_t write_body(int fd, const void *buf, size_t n) {
+    ssize_t written = writen(fd, buf, n);
+    access_log_t *log = access_log_current();
+    if (written > 0 && log != NULL)
+        access_log_add_bytes(log, (size_t)written);
+    return written;
+}
+
+void lingering_close(int fd) {
+    (void)shutdown(fd, SHUT_WR);
+
+    struct timeval tv;
+    tv.tv_sec = 1;
+    tv.tv_usec = 0;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
+    size_t total = 0;
+    char buf[4096];
+    while (total < 65536) {
+        ssize_t n = read(fd, buf, sizeof buf);
+        if (n > 0) {
+            total += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        break;
+    }
+}
 
 ssize_t readn_stop(int fd, void *buf, size_t n,
                    const volatile sig_atomic_t *stop) {
@@ -54,6 +156,7 @@ ssize_t writen(int fd, const void *buf, size_t n) {
         nleft -= (size_t)r;
         p += r;
     }
+
     return (ssize_t)(n - nleft);
 }
 

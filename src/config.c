@@ -107,6 +107,13 @@ int config_parse_cli(int argc, char **argv, config_t *cfg) {
     return 0;
 }
 
+static int path_within(const char *root, const char *path) {
+    size_t root_len = strlen(root);
+    if (strncmp(root, path, root_len) != 0)
+        return 0;
+    return path[root_len] == '\0' || path[root_len] == '/';
+}
+
 int config_validate(const config_t *cfg) {
     if (cfg->port < 1 || cfg->port > 65535) {
         fprintf(stderr, "invalid port: %d\n", cfg->port);
@@ -130,6 +137,32 @@ int config_validate(const config_t *cfg) {
         }
         if (!S_ISDIR(st.st_mode)) {
             fprintf(stderr, "cgi_dir '%s' is not a directory\n", cfg->cgi_dir);
+            return -1;
+        }
+    }
+
+    char root[PATH_MAX];
+    if (realpath(cfg->docroot, root) == NULL) {
+        fprintf(stderr, "docroot '%s': %s\n", cfg->docroot, strerror(errno));
+        return -1;
+    }
+    if (strcmp(root, "/") == 0) {
+        fprintf(stderr, "docroot must not be '/'\n");
+        return -1;
+    }
+
+    if (cfg->cgi_dir[0] != '\0') {
+        char cgi_root[PATH_MAX];
+        if (realpath(cfg->cgi_dir, cgi_root) == NULL) {
+            fprintf(stderr, "cgi_dir '%s': %s\n",
+                    cfg->cgi_dir, strerror(errno));
+            return -1;
+        }
+        if (strcmp(cgi_root, "/") == 0 ||
+            path_within(root, cgi_root) ||
+            path_within(cgi_root, root)) {
+            fprintf(stderr,
+                    "docroot and cgi_dir must not contain each other\n");
             return -1;
         }
     }

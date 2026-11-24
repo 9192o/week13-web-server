@@ -44,7 +44,7 @@ accept()
 - `header_len`은 헤더 블록이 끝난 위치(본문 시작)를 나타낸다.
 - `http_request_read_body`는:
   1. 버퍼에 이미 들어온 본문 바이트를 복사하고
-  2. 모자란 만큼 `readn_stop`으로 읽는다. 종료 플래그가 세워지면 중단한다.
+  2. 모자란 만큼 `readn_deadline`으로 읽는다. 종료 플래그가 세워지면 중단한다.
 - keep-alive에서 본문 뒤에 남은 바이트는 `memmove`로 버퍼 앞으로 옮겨 다음 요청으로 넘긴다.
 
 ## keep-alive
@@ -85,7 +85,7 @@ accept()
 - `SIGPIPE` 무시 → 쓰기 중 클라이언트가 끊겨도 서버 생존.
 - `SIGINT`/`SIGTERM` → 첫 시그널은 `g_stop` 플래그, 두 번째 시그널은 `_exit(1)` 강제 종료.
 - 종료 시 헤더/본문을 읽는 중인 요청은 중단하고, 이미 파싱된 요청의 응답은 마무리한다. keep-alive 응답에는 `Connection: close`를 붙인다.
-- `SO_RCVTIMEO`/`SO_SNDTIMEO`으로 읽기/쓰기 대기 시간을 제한한다.
+- 헤더/본문은 `poll` + `CLOCK_MONOTONIC` 절대 deadline으로 제한하고, 송신은 `SO_SNDTIMEO`으로 제한한다.
 - Phase 1은 요청 처리 중 `listenfd`를 즉시 닫을 수 없어 backlog 연결이 RST될 수 있다 (Phase 2에서 개선).
 - `listenfd`에 `FD_CLOEXEC`.
 - 연결마다 `connfd`, 정적 파일 fd, CGI 파이프/임시 파일을 모든 경로에서 닫는다.
@@ -101,8 +101,21 @@ accept()
 - 자세한 내용: [phase1-test-plan.md](phase1-test-plan.md), [quality-gate.md](quality-gate.md),
   실행 흐름: [function_flow.md](function_flow.md), 함수별 설명: [function_reference.md](function_reference.md).
 
+## Phase 1.5 하드닝
+
+- **strict parser**: method/header token, obs-fold, CTL/NUL, 중복 Host, `Host :`, `Content-Length: +5` 거부.
+- **HEAD body 억제**: parse/static/CGI 에러와 CGI 성공 응답 모두 body 생략.
+- **절대 request deadline**: 헤더/본문은 `poll` + `CLOCK_MONOTONIC` deadline, 송신은 `SO_SNDTIMEO`.
+- **CGI supervision**: SIGKILL/reap, exit status/시그널 판정, `S_ISREG`+`X_OK`.
+- **envp-before-fork**: 부모에서 `envp` 구성, 자식은 `execve`만. 서버 환경 격리.
+- **access log**: `ip "METHOD path" status bytes`, 제어문자 sanitize.
+- **lingering close**: 4xx/5xx 후 `shutdown(SHUT_WR)` + 64KB/1초 drain.
+- **body preflight**: static/OPTIONS는 body를 읽지 않고, CGI만 body를 읽는다. `Expect: 100-continue` 지원.
+- **docroot/cgi_dir**: docroot `/`와 docroot 안의 cgi_dir 거부, docroot 하위 dotfile만 차단.
+- **static open**: `stat`→`open`→`fstat` dev/ino 비교 + `O_NOFOLLOW`(가능 시).
+
 ## Phase 2 준비
 
 - `server.c`의 연결 루프와 연결별 상태(`pending`, `requests`)가 동시성 모델로 확장될 지점이다.
 - 전역 상태는 `g_stop`과 설정뿐이라, 연결별 컨텍스트를 스레드/이벤트 루프에 넘기기 쉽다.
-- Phase 2에서 `fork`/pthread 스레드 풀/`poll`·`kqueue`·`epoll` 중 하나를 선택한다.
+- Phase 2는 **이벤트 루프(epoll/kqueue/poll) + 작업 스레드 풀**로 확정됐다. 소켓 I/O는 논블로킹 루프, CGI/디스크는 작업 풀에 위임한다. 상세: [phase2-design.md](phase2-design.md).

@@ -100,7 +100,7 @@ tests/fixtures/www/
 | REQ-21 | FR-10 | 단위 | `..`, `%2e%2e` | 정규화/거부 | PASS (basic) |
 | REQ-22 | D11 | 통합 | 느린 요청 | 408/close | PASS |
 | REQ-23 | FR-03 | 통합 | `\r\n\r\n` 없이 끊김 | 400/timeout | PASS |
-| REQ-24 | D10 | 통합 | `Expect: 100-continue` | 100 Continue 또는 최종 에러 (선택) | SKIP |
+| REQ-24 | D10 | 통합 | `Expect: 100-continue` | 100 Continue 후 본문 | PASS |
 | REQ-25 | D9 | 단위 | `Connection: close` | close 플래그 | PASS (통합) |
 | REQ-26 | FR-03 | 단위 | HTTP/1.0 Host 없음 | 허용 | PASS |
 
@@ -109,20 +109,20 @@ tests/fixtures/www/
 | ID | 요구사항 | 레벨 | 시나리오 | 기대 | 상태 |
 |---|---|---|---|---|---|
 | RESP-01 | FR-07 | 단위/통합 | 200 응답 | 상태 라인/헤더/본문 | PASS |
-| RESP-02 | FR-08 | 단위/통합 | Content-Length | 실제 바이트 수와 일치 | TODO |
+| RESP-02 | FR-08 | 단위/통합 | Content-Length | 실제 바이트 수와 일치 | PASS |
 | RESP-03 | FR-08 | 단위/통합 | Content-Type | MIME과 일치 | PASS (html) |
 | RESP-04 | D9 | 통합 | Phase 1 후반 기본 | `Connection: keep-alive` | PASS |
-| RESP-05 | FR-08 | 단위 | 에러 응답 | 상태/헤더/본문 형식 | TODO |
-| RESP-06 | FR-08 | 통합 | 404 | HTML body + CL | TODO |
-| RESP-07 | FR-08 | 통합 | 403 | HTML body + CL | TODO |
-| RESP-08 | FR-08 | 통합 | 400 | HTML body + CL | TODO |
-| RESP-09 | FR-06 | 통합 | 405 | `Allow` 헤더 | TODO |
-| RESP-10 | D11 | 통합 | 413/414/431 | 정확한 상태/CL | TODO |
-| RESP-11 | FR-08 | 통합 | 500 | 내부 오류 응답 | TODO |
-| RESP-12 | FR-06 | 통합 | 501 | 미지원 메서드/TE | TODO |
-| RESP-13 | FR-03 | 통합 | 505 | 미지원 버전 | TODO |
-| RESP-14 | D10 | 통합 | HEAD | 헤더만, CL 동일 | TODO |
-| RESP-15 | FR-07 | 통합 | Date/Server | 선택 헤더 형식 | TODO |
+| RESP-05 | FR-08 | 단위 | 에러 응답 | 상태/헤더/본문 형식 | PASS |
+| RESP-06 | FR-08 | 통합 | 404 | HTML body + CL | PASS |
+| RESP-07 | FR-08 | 통합 | 403 | HTML body + CL | PASS |
+| RESP-08 | FR-08 | 통합 | 400 | HTML body + CL | PASS |
+| RESP-09 | FR-06 | 통합 | 405 | `Allow: GET, HEAD` | PASS |
+| RESP-10 | D11 | 통합 | 413/414/431 | 정확한 상태/CL | PASS |
+| RESP-11 | FR-08 | 통합 | 500 | 내부 오류 응답 | PASS |
+| RESP-12 | FR-06 | 통합 | 501 | 미지원 메서드/TE | PASS |
+| RESP-13 | FR-03 | 통합 | 505 | 미지원 버전 | PASS |
+| RESP-14 | D10 | 통합 | HEAD | 헤더만, CL 동일 | PASS |
+| RESP-15 | FR-07 | 통합 | Date/Server | 선택 헤더 형식 | SKIP (미구현) |
 
 ### E. 정적 파일 (STATIC)
 
@@ -195,6 +195,26 @@ tests/fixtures/www/
 | PORT-01 | NFR-04 | 비기능 | macOS `make`/`make test` | 통과 | PASS |
 | PORT-02 | NFR-04 | 비기능 | Linux(Docker/CI) | 통과 | TODO (Docker 데몬) |
 | DOC-01 | NFR-16 | 비기능 | README | 빌드/실행/한계 문서화 | TODO (사용자가 나중에 작성) |
+
+### 3.9 Phase 1.5 하드닝
+
+| ID | 영역 | 시나리오 | 기대 | 상태 |
+|---|---|---|---|---|
+| HARD-01 | strict parser | 중복 Host, `Host :`, CTL, `CL: +5` | 400 | PASS |
+| HARD-02 | HEAD | 에러/CGI 응답 body | body 없음 | PASS |
+| HARD-03 | deadline | trickle 헤더 (0.4초 간격) | 408 | PASS |
+| HARD-04 | CGI supervision | SIGTERM 무시, partial+exit 1 | 504/500, 서버 생존 | PASS |
+| HARD-05 | CGI env | `PATH`, `HOME` | clean env (`PATH`만) | PASS |
+| HARD-06 | access log | 요청 완료 | `ip "METHOD path" status bytes` | PASS |
+| HARD-07 | lingering close | 4xx/5xx 후 잔여 body | 64KB/1초 drain | PASS (구현) |
+| HARD-08 | 405/414/docroot | 405 Allow, 20KB URI, docroot dot, cgi_dir | 405/414/200/시작 거부 | PASS |
+| HARD-09 | split points | 유효 요청의 모든 prefix | `HTTP_PARSE_INCOMPLETE` | PASS |
+| HARD-10 | CGI contract | 중복 CT, 204 body, invalid Status | 500; 201 Created | PASS |
+| HARD-11 | CGI no-body | 204/304 no body | CL/CT 없음 | PASS |
+| HARD-12 | HEAD early error | 414/431 before parse | body 없음 | PASS |
+| HARD-13 | CGI 205 | Reset Content | body 없음, CL 0 | PASS |
+| HARD-14 | cgi_dir containment | docroot/cgi_dir 상호 포함 | 시작 거부 | PASS |
+| HARD-15 | mixed URI overflow | 긴 URI + CRLF + 큰 헤더 | 414 | PASS |
 
 ## 4. 테스트 우선 구현 순서
 

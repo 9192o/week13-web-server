@@ -104,7 +104,7 @@ REMOTE_ADDR     = 127.0.0.1
 stdin           = (본문 없음)
 ```
 
-`set_cgi_env`가 이 값들을 채운다. `SCRIPT_NAME`은 URL 경로, `REMOTE_ADDR`은 접속한 클라이언트 IP다.
+`build_cgi_env`가 이 값들을 채운다. `SCRIPT_NAME`은 URL 경로, `REMOTE_ADDR`은 접속한 클라이언트 IP다.
 
 ### 3.6 프로그램이 하는 일
 
@@ -185,6 +185,8 @@ CGI는 라이브러리도 언어도 아니다. **서버와 프로그램 사이�
 | stdin | 서버 → 프로그램 | 요청 본문 (POST 데이터) |
 | stdout | 프로그램 → 서버 | 응답 헤더 + 빈 줄 + 응답 본문 |
 
+> 서버는 CGI에 `PATH=/usr/bin:/bin`만 넘기고 나머지 환경은 물려주지 않는다. `#!/usr/bin/env python3` 같은 스크립트는 `env`가 `PATH`에서 interpreter를 찾아야 하므로, C CGI 바이너리나 명시적 interpreter 경로를 사용한다.
+
 프로그램 입장에서는 `getenv()`로 요청을 읽고 `printf()`로 응답을 쓰면 끝이다. HTTP 소켓을 몰라도 되고 `accept()`도 몰라도 된다.
 
 ### POST는 어떻게 받나
@@ -251,17 +253,22 @@ CGI는 라이브러리도 언어도 아니다. **서버와 프로그램 사이�
 |---|---|
 | `src/server.c` | `/cgi-bin/` 라우팅, `cgi_dir` 기능 스위치 |
 | `src/cgi.c` `cgi_handle` | 경로 검증, `pipe`/`tmpfile`/`fork`/`execve`, `poll` 타임아웃 |
-| `src/cgi.c` `set_cgi_env` | 환경변수 세팅 |
+| `src/cgi.c` `build_cgi_env` | 환경변수 배열을 부모에서 구성 |
 | `src/cgi.c` `send_cgi_response` | CGI 출력 → HTTP 응답 변환 |
 | `cgi-bin/echo.c` | 예제 CGI 프로그램 |
 
 ### 한계 (Phase 1)
 
-- **출력이 없으면 `500`.** 단, 프로그램의 exit code 자체는 검사하지 않는다. 출력이 정상이면 exit code가 0이 아니어도 200이 나간다.
+- **출력이 없거나 비정상 종료(exit≠0, 시그널)면 `500`.** 정상 출력 + exit 0만 200이다. 타임아웃은 `504`.
+- **`Status`는 3자리 숫자 + 200~599만.** 중복 `Status`/`Content-Type`, `204/205/304`의 body는 `500`으로 거부한다.
+- **204/304는 `Content-Length`와 기본 `Content-Type`을 생략하고, 205는 `Content-Length: 0`만 붙인다.**
+- **`201 Created` 같은 reason phrase를 사용한다.** 모르는 상태는 `Unknown` 대신 표준 reason을 추가한다.
 - **출력 상한 1MB.** 넘으면 `500`.
-- **타임아웃은 `poll` 읽기 한 번당 idle 기준**이다. 전체 실행 시간 제한이 아니다.
+- **타임아웃은 CGI 시작 시점부터의 전체 실행 시간 제한**이다. `poll`을 다시 호출해도 deadline이 연장되지 않는다.
 - **`Transfer-Encoding: chunked` 요청은 `501`.** Phase 3 프록시에서 다룬다.
 - **CGI 프로그램은 `cgi_dir` 밖에 둔다.** docroot 안에 두면 실행 파일이 정적으로 노출될 수 있다.
+- **환경변수는 `PATH=/usr/bin:/bin`만 전달한다.** C CGI는 문제없지만 `#!/usr/bin/env python3` 같은 스크립트는 macOS의 `/usr/local/bin`/`/opt/homebrew/bin`이 없어 실패할 수 있다. 현재 지원 범위는 C CGI다.
+- **실행 권한은 mode bit로 검사한다.** 서버 사용자 기준 effective `X_OK`와 다를 수 있어 `execve` 실패 시 `500`이 될 수 있다. Linux는 `fexecve`로 fd 실행, macOS는 `execve` fallback이라 최종 파일 교체 race가 남는다. Phase 2에서 `posix_spawn`/`faccessat`으로 정리한다.
 
 ---
 

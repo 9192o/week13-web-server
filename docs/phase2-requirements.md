@@ -1,6 +1,8 @@
 # Phase 2 요구사항 — 동시성
 
 > 상위 인덱스: [requirements.md](requirements.md)
+> 설계: [phase2-design.md](phase2-design.md)
+> 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md)
 > Phase 1의 단일 연결 서버를 여러 클라이언트가 동시에 사용할 수 있게 확장한다.
 
 ## 0. 범위
@@ -16,7 +18,7 @@
 
 | ID | 결정 | 상태 | 이유 |
 |---|---|---|---|
-| D2 | 동시성 모델 | **미확정** (추천: pthread 스레드 풀) | 구현 단순/이식성. 이벤트 루프는 C10K/난이도, fork는 단순/비용 |
+| D2 | 동시성 모델 | **결정: 이벤트 루프 + 작업 스레드 풀** | 소켓/keep-alive는 논블로킹 루프(epoll/kqueue/poll), CGI·디스크는 작업 풀 |
 | D9 | keep-alive | Phase 1에서 구현, Phase 2에서 유지/튜닝 | 연결별 상태를 동시성 모델에 맞게 관리 |
 | D13 | 테스트 전략 | Phase 1 결정을 따름 | 동시성 테스트 추가 |
 
@@ -102,9 +104,9 @@
 
 ## 7. 열린 결정
 
-- **D2**: fork / pthread 스레드 풀 / I/O 멀티플렉싱.
+- **D2**: **결정: 이벤트 루프 + 작업 스레드 풀** (fork/순수 스레드 풀은 대안으로 문서화).
 - 스레드 풀 크기, 연결 수 제한, 타임아웃 값.
-- 이벤트 루프 선택 시 `poll` vs `kqueue`/`epoll` (`#ifdef`).
+- 이벤트 백엔드: **epoll(Linux) / kqueue(macOS) / poll(폴백)** — 결정. Phase 2는 level-triggered.
 - 부하 테스트 도구(`ab`/`wrk`/`hey`)와 목표 수치.
 
 ## 8. 동시성 구현 메모
@@ -135,7 +137,7 @@
   - 위험: `malloc`/`free`, `printf`/`fprintf`/`snprintf`, `setenv`/`putenv`/`getenv`, `strerror`, `exit`
 - `pthread_atfork`로 우리 코드의 락은 정리할 수 있지만, `malloc`/`stdio`/`environ` 같은 **libc 내부 락**은 해결하지 못한다.
 - 현재 `cgi.c`의 문제:
-  - 자식에서 `set_cgi_env()`가 `setenv()`를 호출한다. → 멀티스레드 fork 후 unsafe.
+  - Phase 1.5에서 자식의 `setenv()`를 제거하고, 부모에서 `envp`를 구성해 `execve`에 넘기도록 변경했다.
 - 향후 `envp`를 부모에서 만드는 방식으로 바꿀 때:
   - 여러 워커가 `setenv()`를 공유하면 `environ` 레이스가 생기므로, 스레드별 `envp` 배열을 써야 한다.
 - Phase 2 리팩터링:
@@ -143,4 +145,4 @@
   2. 자식은 `dup2`/`close`/`execve`/`_exit`만 호출한다.
   3. 또는 `posix_spawn()` + `posix_spawn_file_actions_*`로 fork+exec를 라이브러리에 맡긴다.
 - 증상: 부하가 걸릴 때만 CGI가 간헐적으로 멈추고 `504`가 난다. `gdb -p`/`sample`로 보면 자식이 `__lll_lock_wait`, `malloc`, `setenv` 등에서 대기한다.
-- 결론: **스레드 풀 도입 전에 `cgi.c`의 `setenv`를 `envp` 기반으로 바꾸는 작업이 선행되어야 한다.**
+- 결론: **Phase 1.5에서 `envp` 기반으로 완료.** Phase 2에서는 `posix_spawn` 전환만 남았다.

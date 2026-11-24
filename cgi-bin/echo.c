@@ -9,6 +9,8 @@ int main(void) {
     const char *script_name = getenv("SCRIPT_NAME");
     const char *protocol = getenv("SERVER_PROTOCOL");
     const char *remote_addr = getenv("REMOTE_ADDR");
+    const char *path = getenv("PATH");
+    const char *home = getenv("HOME");
 
     printf("Content-Type: text/plain\r\n\r\n");
     printf("METHOD=%s\n", method ? method : "");
@@ -18,6 +20,8 @@ int main(void) {
     printf("SCRIPT_NAME=%s\n", script_name ? script_name : "");
     printf("SERVER_PROTOCOL=%s\n", protocol ? protocol : "");
     printf("REMOTE_ADDR=%s\n", remote_addr ? remote_addr : "");
+    printf("PATH=%s\n", path ? path : "");
+    printf("HOME=[%s]\n", home ? home : "");
     printf("BODY=");
 
     int c;

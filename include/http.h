@@ -5,6 +5,7 @@
 
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define HTTP_MAX_URI     4096
 #define HTTP_MAX_HEADERS 100
@@ -32,6 +33,8 @@ typedef enum {
     HTTP_HEADERS_TOO_LARGE = 431,
     HTTP_INTERNAL_SERVER_ERROR = 500,
     HTTP_NOT_IMPLEMENTED = 501,
+    HTTP_BAD_GATEWAY = 502,
+    HTTP_SERVICE_UNAVAILABLE = 503,
     HTTP_GATEWAY_TIMEOUT = 504,
     HTTP_VERSION_NOT_SUPPORTED = 505
 } http_status_t;
@@ -88,6 +91,7 @@ http_status_t http_request_parse_buffer(const char *buf, size_t len,
 http_status_t http_request_read_body(int fd, const char *buf, size_t len,
                                      const config_t *cfg,
                                      http_request_t *req,
+                                     uint64_t deadline_ms,
                                      const volatile sig_atomic_t *stop);
 
 const char *http_request_get_header(const http_request_t *req,
@@ -108,6 +112,8 @@ int http_response_add_header(http_response_t *res,
                              const char *name, const char *value);
 int http_response_send_headers(int fd, const http_response_t *res);
 int http_response_send_error(int fd, int status, int close_connection);
+int http_response_send_error_ex(int fd, int status, int close_connection,
+                                int head);
 int http_response_send_redirect(int fd, const char *location,
                                 int close_connection);
 int http_response_send_options(int fd, int close_connection);

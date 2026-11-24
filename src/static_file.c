@@ -28,7 +28,7 @@ int send_file(int connfd, int filefd, size_t size) {
         }
         if (n == 0)
             return -1; /* file shrank after fstat: Content-Length already sent */
-        if (writen(connfd, buf, (size_t)n) < 0)
+        if (write_body(connfd, buf, (size_t)n) < 0)
             return -1;
         size -= (size_t)n;
     }
@@ -54,6 +54,18 @@ static int has_dotfile_segment(const char *path) {
     return 0;
 }
 
+static int has_dotfile_below_root(const char *root, const char *resolved) {
+    size_t root_len = strlen(root);
+
+    if (strncmp(root, resolved, root_len) != 0)
+        return 1;
+
+    const char *rel = resolved + root_len;
+    while (*rel == '/')
+        rel++;
+    return has_dotfile_segment(rel);
+}
+
 static int path_within_root(const char *root, const char *resolved) {
     size_t root_len = strlen(root);
 
@@ -66,19 +78,19 @@ static int path_within_root(const char *root, const char *resolved) {
 static int status_from_errno(int err) {
     if (err == ENOENT || err == ENOTDIR)
         return HTTP_NOT_FOUND;
-    if (err == EACCES)
+    if (err == EACCES || err == ELOOP)
         return HTTP_FORBIDDEN;
     return HTTP_INTERNAL_SERVER_ERROR;
 }
 
-static handler_result_t send_close_error(int connfd, int status) {
-    if (http_response_send_error(connfd, status, 1) < 0)
+static handler_result_t send_close_error(int connfd, int status, int head) {
+    if (http_response_send_error_ex(connfd, status, 1, head) < 0)
         return HANDLER_ERROR;
     return HANDLER_CLOSE;
 }
 
-static handler_result_t send_error_for_errno(int connfd, int err) {
-    return send_close_error(connfd, status_from_errno(err));
+static handler_result_t send_error_for_errno(int connfd, int err, int head) {
+    return send_close_error(connfd, status_from_errno(err), head);
 }
 
 typedef struct {
@@ -181,15 +193,17 @@ static int send_range_error(int connfd, size_t file_size,
 
 handler_result_t static_file_handle(int connfd, const http_request_t *req,
                                     const config_t *cfg, int close_connection) {
+    int head = (req->method == HTTP_HEAD);
+
     if (req->method != HTTP_GET && req->method != HTTP_HEAD)
-        return send_close_error(connfd, HTTP_METHOD_NOT_ALLOWED);
+        return send_close_error(connfd, HTTP_METHOD_NOT_ALLOWED, head);
 
     if (has_dotfile_segment(req->path))
-        return send_close_error(connfd, HTTP_NOT_FOUND);
+        return send_close_error(connfd, HTTP_NOT_FOUND, head);
 
     char root[PATH_MAX];
     if (realpath(cfg->docroot, root) == NULL)
-        return send_error_for_errno(connfd, errno);
+        return send_error_for_errno(connfd, errno, head);
 
     const char *path = req->path;
     if (strcmp(path, "/") == 0)
@@ -198,11 +212,11 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
     char filepath[PATH_MAX];
     int n = snprintf(filepath, sizeof filepath, "%s%s", cfg->docroot, path);
     if (n < 0 || (size_t)n >= sizeof filepath)
-        return send_close_error(connfd, HTTP_URI_TOO_LONG);
+        return send_close_error(connfd, HTTP_URI_TOO_LONG, head);
 
     struct stat st;
     if (stat(filepath, &st) < 0)
-        return send_error_for_errno(connfd, errno);
+        return send_error_for_errno(connfd, errno, head);
 
     if (S_ISDIR(st.st_mode)) {
         size_t path_len = strlen(req->path);
@@ -217,7 +231,7 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
                 m = snprintf(location, sizeof location, "%s/", req->path);
 
             if (m < 0 || (size_t)m >= sizeof location)
-                return send_close_error(connfd, HTTP_URI_TOO_LONG);
+                return send_close_error(connfd, HTTP_URI_TOO_LONG, head);
 
             if (http_response_send_redirect(connfd, location,
                                             close_connection) < 0)
@@ -228,43 +242,57 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
         n = snprintf(filepath, sizeof filepath, "%s%sindex.html",
                      cfg->docroot, req->path);
         if (n < 0 || (size_t)n >= sizeof filepath)
-            return send_close_error(connfd, HTTP_URI_TOO_LONG);
+            return send_close_error(connfd, HTTP_URI_TOO_LONG, head);
 
         if (stat(filepath, &st) < 0)
-            return send_error_for_errno(connfd, errno);
+            return send_error_for_errno(connfd, errno, head);
         if (!S_ISREG(st.st_mode))
-            return send_close_error(connfd, HTTP_NOT_FOUND);
+            return send_close_error(connfd, HTTP_NOT_FOUND, head);
     } else if (!S_ISREG(st.st_mode)) {
-        return send_close_error(connfd, HTTP_NOT_FOUND);
+        return send_close_error(connfd, HTTP_NOT_FOUND, head);
     }
 
     char resolved[PATH_MAX];
     if (realpath(filepath, resolved) == NULL)
-        return send_error_for_errno(connfd, errno);
+        return send_error_for_errno(connfd, errno, head);
 
     if (!path_within_root(root, resolved))
-        return send_close_error(connfd, HTTP_FORBIDDEN);
-    if (has_dotfile_segment(resolved))
-        return send_close_error(connfd, HTTP_NOT_FOUND);
+        return send_close_error(connfd, HTTP_FORBIDDEN, head);
+    if (has_dotfile_below_root(root, resolved))
+        return send_close_error(connfd, HTTP_NOT_FOUND, head);
 
-    int filefd = open(resolved, O_RDONLY);
+    struct stat before;
+    if (stat(resolved, &before) < 0)
+        return send_error_for_errno(connfd, errno, head);
+
+    int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    int filefd = open(resolved, flags);
     if (filefd < 0)
-        return send_error_for_errno(connfd, errno);
+        return send_error_for_errno(connfd, errno, head);
 
-    if (fstat(filefd, &st) < 0) {
+    struct stat after;
+    if (fstat(filefd, &after) < 0) {
         close(filefd);
-        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR, head);
     }
-    if (!S_ISREG(st.st_mode)) {
+    if (before.st_dev != after.st_dev || before.st_ino != after.st_ino) {
         close(filefd);
-        return send_close_error(connfd, HTTP_NOT_FOUND);
+        return send_close_error(connfd, HTTP_FORBIDDEN, head);
     }
+    if (!S_ISREG(after.st_mode)) {
+        close(filefd);
+        return send_close_error(connfd, HTTP_NOT_FOUND, head);
+    }
+    st = after;
 
     char last_modified[64];
     if (http_date_format(st.st_mtime, last_modified,
                          sizeof last_modified) < 0) {
         close(filefd);
-        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR, head);
     }
 
     size_t ims_len = 0;
@@ -291,7 +319,7 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
                     &not_modified, "Connection",
                     close_connection ? "close" : "keep-alive") < 0)
                 return send_close_error(
-                    connfd, HTTP_INTERNAL_SERVER_ERROR);
+                    connfd, HTTP_INTERNAL_SERVER_ERROR, head);
 
             if (http_response_send_headers(connfd, &not_modified) < 0)
                 return HANDLER_ERROR;
@@ -341,7 +369,7 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
     int m = snprintf(lenbuf, sizeof lenbuf, "%zu", content_len);
     if (m < 0 || (size_t)m >= sizeof lenbuf) {
         close(filefd);
-        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR, head);
     }
 
     char content_range[64];
@@ -353,7 +381,7 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
         if (m < 0 || (size_t)m >= sizeof content_range) {
             close(filefd);
             return send_close_error(
-                connfd, HTTP_INTERNAL_SERVER_ERROR);
+                connfd, HTTP_INTERNAL_SERVER_ERROR, head);
         }
     }
 
@@ -367,7 +395,7 @@ handler_result_t static_file_handle(int connfd, const http_request_t *req,
         http_response_add_header(&res, "Connection",
                                  close_connection ? "close" : "keep-alive") < 0) {
         close(filefd);
-        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR);
+        return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR, head);
     }
 
     if (http_response_send_headers(connfd, &res) < 0) {

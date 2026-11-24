@@ -1,4 +1,5 @@
 #include "http.h"
+#include "access_log.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -7,21 +8,34 @@
 const char *http_status_reason(int status) {
     switch (status) {
     case 200: return "OK";
+    case 201: return "Created";
+    case 202: return "Accepted";
+    case 204: return "No Content";
+    case 205: return "Reset Content";
     case 206: return "Partial Content";
+    case 300: return "Multiple Choices";
     case 301: return "Moved Permanently";
+    case 302: return "Found";
     case 304: return "Not Modified";
+    case 307: return "Temporary Redirect";
+    case 308: return "Permanent Redirect";
     case 400: return "Bad Request";
+    case 401: return "Unauthorized";
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 408: return "Request Timeout";
+    case 409: return "Conflict";
     case 411: return "Length Required";
     case 413: return "Payload Too Large";
     case 414: return "URI Too Long";
     case 416: return "Range Not Satisfiable";
+    case 429: return "Too Many Requests";
     case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
     case 504: return "Gateway Timeout";
     case 505: return "HTTP Version Not Supported";
     default:  return "Unknown";
@@ -41,6 +55,16 @@ int http_response_add_header(http_response_t *res,
                              const char *name, const char *value) {
     if (res == NULL || name == NULL || value == NULL)
         return -1;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f)
+            return -1;
+    }
+    for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+        if (*p == '\t')
+            continue;
+        if (*p < 0x20 || *p == 0x7f)
+            return -1;
+    }
 
     size_t remaining = sizeof res->headers - res->headers_len;
     if (remaining == 0)
@@ -58,6 +82,10 @@ int http_response_add_header(http_response_t *res,
 int http_response_send_headers(int fd, const http_response_t *res) {
     if (res == NULL)
         return -1;
+
+    access_log_t *log = access_log_current();
+    if (log != NULL)
+        access_log_set_status(log, res->status);
 
     char status_line[128];
     int n = snprintf(status_line, sizeof status_line,
@@ -140,13 +168,14 @@ int http_response_send_memory(int fd, int status, const char *content_type,
 
     if (http_response_send_headers(fd, &res) < 0)
         return -1;
-    if (len > 0 && writen(fd, body, len) < 0)
+    if (len > 0 && write_body(fd, body, len) < 0)
         return -1;
 
     return 0;
 }
 
-int http_response_send_error(int fd, int status, int close_connection) {
+int http_response_send_error_ex(int fd, int status, int close_connection,
+                                int head) {
     const char *reason = http_status_reason(status);
 
     char body[512];
@@ -171,6 +200,9 @@ int http_response_send_error(int fd, int status, int close_connection) {
     if (http_response_add_header(&res, "Content-Type",
                                  "text/html; charset=utf-8") < 0)
         return -1;
+    if (status == HTTP_METHOD_NOT_ALLOWED &&
+        http_response_add_header(&res, "Allow", "GET, HEAD") < 0)
+        return -1;
     if (http_response_add_header(&res, "Content-Length", lenbuf) < 0)
         return -1;
     if (http_response_add_header(&res, "Connection",
@@ -179,8 +211,12 @@ int http_response_send_error(int fd, int status, int close_connection) {
 
     if (http_response_send_headers(fd, &res) < 0)
         return -1;
-    if (writen(fd, body, (size_t)n) < 0)
+    if (!head && write_body(fd, body, (size_t)n) < 0)
         return -1;
 
     return 0;
+}
+
+int http_response_send_error(int fd, int status, int close_connection) {
+    return http_response_send_error_ex(fd, status, close_connection, 0);
 }

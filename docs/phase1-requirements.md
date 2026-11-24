@@ -20,7 +20,7 @@
 | D6 | 설정 방식 | **결정: CLI (Phase 1) + Phase 3 설정 파일** | Phase 1은 설정이 적어 CLI로 충분. Phase 3 라우팅 규칙은 설정 파일이 적합 |
 | D7 | 빌드 | **결정: Makefile** | 파일 수 적고 외부 의존성 없음. CMake는 과함 |
 | D9 | Phase 1 keep-alive 시점 | **결정: B+** | 초반 close-only, 구조는 keep-alive 대비, 핵심 기능 후 활성화 |
-| D10 | Phase 1 HTTP 기능 범위 | **결정:** HEAD, Last-Modified/If-Modified-Since, OPTIONS, Range/206(단일). 100-continue는 선택. ETag는 보류 | 실용 기능만, 비용/위험 통제 |
+| D10 | Phase 1 HTTP 기능 범위 | **결정:** HEAD, Last-Modified/If-Modified-Since, OPTIONS, Range/206(단일). 100-continue 구현 완료. ETag는 보류 | 실용 기능만, 비용/위험 통제 |
 | D11 | Phase 1 요청 한계 | **결정: 커스텀 확정** | URI 4KB / 헤더 16KB / 100개 / 본문 8MB / 요청 20s / keep-alive idle 10s / max 100. CLI로 조정 |
 | D12 | 정적 파일 정책 | **결정: A안** | `/dir`→301, index 없음→404, symlink docroot 안만, dotfile 차단, `index.html`만 |
 | D13 | 테스트 전략 | **결정: 커스텀 단위 하네스 + 셸 통합** | 의존성 없음, unit/integration 분리. CMocka/Unity 미사용 |
@@ -46,7 +46,7 @@
 | FR-22 | HEAD: GET과 같은 헤더, 본문 생략 | Should | `curl -I` |
 | FR-23 | Last-Modified / If-Modified-Since: 304 캐시 검증 | Should | `curl -H 'If-Modified-Since: ...'` |
 | FR-24 | OPTIONS: `Allow` 헤더 응답 | Should | `curl -X OPTIONS` |
-| FR-26 | Expect: 100-continue | 선택 | 큰 POST + `Expect` |
+| FR-26 | Expect: 100-continue | 구현 완료 | 큰 POST + `Expect` |
 | FR-27 | Range / 206 (단일 범위) | Should | `curl -r 0-499` |
 | FR-28 | chunked | Phase 3 | Phase 1은 501 + 연결 종료 |
 
@@ -385,7 +385,7 @@
 - [ ] **D14:** 코어에 플랫폼 전용 API가 없거나 `#ifdef`/`platform/`로 분리됨
 - [ ] **D14:** 양쪽에서 `make test`/`make integration` 통과 (Linux는 Docker/CI)
 
-> 선택(비필수): `Expect: 100-continue`는 Phase 1 인수 기준이 아니다. 구현하면 큰 POST에서 curl의 약 1초 대기를 줄일 수 있다.
+> 구현 완료: `Expect: 100-continue`는 body가 아직 버퍼에 없을 때 `100 Continue`를 보낸다. static/OPTIONS는 body를 읽지 않으므로 보내지 않는다.
 
 ## 7. 범위 제외 (Phase 1)
 

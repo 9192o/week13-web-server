@@ -18,6 +18,40 @@ static const char *find_crlf(const char *p, const char *end) {
     return NULL;
 }
 
+static int is_tchar(unsigned char c) {
+    if (isalnum(c))
+        return 1;
+    switch (c) {
+    case '!': case '#': case '$': case '%': case '&': case '\'':
+    case '*': case '+': case '-': case '.': case '^': case '_':
+    case '`': case '|': case '~':
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int is_token(const char *s, size_t len) {
+    if (len == 0)
+        return 0;
+    for (size_t i = 0; i < len; i++) {
+        if (!is_tchar((unsigned char)s[i]))
+            return 0;
+    }
+    return 1;
+}
+
+static int has_ctl(const char *s, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '\t')
+            continue;
+        if (c < 0x20 || c == 0x7f)
+            return 1;
+    }
+    return 0;
+}
+
 static void trim_ows(const char **s, size_t *len) {
     while (*len > 0 && (**s == ' ' || **s == '\t')) {
         (*s)++;
@@ -92,10 +126,18 @@ static http_status_t parse_request_line(const char *line, size_t line_len,
 
     if (method_len == 0 || method_len >= HTTP_MAX_METHOD)
         return HTTP_BAD_REQUEST;
+    if (!is_token(method, method_len))
+        return HTTP_BAD_REQUEST;
     if (target_len == 0)
         return HTTP_BAD_REQUEST;
     if (target_len >= HTTP_MAX_URI)
         return HTTP_URI_TOO_LONG;
+
+    for (size_t i = 0; i < target_len; i++) {
+        unsigned char c = (unsigned char)target[i];
+        if (c < 0x21 || c > 0x7e)
+            return HTTP_BAD_REQUEST;
+    }
 
     memcpy(req->method_str, method, method_len);
     req->method_str[method_len] = '\0';
@@ -210,6 +252,12 @@ static http_status_t parse_uri(http_request_t *req, const config_t *cfg) {
     if (target_len > max_uri)
         return HTTP_URI_TOO_LONG;
 
+    for (size_t i = 0; i < target_len; i++) {
+        unsigned char c = (unsigned char)req->target[i];
+        if (c < 0x21 || c > 0x7e)
+            return HTTP_BAD_REQUEST;
+    }
+
     if (req->target[0] != '/')
         return HTTP_BAD_REQUEST;
 
@@ -222,8 +270,16 @@ static http_status_t parse_uri(http_request_t *req, const config_t *cfg) {
     if (decode_uri(req->target, path_len, decoded, sizeof decoded) < 0)
         return HTTP_BAD_REQUEST;
 
-    int trailing_slash = (path_len > 1 && decoded[path_len - 1] == '/');
-    if (normalize_path(decoded, strlen(decoded), trailing_slash,
+    size_t decoded_len = strlen(decoded);
+    for (size_t i = 0; i < decoded_len; i++) {
+        unsigned char c = (unsigned char)decoded[i];
+        if (c < 0x20 || c == 0x7f)
+            return HTTP_BAD_REQUEST;
+    }
+
+    int trailing_slash = (decoded_len > 1 &&
+                          decoded[decoded_len - 1] == '/');
+    if (normalize_path(decoded, decoded_len, trailing_slash,
                        req->path, sizeof req->path) < 0)
         return HTTP_FORBIDDEN;
 
@@ -242,6 +298,10 @@ static http_status_t parse_content_length(http_request_t *req,
     char tmp[32];
     if (value_len == 0 || value_len >= sizeof tmp)
         return HTTP_BAD_REQUEST;
+    for (size_t i = 0; i < value_len; i++) {
+        if (value[i] < '0' || value[i] > '9')
+            return HTTP_BAD_REQUEST;
+    }
     memcpy(tmp, value, value_len);
     tmp[value_len] = '\0';
 
@@ -281,6 +341,10 @@ static http_status_t parse_headers(const char *start, const char *buf_end,
             return HTTP_OK;
         }
 
+        /* obs-fold (continuation line) is not supported. */
+        if (p[0] == ' ' || p[0] == '\t')
+            return HTTP_BAD_REQUEST;
+
         if ((size_t)(p - start) > cfg->max_header_bytes)
             return HTTP_HEADERS_TOO_LARGE;
 
@@ -303,12 +367,11 @@ static http_status_t parse_headers(const char *start, const char *buf_end,
         const char *value = colon + 1;
         size_t value_len = (size_t)(line_end - value);
 
-        while (name_len > 0 &&
-               (name[name_len - 1] == ' ' || name[name_len - 1] == '\t'))
-            name_len--;
-        trim_ows(&value, &value_len);
+        if (!is_token(name, name_len))
+            return HTTP_BAD_REQUEST;
 
-        if (name_len == 0)
+        trim_ows(&value, &value_len);
+        if (has_ctl(value, value_len))
             return HTTP_BAD_REQUEST;
 
         req->headers[req->header_count].name = name;
@@ -318,6 +381,12 @@ static http_status_t parse_headers(const char *start, const char *buf_end,
         req->header_count++;
 
         if (ci_equal(name, name_len, "Host")) {
+            if (req->has_host || value_len == 0)
+                return HTTP_BAD_REQUEST;
+            for (size_t i = 0; i < value_len; i++) {
+                if (value[i] == ' ' || value[i] == '\t')
+                    return HTTP_BAD_REQUEST;
+            }
             req->has_host = 1;
         } else if (ci_equal(name, name_len, "Connection")) {
             if (ci_contains(value, value_len, "close"))
@@ -403,6 +472,7 @@ http_status_t http_request_parse_buffer(const char *buf, size_t len,
 http_status_t http_request_read_body(int fd, const char *buf, size_t len,
                                      const config_t *cfg,
                                      http_request_t *req,
+                                     uint64_t deadline_ms,
                                      const volatile sig_atomic_t *stop) {
     free(req->body);
     req->body = NULL;
@@ -420,17 +490,36 @@ http_status_t http_request_read_body(int fd, const char *buf, size_t len,
     size_t to_copy = available < req->content_length
                          ? available
                          : req->content_length;
+    size_t cap = req->content_length < 16384 ? req->content_length : 16384;
+    if (cap < to_copy)
+        cap = to_copy;
 
-    req->body = malloc(req->content_length);
+    req->body = malloc(cap);
     if (req->body == NULL)
         return HTTP_INTERNAL_SERVER_ERROR;
 
     if (to_copy > 0)
         memcpy(req->body, buf + req->header_len, to_copy);
 
-    size_t remaining = req->content_length - to_copy;
-    if (remaining > 0) {
-        ssize_t n = readn_stop(fd, req->body + to_copy, remaining, stop);
+    size_t body_len = to_copy;
+    while (body_len < req->content_length) {
+        if (body_len == cap) {
+            size_t newcap = cap * 2;
+            if (newcap > req->content_length)
+                newcap = req->content_length;
+            char *grown = realloc(req->body, newcap);
+            if (grown == NULL) {
+                free(req->body);
+                req->body = NULL;
+                return HTTP_INTERNAL_SERVER_ERROR;
+            }
+            req->body = grown;
+            cap = newcap;
+        }
+
+        size_t want = cap - body_len;
+        ssize_t n = readn_deadline(fd, req->body + body_len, want,
+                                   deadline_ms, stop);
         if (n < 0) {
             int err = errno;
             free(req->body);
@@ -439,11 +528,12 @@ http_status_t http_request_read_body(int fd, const char *buf, size_t len,
                 return HTTP_REQUEST_TIMEOUT;
             return HTTP_BAD_REQUEST;
         }
-        if ((size_t)n != remaining) {
+        if ((size_t)n != want) {
             free(req->body);
             req->body = NULL;
             return HTTP_BAD_REQUEST;
         }
+        body_len += want;
     }
 
     req->body_len = req->content_length;

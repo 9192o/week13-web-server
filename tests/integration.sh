@@ -1,7 +1,33 @@
 #!/bin/sh
 set -eu
 
-PORT="${PORT:-18080}"
+port_free() {
+    ! nc -z 127.0.0.1 "$1" >/dev/null 2>&1
+}
+
+ports_free() {
+    port_free "$1" && port_free "$(( $1 + 1 ))" && port_free "$(( $1 + 2 ))"
+}
+
+if [ -n "${PORT:-}" ]; then
+    if ! ports_free "$PORT"; then
+        echo "error: ports $PORT-$((PORT + 2)) are already in use" >&2
+        exit 1
+    fi
+else
+    PORT=""
+    for base in 18080 18180 18280 18380 18480 18580; do
+        if ports_free "$base"; then
+            PORT="$base"
+            break
+        fi
+    done
+    if [ -z "$PORT" ]; then
+        echo "error: no free port range found (tried 18080-18582)" >&2
+        exit 1
+    fi
+fi
+
 LOG="${TMPDIR:-/tmp}/web_server_integration.$$.log"
 TESTROOT="${TMPDIR:-/tmp}/web_server_docroot.$$"
 
@@ -21,8 +47,13 @@ dd if=/dev/zero of="$TESTROOT/slow.bin" bs=1024 count=8192 >/dev/null 2>&1
     --keepalive-idle 1 --keepalive-max 3 >"$LOG" 2>&1 &
 pid=$!
 timeout_pid=""
+hidden_pid=""
 
 cleanup() {
+    if [ -n "$hidden_pid" ]; then
+        kill -INT "$hidden_pid" 2>/dev/null || true
+        wait "$hidden_pid" 2>/dev/null || true
+    fi
     if [ -n "$timeout_pid" ]; then
         kill -INT "$timeout_pid" 2>/dev/null || true
         wait "$timeout_pid" 2>/dev/null || true
@@ -70,6 +101,22 @@ check_header() {
         *)
             echo "FAIL: $desc (missing '$expected')"
             fail=1
+            ;;
+    esac
+}
+
+check_header_absent() {
+    desc="$1"
+    url="$2"
+    absent="$3"
+    headers=$(curl -sS --max-time 2 -D - -o /dev/null "$url" 2>/dev/null || true)
+    case "$headers" in
+        *"$absent"*)
+            echo "FAIL: $desc (unexpected '$absent')"
+            fail=1
+            ;;
+        *)
+            echo "PASS: $desc"
             ;;
     esac
 }
@@ -135,6 +182,36 @@ check_head() {
     esac
 }
 
+check_head_no_body() {
+    desc="$1"
+    path="$2"
+    raw=$(printf 'HEAD %s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n' "$path" \
+        | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+    body=$(printf '%s' "$raw" | tr -d '\r' | awk 'BEGIN{b=0} /^$/{b=1;next} b{print}')
+    if [ -z "$body" ]; then
+        echo "PASS: $desc (no body)"
+    else
+        echo "FAIL: $desc (HEAD body leaked)"
+        fail=1
+    fi
+}
+
+check_raw_status() {
+    desc="$1"
+    request="$2"
+    expected="$3"
+    out=$(printf '%b' "$request" | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+    case "$out" in
+        *"HTTP/1.1 $expected"*)
+            echo "PASS: $desc ($expected)"
+            ;;
+        *)
+            echo "FAIL: $desc (expected $expected)"
+            fail=1
+            ;;
+    esac
+}
+
 check_status "GET /" "http://127.0.0.1:$PORT/" "200"
 check_status "GET /index.html" "http://127.0.0.1:$PORT/index.html" "200"
 check_status "GET /missing" "http://127.0.0.1:$PORT/missing" "404"
@@ -153,10 +230,31 @@ check_status "GET /link-inside" "http://127.0.0.1:$PORT/link-inside" "200"
 check_body_contains "body /link-inside" "http://127.0.0.1:$PORT/link-inside" "It works!"
 check_status "GET /link-outside" "http://127.0.0.1:$PORT/link-outside" "403"
 
+# 405 + Allow
+post405=$(curl -sS -X POST -d '' --max-time 2 -D - -o /dev/null \
+    "http://127.0.0.1:$PORT/index.html" 2>/dev/null || true)
+case "$post405" in
+    *"405 Method Not Allowed"*"Allow: GET, HEAD"*)
+        echo "PASS: 405 + Allow"
+        ;;
+    *)
+        echo "FAIL: 405 + Allow"
+        fail=1
+        ;;
+esac
+
 # 경로 탈출 / HEAD / Connection
 check_status_path_as_is "GET /../etc/passwd" "/../etc/passwd" "403"
 check_status_path_as_is "GET /%2e%2e/etc/passwd" "/%2e%2e/etc/passwd" "403"
 check_head "HEAD /index.html" "http://127.0.0.1:$PORT/index.html"
+check_head_no_body "HEAD /missing no body" "/missing"
+check_head_no_body "HEAD /cgi-bin/echo no body" "/cgi-bin/echo"
+check_raw_status "duplicate Host -> 400" \
+    'GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\nConnection: close\r\n\r\n' "400"
+check_raw_status "Host : x -> 400" \
+    'GET / HTTP/1.1\r\nHost : x\r\nConnection: close\r\n\r\n' "400"
+check_raw_status "Content-Length +5 -> 400" \
+    'POST /cgi-bin/echo HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\nConnection: close\r\n\r\nhello' "400"
 check_header "Connection: keep-alive" "http://127.0.0.1:$PORT/index.html" "Connection: keep-alive"
 
 # 큰 파일 스트리밍
@@ -344,6 +442,53 @@ else
     fail=1
 fi
 
+uri20_out=$({ printf 'GET /'; head -c 20000 /dev/zero | tr '\0' 'a'; \
+    printf ' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'; } \
+    | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+case "$uri20_out" in
+    *"414"*)
+        echo "PASS: 20KB URI -> 414"
+        ;;
+    *)
+        echo "FAIL: 20KB URI (expected 414)"
+        fail=1
+        ;;
+esac
+
+head_early=$({ printf 'HEAD /'; head -c 20000 /dev/zero | tr '\0' 'a'; \
+    printf ' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'; } \
+    | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+head_early_body=$(printf '%s' "$head_early" | tr -d '\r' \
+    | awk 'BEGIN{b=0} /^$/{b=1;next} b{print}')
+case "$head_early" in
+    *"414"*)
+        if [ -z "$head_early_body" ]; then
+            echo "PASS: HEAD early error no body"
+        else
+            echo "FAIL: HEAD early error body leaked"
+            fail=1
+        fi
+        ;;
+    *)
+        echo "FAIL: HEAD early error (expected 414)"
+        fail=1
+        ;;
+esac
+
+uri_mixed=$({ printf 'GET /'; head -c 5000 /dev/zero | tr '\0' 'a'; \
+    printf ' HTTP/1.1\r\nHost: x\r\nX-Long: '; \
+    head -c 12000 /dev/zero | tr '\0' 'b'; printf '\r\n\r\n'; } \
+    | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+case "$uri_mixed" in
+    *"414"*)
+        echo "PASS: long URI + CRLF -> 414"
+        ;;
+    *)
+        echo "FAIL: long URI + CRLF (expected 414)"
+        fail=1
+        ;;
+esac
+
 header_out=$({ printf 'GET / HTTP/1.1\r\nHost: x\r\nX-Long: '; \
     awk 'BEGIN{for(i=0;i<17000;i++)printf "a"}'; \
     printf '\r\n\r\n'; } | nc -w 2 127.0.0.1 "$PORT" 2>/dev/null || true)
@@ -423,6 +568,21 @@ case "$slow_out" in
         ;;
 esac
 
+# absolute deadline: 매 read마다 timeout을 새로 주면 1.2초 뒤 200이 나온다.
+trickle_out=$({ printf 'GET / HTTP/1.1\r\n'; sleep 0.4; \
+    printf 'Host: x\r\n'; sleep 0.4; \
+    printf 'X-Test: y\r\n'; sleep 0.4; printf '\r\n'; } \
+    | nc -w 4 127.0.0.1 "$TIMEOUT_PORT" 2>/dev/null || true)
+case "$trickle_out" in
+    *"408 Request Timeout"*)
+        echo "PASS: absolute request deadline -> 408"
+        ;;
+    *)
+        echo "FAIL: absolute request deadline (expected 408)"
+        fail=1
+        ;;
+esac
+
 # 응답을 거의 읽지 않는 클라이언트: SO_SNDTIMEO로 연결이 닫혀야 한다.
 curl -sS --max-time 10 --limit-rate 1 -o /dev/null \
     "http://127.0.0.1:$TIMEOUT_PORT/slow.bin" >/dev/null 2>&1 &
@@ -449,12 +609,41 @@ else
     fail=1
 fi
 
+# SIGTERM을 무시하는 CGI: SIGKILL로 회수해야 504가 빨리 나온다.
+code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$TIMEOUT_PORT/cgi-bin/term" 2>/dev/null || echo "000")
+if [ "$code" = "504" ]; then
+    echo "PASS: CGI ignores SIGTERM -> 504"
+else
+    echo "FAIL: CGI ignores SIGTERM (expected 504, got $code)"
+    fail=1
+fi
+
+code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$TIMEOUT_PORT/index.html" 2>/dev/null || echo "000")
+if [ "$code" = "200" ]; then
+    echo "PASS: server alive after SIGTERM-ignoring CGI"
+else
+    echo "FAIL: server alive after SIGTERM-ignoring CGI (got $code)"
+    fail=1
+fi
+
 code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
     "http://127.0.0.1:$TIMEOUT_PORT/cgi-bin/crash" 2>/dev/null || echo "000")
 if [ "$code" = "500" ]; then
     echo "PASS: CGI crash -> 500"
 else
     echo "FAIL: CGI crash (expected 500, got $code)"
+    fail=1
+fi
+
+# 출력 일부를 쓰고 exit 1: 200이 아니라 500이어야 한다.
+code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$TIMEOUT_PORT/cgi-bin/partial" 2>/dev/null || echo "000")
+if [ "$code" = "500" ]; then
+    echo "PASS: CGI partial output + nonzero exit -> 500"
+else
+    echo "FAIL: CGI partial output + nonzero exit (expected 500, got $code)"
     fail=1
 fi
 
@@ -475,6 +664,39 @@ check_body_contains "CGI SERVER_PROTOCOL" \
     "http://127.0.0.1:$PORT/cgi-bin/echo?x=1" "SERVER_PROTOCOL=HTTP/1.1"
 check_body_contains "CGI REMOTE_ADDR" \
     "http://127.0.0.1:$PORT/cgi-bin/echo?x=1" "REMOTE_ADDR=127.0.0.1"
+check_body_contains "CGI clean PATH" \
+    "http://127.0.0.1:$PORT/cgi-bin/echo?x=1" "PATH=/usr/bin:/bin"
+check_body_contains "CGI clean HOME" \
+    "http://127.0.0.1:$PORT/cgi-bin/echo?x=1" "HOME=[]"
+
+check_status "CGI Status 201" \
+    "http://127.0.0.1:$PORT/cgi-bin/created" "201"
+check_header "CGI 201 reason" \
+    "http://127.0.0.1:$PORT/cgi-bin/created" "201 Created"
+check_status "CGI duplicate Content-Type -> 500" \
+    "http://127.0.0.1:$PORT/cgi-bin/dupct" "500"
+check_status "CGI 204 with body -> 500" \
+    "http://127.0.0.1:$PORT/cgi-bin/status204" "500"
+check_status "CGI 204 no body" \
+    "http://127.0.0.1:$PORT/cgi-bin/nocontent" "204"
+check_header_absent "CGI 204 no Content-Length" \
+    "http://127.0.0.1:$PORT/cgi-bin/nocontent" "Content-Length:"
+check_header_absent "CGI 204 no Content-Type" \
+    "http://127.0.0.1:$PORT/cgi-bin/nocontent" "Content-Type:"
+check_status "CGI 304 no body" \
+    "http://127.0.0.1:$PORT/cgi-bin/notmodified" "304"
+check_header_absent "CGI 304 no Content-Length" \
+    "http://127.0.0.1:$PORT/cgi-bin/notmodified" "Content-Length:"
+check_header_absent "CGI 304 no Content-Type" \
+    "http://127.0.0.1:$PORT/cgi-bin/notmodified" "Content-Type:"
+check_status "CGI 205 no body" \
+    "http://127.0.0.1:$PORT/cgi-bin/reset" "205"
+check_header "CGI 205 Content-Length 0" \
+    "http://127.0.0.1:$PORT/cgi-bin/reset" "Content-Length: 0"
+check_header_absent "CGI 205 no Content-Type" \
+    "http://127.0.0.1:$PORT/cgi-bin/reset" "Content-Type:"
+check_status "CGI invalid Status -> 500" \
+    "http://127.0.0.1:$PORT/cgi-bin/badstatus" "500"
 
 code=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
     -d 'hello=world' "http://127.0.0.1:$PORT/cgi-bin/echo" 2>/dev/null || echo "000")
@@ -493,6 +715,36 @@ case "$cgi_body" in
         ;;
     *)
         echo "FAIL: CGI POST body"
+        fail=1
+        ;;
+esac
+
+# Expect: 100-continue
+cont_out=$({ printf 'POST /cgi-bin/echo HTTP/1.1\r\nHost: x\r\n'
+    printf 'Content-Length: 5\r\nExpect: 100-continue\r\n'
+    printf 'Connection: close\r\n\r\n'
+    sleep 0.3
+    printf 'hello'; } | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
+case "$cont_out" in
+    *"100 Continue"*"BODY=hello"*)
+        echo "PASS: Expect 100-continue"
+        ;;
+    *)
+        echo "FAIL: Expect 100-continue"
+        fail=1
+        ;;
+esac
+
+# static POST + huge Content-Length: body를 읽지 않고 405를 먼저 보내야 한다.
+preflight_out=$({ printf 'POST /index.html HTTP/1.1\r\nHost: x\r\n'; \
+    printf 'Content-Length: 8388608\r\nConnection: close\r\n\r\n'; } \
+    | nc -w 2 127.0.0.1 "$PORT" 2>/dev/null || true)
+case "$preflight_out" in
+    *"405 Method Not Allowed"*)
+        echo "PASS: static preflight before body"
+        ;;
+    *)
+        echo "FAIL: static preflight before body"
         fail=1
         ;;
 esac
@@ -599,6 +851,71 @@ if [ "$idle_count" = "1" ]; then
 else
     echo "FAIL: keep-alive idle timeout (expected 1 response, got $idle_count)"
     fail=1
+fi
+
+# access log: ip "METHOD path" status bytes
+if grep -q '"GET /index.html" 200 ' "$LOG"; then
+    echo "PASS: access log"
+else
+    echo "FAIL: access log (no GET /index.html 200 line)"
+    fail=1
+fi
+
+# docroot 경로에 dot segment가 있어도 docroot 상대 경로만 검사해야 한다.
+mkdir -p "$TESTROOT/.hidden_www"
+cp www/index.html "$TESTROOT/.hidden_www/index.html"
+HIDDEN_PORT=$((PORT + 2))
+./server "$HIDDEN_PORT" "$TESTROOT/.hidden_www" >"${LOG}.hidden" 2>&1 &
+hidden_pid=$!
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -sS --max-time 1 -o /dev/null \
+        "http://127.0.0.1:$HIDDEN_PORT/index.html" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+code=$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$HIDDEN_PORT/index.html" 2>/dev/null || echo "000")
+if [ "$code" = "200" ]; then
+    echo "PASS: docroot with dot segment"
+else
+    echo "FAIL: docroot with dot segment (got $code)"
+    fail=1
+fi
+kill -INT "$hidden_pid" 2>/dev/null || true
+wait "$hidden_pid" 2>/dev/null || true
+hidden_pid=""
+
+# cgi_dir가 docroot 안이면 시작을 거부해야 한다.
+mkdir -p "$TESTROOT/cgi-inside"
+if ./server "$PORT" "$TESTROOT" "$TESTROOT/cgi-inside" >/dev/null 2>&1; then
+    echo "FAIL: cgi_dir inside docroot should be rejected"
+    fail=1
+else
+    echo "PASS: cgi_dir inside docroot rejected"
+fi
+
+if ./server "$PORT" "$TESTROOT" "$TESTROOT/.." >/dev/null 2>&1; then
+    echo "FAIL: cgi_dir parent of docroot should be rejected"
+    fail=1
+else
+    echo "PASS: cgi_dir parent of docroot rejected"
+fi
+
+if ./server "$PORT" "$TESTROOT" / >/dev/null 2>&1; then
+    echo "FAIL: cgi_dir / should be rejected"
+    fail=1
+else
+    echo "PASS: cgi_dir / rejected"
+fi
+
+if ./server "$PORT" / >/dev/null 2>&1; then
+    echo "FAIL: docroot / should be rejected"
+    fail=1
+else
+    echo "PASS: docroot / rejected"
 fi
 
 if [ "$fail" -ne 0 ]; then
