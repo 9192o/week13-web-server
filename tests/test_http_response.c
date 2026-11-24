@@ -15,6 +15,7 @@ static void test_reason_table(void)
     CHECK_EQ_STR(http_reason(408), "Request Timeout");
     CHECK_EQ_STR(http_reason(414), "URI Too Long");
     CHECK_EQ_STR(http_reason(431), "Request Header Fields Too Large");
+    CHECK_EQ_STR(http_reason(503), "Service Unavailable");
     CHECK_EQ_STR(http_reason(505), "HTTP Version Not Supported");
     CHECK(http_reason(418) == NULL);
     CHECK(http_reason(0) == NULL);
@@ -119,7 +120,7 @@ static void test_error_body_fits_server_buffer(void)
 {
     /* server.c 의 send_error 는 512 바이트 버퍼를 쓴다: 가장 긴 문구도 들어가야 함 */
     static const int all[] = {200, 301, 400, 403, 404, 408, 411, 413, 414, 431,
-                              405, 500, 501, 505};
+                              405, 500, 501, 503, 505};
     size_t i;
     char b[512];
     for (i = 0; i < sizeof all / sizeof all[0]; i++)
