@@ -55,6 +55,7 @@ Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시�
 | D15 | Phase 2 정적 파일 처리 | 2 | **결정: A (이벤트 루프, MVP)**. 대안 B/C/D 문서화. 데모 페이지 성격에 따라 재검토 |
 | D16 | Phase 3 업스트림 연결 | 3 | **결정: keep-alive 풀** (기본 중계 완성 후 2차) |
 | D17 | Phase 3 헬스체크 | 3 | **결정: passive only** (active `/health`는 future) |
+| D18 | Phase 3 DNS | 3 | **결정: 시작 시 1회 resolve** (hostname 허용, 요청 경로 블로킹 없음) |
 
 ## Phase별 핵심 결정 메모
 

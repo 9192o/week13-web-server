@@ -24,6 +24,7 @@
 | D6 | 설정 파일 (Phase 3) | **결정: INI 유사 형식** | 파서가 단순하고 fail fast가 쉬움. JSON은 과함 |
 | D16 | 업스트림 연결 | **결정: keep-alive 풀** | 확장성/지연 개선. 기본 중계 완성 후 2차로 구현 |
 | D17 | 헬스체크 | **결정: passive only** | dead backend 회피를 저비용으로. active `/health`는 future |
+| D18 | DNS | **결정: 시작 시 1회 resolve** | hostname 허용, 이벤트 루프 블로킹 방지. DNS 변경 시 재시작 |
 | gzip | Phase 3 처리 | **추천: 그대로 중계** (확정 대기) | zlib 없이 `Content-Encoding`/`Content-Length` 보존 |
 
 ### D3 선택지
@@ -86,8 +87,13 @@
 ### D16 — 업스트림 keep-alive 풀 (확정, 2차 구현)
 
 - **결정:** 최종 Phase 3는 backend별 keep-alive 연결 풀을 사용한다. 다만 기본 중계(connect → send → read → close)가 먼저 동작한 뒤 2차로 붙인다.
+- **keep-alive와 풀의 차이:**
+  - keep-alive는 “응답 후 연결을 닫지 않는 HTTP 동작”이다.
+  - 풀은 그렇게 남은 idle 연결을 backend별로 저장해 다음 요청에 재사용하는 **프록시 내부 자료구조**다.
+  - keep-alive만 켜고 풀이 없으면, 응답 후 연결을 보관할 곳이 없어 결국 close한다.
 - **이유:** 연결 재사용은 latency/throughput/backend 연결 수에서 확장성 이점이 크다. 반면 idle timeout, stale 연결, `Connection: close`, health 연동, 풀 정리 상태가 필요하므로 기본 중계와 동시에 넣으면 디버깅이 어렵다.
 - **관리 항목:** backend별 idle 목록, max idle, idle timeout, 사용 중 연결 제외, backend down 시 풀 close.
+- **정확성 규칙:** 응답 body를 끝까지 읽은 뒤에만 풀에 반납한다. `Connection: close` 응답, 파싱 실패, 에러 응답은 풀에 넣지 않는다. 한 연결에 동시에 두 요청을 보내지 않는다(HTTP pipelining 금지).
 
 ### D17 — passive 헬스체크 (확정)
 
@@ -100,10 +106,15 @@
 - **이유:** zlib 의존성과 압축/해제 CPU 비용이 없다. 프록시는 body 내용을 검사할 필요가 없다.
 - **대안:** 압축 해제/재압축은 body 변형/캐싱/보안 검사가 필요할 때만.
 
-### DNS / chunked — 미확정
+### D18 — 시작 시 1회 resolve (확정)
 
-- **DNS:** MVP 추천은 IP:port 또는 시작 시 1회 resolve. `getaddrinfo`를 요청 경로(이벤트 루프)에서 호출하면 루프가 블로킹되므로 피한다. task pool resolve는 future.
-- **chunked:** 추천은 stream-through. 요청/응답 chunk를 파싱해 원본 바이트를 중계하고 `Transfer-Encoding: chunked`를 유지한다. dechunk+`Content-Length`는 큰 body 버퍼링이 필요해 프록시에는 덜 적합하다.
+- **결정:** 설정의 backend hostname을 서버 시작 시 `getaddrinfo()`로 한 번 resolve하고, 요청 경로에서는 캐시된 IP를 사용한다.
+- **이유:** hostname을 허용하면서도 이벤트 루프가 DNS로 블로킹되지 않는다. DNS가 바뀌면 재시작이 필요하지만, Phase 3 데모/로컬 backend에는 충분하다.
+- **참고:** `127.0.0.1` 같은 IP literal은 resolve 없이 그대로 사용한다.
+
+### chunked — 미확정
+
+- **추천:** stream-through. 요청/응답 chunk를 파싱해 원본 바이트를 중계하고 `Transfer-Encoding: chunked`를 유지한다. dechunk+`Content-Length`는 큰 body 버퍼링이 필요해 프록시에는 덜 적합하다.
 
 ## 2. 기능 요구사항
 
@@ -218,8 +229,8 @@
 - **D6 형식**: **결정: INI 유사** (2026-11-24).
 - **D16 업스트림 연결**: **결정: keep-alive 풀, 기본 중계 후 2차 구현** (2026-11-24).
 - **D17 헬스체크**: **결정: passive only, active는 future** (2026-11-24).
+- **D18 DNS**: **결정: 시작 시 1회 resolve** (2026-11-24).
 - **gzip**: 추천은 그대로 중계. 최종 확정 대기.
-- **DNS**: 추천은 IP:port 또는 시작 시 resolve. 최종 확정 대기.
 - **chunked**: 추천은 stream-through. 최종 확정 대기.
 - **CONNECT**: D3=Reverse이므로 Phase 3 범위에서 제외.
 - 라우팅 규칙/백엔드 포트/타임아웃 기본값.
