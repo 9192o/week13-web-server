@@ -341,6 +341,33 @@ if [ "$TIMING" = 1 ]; then
     fi
     expect_ms "전송 끊김까지 약 ${SEND_MS}ms"     "$SEND_MS" "$EL"
     expect "전송 시간 초과 뒤에도 서버 정상"     200 "$(code "$URL/index.html")"
+
+    # P2-S2: A 가 연결만 하고 아무것도 안 보냄 → A 는 약 HEADER_MS 뒤 응답 없이 끊기고,
+    #        그동안 B 는 기다리지 않고 200
+    T0=$(now_ms)
+    timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'
+cat <&3 2>/dev/null | wc -c' > "$WORK/p2s2.a" &
+    A=$!
+    sleep 0.2                               # A 가 워커에 잡힐 시간
+    T1=$(now_ms)
+    C=$(code "$URL/index.html")
+    EB=$(( $(now_ms) - T1 ))
+    wait "$A"
+    EA=$(( $(now_ms) - T0 ))
+    expect "P2-S2 B → 200"                       200 "$C"
+    expect_between "P2-S2 B 응답 1초 안 (ms)"   0 1000 "$EB"
+    expect "P2-S2 A 받은 바이트 0 (무응답 close)" 0 "$(tr -d ' ' < "$WORK/p2s2.a")"
+    expect_ms "P2-S2 A 끊김까지 약 ${HEADER_MS}ms" "$HEADER_MS" "$EA"
+
+    # slowloris: 헤더를 HEADER_MS/10 간격으로 1바이트씩 계속 보냄.
+    # read 한 번 단위 제한(SO_RCVTIMEO)이면 영원히 안 끊기지만, 헤더 전체 데드라인이라 408.
+    T0=$(now_ms)
+    S=$(timeout 30 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'
+( printf "GET / HTTP/1.1\r\nHost: x\r\nX-Slow: " >&3
+  for _ in $(seq 40); do printf a >&3 || exit 0; sleep '"$(ms_to_s $(( HEADER_MS / 10 )))"'; done ) 2>/dev/null &
+head -1 <&3' | tr -d '\r')
+    expect "slowloris (1바이트씩 계속) → 408"    "HTTP/1.1 408 Request Timeout" "$S"
+    expect_ms "slowloris 408 까지 약 ${HEADER_MS}ms" "$HEADER_MS" $(( $(now_ms) - T0 ))
 fi
 
 # ---------------------------------------------------------------- fd 누수
