@@ -3,7 +3,37 @@
 이 문서는 [Phase 2 요구사항](PHASE_2_REQUIREMENTS.md)의 실행 증빙을 기록한다.
 Phase 1의 역사적 미검증 항목이나 Phase 3의 프록시를 대신 판정하지 않는다.
 
-## Linux Docker 검증
+## 현재 작업 트리 — 2026-11-23
+
+`src/` 배치 변경과 GIF 매핑·정적 회귀 테스트를 포함한 커밋 전 스냅샷을
+Linux/amd64 Docker에 복사해 검사했다. 커밋만 보는 `verify_phase2.sh`와 달리
+이 실행은 `Makefile`, `src/`, `tests/`, `examples/`, `public/`과 테스트용 루트
+`index.html`을 포함했다. Docker 29.9.3, 아래와 같은 이미지·제한,
+Linux `6.18.33.2-microsoft-standard-WSL2` x86_64 및 GCC 14.2.0에서 실행했다.
+
+| 실행 | 결과 |
+| --- | --- |
+| `make -B test test-shutdown test-epoll test-keepalive` | PASS: HTTP·정적·마감 회귀, 종료·동시 연결·재사용·FD 검사 |
+| `gcc -std=c17 -Wall -Wextra -Wpedantic -Werror examples/epoll_modes.c -o "$work/epoll_modes"` 및 실습 바이너리 실행 | PASS |
+| 위 make 스위트를 ASan/UBSan 빌드 및 LSan 활성화로 재실행, 이어 `make valgrind` | PASS: sanitizer 단위·소켓 스위트와 Valgrind C 단위 스위트 |
+
+검증 ID `mon_MVYGW42CQMKZ88KA`, 전체 종료 코드 0. 그보다 앞선 임시 스냅샷
+실행은 루트 `index.html` 픽스처를 빠뜨려 통합 테스트에서 종료 코드 2였다.
+소스나 기대값을 바꾸지 않고 누락된 픽스처를 포함해 재실행했다.
+
+이후 최종 HTML을 포함한 스냅샷에서도 `--root public`으로 서버를 실행하여
+홈의 가이드 링크, 가이드 및 GIF의 GET 타입과 원본 바이트, HEAD 타입·길이·빈
+본문을 확인했다. Edge에서 가이드를 데스크톱과 390px 뷰포트, 밝은/어두운 테마로
+확인했다. 이는 콘텐츠 및 표시 검사이며 부하 측정은 아니다.
+
+**마감 판단:** Phase 2 기능·회귀·자원 검증은 통과했다. T2-08은 아래의 이전
+리비전에서 비교 결과를 확보했으나 명령은 종료 코드 1이었고, 현재 작업 트리로는
+재측정하지 않았다. P2-08은 개선율이나 무실패를 합격선으로 두지 않으므로
+이를 표기한 채 기능 단계는 닫을 수 있다. 최종 스냅샷의 성능 증빙이 필요하면
+확정 리비전에서 동일 조건으로 재측정하고 이번 실패 기록도 보존한다.
+Phase 1의 별도 미검증 항목과 과제 필수 프록시는 이 판정에 포함되지 않는다.
+
+## 이전 리비전 — Linux Docker 검증
 
 소스 `ed230e3`, Docker 29.9.3, 이미지
 `sha256:9efed1380e6f14112be1f169f9075074647aff64f8d87f9c8a87d78577181255`,
@@ -33,6 +63,8 @@ LT/ET 실습에서는 동일한 일부 읽기 뒤 입력을 더 보내지 않았
 `ed230e3`를 같은 격리 컨테이너에서 `-O2`로 빌드했다. 동시 클라이언트
 1·8·32, 반복 3회, 정적 GET 3종과 POST `/echo` 4종을 사용했다.
 [원본 결과](../artifacts/phase2/benchmark.json)에 63개 측정 행을 남겼다.
+재측정할 때는 [산출물 보관 기준](../artifacts/README.md)에 따라 원본을 덮어쓰지 않고
+다른 출력 경로를 사용한다.
 
 | 조건 | 성공 | 실패 |
 | --- | ---: | ---: |

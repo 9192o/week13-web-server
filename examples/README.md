@@ -1,4 +1,9 @@
-# Phase 2 standalone examples
+# 독립 실습
+
+`examples/`는 서버 동작에 쓰인 OS 개념을 작은 프로그램으로 확인하는 곳이다.
+기본 `make`로 빌드하는 웹 서버에는 포함되지 않는다.
+[`tests/verify_phase2.sh test`](../tests/verify_phase2.sh)는 서버 테스트와 별도로
+아래 실습도 컴파일하고 실행한다.
 
 ## `epoll_modes.c` — LT vs ET after a partial read
 
@@ -31,24 +36,17 @@ OK: LT reports ready, ET does not after partial read
 The program exits with status `0` only when LT reports an event on the
 second wait and ET does not; otherwise it exits with a non-zero status.
 
-### Compile and run directly in the Linux Docker container
+### Linux Docker 개발 셸에서 실행
 
-The source tree is mounted read-only at `/workspace`; the working directory
-is a temporary path inside the container so the compiled binary is not
-written back to the repository.
+호스트에서 `sh dev.sh shell`로 개발 셸을 연 다음, 저장소 루트에서 실행한다.
+실행 파일은 임시 디렉터리에 만들고 실습이 끝나면 정리한다.
 
 ```sh
-docker.exe run \
-  --rm \
-  --platform linux/amd64 \
-  --network none \
-  --user 1000:1000 \
-  --env HOME=/tmp \
-  --mount "type=bind,source=$(wslpath -w "$PWD"),target=/workspace,readonly" \
-  --workdir /tmp \
-  week13-web-server-dev:trixie \
-  sh -c 'gcc -std=c17 -Wall -Wextra -Wpedantic -Werror /workspace/examples/epoll_modes.c -o /tmp/epoll_modes && /tmp/epoll_modes'
+(
+  set -eu
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  gcc -std=c17 -Wall -Wextra -Wpedantic -Werror examples/epoll_modes.c -o "$work/epoll_modes"
+  "$work/epoll_modes"
+)
 ```
-
-On a non-WSL Linux host, replace the Docker client path and `wslpath -w`
-with the ordinary `docker` command and the native source path.
