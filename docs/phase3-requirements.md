@@ -187,16 +187,18 @@
 
 ### Reverse Proxy (D3=Reverse)
 
-- [ ] `/api/*` 요청이 백엔드 8001로 전달되고 응답이 그대로 반환됨
-- [ ] `/static/*` 요청이 백엔드 8002 또는 프록시 정적 서빙으로 처리됨
-- [ ] Round-Robin으로 백엔드에 분배됨 (Should)
-- [ ] 백엔드가 꺼져 있으면 `502`
-- [ ] 백엔드가 느리면 `504`
-- [ ] hop-by-hop 헤더가 클라이언트/백엔드로 새지 않음
-- [ ] chunked 응답이 정상 중계됨
-- [ ] keep-alive/동시성 아래에서 정상 동작
+- [x] `/api/*` 요청이 backend로 전달되고 응답이 그대로 반환됨
+- [x] `/static/*` 요청이 프록시 직접 정적 서빙으로 처리됨
+- [x] Round-Robin으로 backend에 분배됨 (Should)
+- [x] backend가 꺼져 있으면 `502`
+- [x] backend가 느리면 `504`
+- [x] hop-by-hop 헤더가 클라이언트/backend로 새지 않음
+- [x] chunked 응답이 정상 중계됨 (요청 chunked도 stream-through)
+- [x] keep-alive/동시성 아래에서 정상 동작 (keep-alive 풀 포함)
 
 ### Forward Proxy (D3=Forward)
+
+> D3=Reverse로 확정되어 Phase 3 범위에서 제외. 아래 항목은 future 후보.
 
 - [ ] `curl -x http://127.0.0.1:8080 http://example.com/` 정상
 - [ ] absolute-form 요청 파싱
@@ -208,8 +210,11 @@
 
 ### gzip
 
-- [ ] gzip 응답을 중계하거나 변환하는 정책이 문서화됨
-- [ ] `Content-Encoding`/`Content-Length`/`Vary`가 올바르게 처리됨
+- [x] gzip 응답을 그대로 중계하는 정책 문서화
+- [x] `Content-Encoding`/`Content-Length`/`Vary` 보존
+
+> 구현 상태 (2026-11-25): `tests/integration_p3.sh` PASS (라우팅/Round-Robin/502/504/헤더/chunked/gzip/keep-alive/pool/static). `tests/backend.c` C 테스트 backend 추가. `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS, backend 2개).
+> 남은 것: path prefix strip 옵션, active `/health`, 캐싱, gzip 변환, Forward/CONNECT, Linux epoll CI 확인.
 
 ## 5. 범위 제외
 

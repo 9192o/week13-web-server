@@ -31,6 +31,9 @@ jobs:
       - name: Integration tests (S2 backpressure)
         run: make integration-s2
 
+      - name: Integration tests (Phase 3 proxy)
+        run: make integration-p3
+
       - name: Shutdown tests
         run: make shutdown-test
 

@@ -161,7 +161,8 @@ void test_chunked_rejected(void) {
         "Transfer-Encoding: chunked\r\n"
         "\r\n",
         &req);
-    TEST_ASSERT_EQ_INT(st, HTTP_NOT_IMPLEMENTED);
+    TEST_ASSERT_EQ_INT(st, HTTP_OK);
+    TEST_ASSERT_EQ_INT(req.chunked, 1);
     http_request_free(&req);
 }
 

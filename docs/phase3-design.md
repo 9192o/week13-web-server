@@ -69,15 +69,15 @@ client fd ← proxy_conn_t ← upstream fd
 
 | 파일 | 역할 |
 |---|---|
-| `include/proxy.h`, `src/proxy.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
-| `include/proxy_pool.h`, `src/proxy_pool.c` | backend별 keep-alive 풀 |
+| `include/proxy.h`, `src/proxy.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계, keep-alive 풀 |
 | `include/http_upstream.h`, `src/http_upstream.c` | upstream 응답(status line + headers) 파서 |
 | `include/chunked.h`, `src/chunked.c` | chunked stream-through 파서 |
 | `src/config_file.c` | INI 유사 설정 파일 파서 |
-| `tests/backend.c` | 테스트용 C backend (`/echo`, `/slow`, `/chunked`, `/gzip`, ...) |
+| `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_PROXY`, event source kind |
+| `tests/backend.c`, `tests/integration_p3.sh` | 테스트용 C backend와 Phase 3 통합 테스트 |
 | `src/server_ev.c` | client 상태에 `ST_PROXY` 추가, route 분기, proxy 이벤트 dispatch |
 | `include/config.h`, `src/config.c` | route/backend/timeout/pool 설정 필드 추가 |
-| `Makefile` | proxy 모듈/테스트 backend 타깃 추가 |
+| `Makefile` | proxy 모듈/테스트 backend/`integration-p3` 타깃 추가 |
 
 ## 5. 데이터 구조
 
@@ -583,6 +583,7 @@ Phase 2 drain을 확장한다.
 | endpoint | 동작 |
 |---|---|
 | `GET /echo` | method/path/query/headers/body를 text로 반환 |
+| `GET /id` | backend id (`id=N`) |
 | `GET /slow?ms=N` | N ms 후 200 |
 | `GET /chunked` | chunked 응답 3개 |
 | `GET /status?code=N` | 지정 status |
@@ -655,3 +656,21 @@ Phase 2 drain을 확장한다.
 - **DNS**: 시작 시 resolve는 DNS 변경에 취약하다. 재시작 정책을 문서화한다.
 - **Linux epoll**: Phase 2와 동일하게 CI에서 확인한다.
 - **캐싱/active health/gzip transform**: Phase 3 범위에서 제외. future로 문서화.
+
+## 21. 구현 상태 (2026-11-25)
+
+- **구현 완료**: `src/proxy.c`, `src/http_upstream.c`, `src/chunked.c`, `src/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
+- **통합**: `server`/`server_ev`가 최종 이벤트 루프 서버로 빌드되고, `--config`로 Phase 3 설정을 읽는다.
+- **동작 확인**:
+  - `/api/*` → Round-Robin backend, 그 외 → 정적 서빙.
+  - hop-by-hop 헤더 제거, `X-Forwarded-For` 추가.
+  - Content-Length/chunked 요청·응답 중계, gzip pass-through.
+  - keep-alive 풀(재사용/만료/stale 감지), passive health(connect 실패 502 + cooldown).
+  - connect/response/body timeout, 502/504.
+  - client keep-alive, 1MB body, backpressure.
+- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 7개, `tests/integration_p3.sh` 16개 PASS. `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **알려진 한계**:
+  - path prefix strip 옵션은 아직 없다. backend가 `/api/...` 경로를 그대로 받는다.
+  - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.
+  - active `/health`, 캐싱, gzip 변환, Forward proxy, CONNECT는 범위 밖.
+  - Linux epoll은 CI에서 확인한다.

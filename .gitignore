@@ -4,6 +4,7 @@
 server
 server_ev
 run_tests
+tests/backend
 cgi-bin/echo
 cgi-bin/sleep
 cgi-bin/crash

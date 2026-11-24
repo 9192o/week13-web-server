@@ -398,7 +398,13 @@ static http_status_t parse_headers(const char *start, const char *buf_end,
             if (st != HTTP_OK)
                 return st;
         } else if (ci_equal(name, name_len, "Transfer-Encoding")) {
+            if (req->has_transfer_encoding)
+                return HTTP_BAD_REQUEST;
             req->has_transfer_encoding = 1;
+            if (ci_equal(value, value_len, "chunked"))
+                req->chunked = 1;
+            else
+                return HTTP_NOT_IMPLEMENTED;
         } else if (ci_equal(name, name_len, "Expect")) {
             if (ci_contains(value, value_len, "100-continue"))
                 req->expect_continue = 1;
@@ -457,13 +463,14 @@ http_status_t http_request_parse_buffer(const char *buf, size_t len,
     if (req->has_transfer_encoding) {
         if (req->has_content_length)
             return HTTP_BAD_REQUEST;
-        return HTTP_NOT_IMPLEMENTED;
+        if (!req->chunked)
+            return HTTP_NOT_IMPLEMENTED;
     }
 
     if (req->version_major == 1 && req->version_minor == 1 && !req->has_host)
         return HTTP_BAD_REQUEST;
 
-    if (req->method == HTTP_POST && !req->has_content_length)
+    if (req->method == HTTP_POST && !req->has_content_length && !req->chunked)
         return HTTP_LENGTH_REQUIRED;
 
     return parse_uri(req, cfg);

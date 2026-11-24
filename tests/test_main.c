@@ -65,6 +65,21 @@ void test_logger_basic(void);
 void test_logger_not_running(void);
 void test_logger_drop(void);
 
+void test_chunked_basic(void);
+void test_chunked_partial(void);
+void test_chunked_extension(void);
+void test_chunked_trailer(void);
+void test_chunked_bad_size(void);
+void test_chunked_bad_crlf(void);
+
+void test_upstream_content_length(void);
+void test_upstream_chunked(void);
+void test_upstream_connection_close(void);
+void test_upstream_incomplete(void);
+void test_upstream_cl_te_conflict(void);
+void test_upstream_duplicate_cl(void);
+void test_upstream_bad_status(void);
+
 int g_tests_run = 0;
 int g_tests_failed = 0;
 
@@ -132,6 +147,19 @@ int main(void) {
     RUN_TEST(test_logger_basic);
     RUN_TEST(test_logger_not_running);
     RUN_TEST(test_logger_drop);
+    RUN_TEST(test_chunked_basic);
+    RUN_TEST(test_chunked_partial);
+    RUN_TEST(test_chunked_extension);
+    RUN_TEST(test_chunked_trailer);
+    RUN_TEST(test_chunked_bad_size);
+    RUN_TEST(test_chunked_bad_crlf);
+    RUN_TEST(test_upstream_content_length);
+    RUN_TEST(test_upstream_chunked);
+    RUN_TEST(test_upstream_connection_close);
+    RUN_TEST(test_upstream_incomplete);
+    RUN_TEST(test_upstream_cl_te_conflict);
+    RUN_TEST(test_upstream_duplicate_cl);
+    RUN_TEST(test_upstream_bad_status);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

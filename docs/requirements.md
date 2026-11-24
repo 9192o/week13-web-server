@@ -20,6 +20,7 @@ Phase 2 설계: [phase2-design.md](phase2-design.md) — 이벤트 루프(epoll/
 Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시성, keep-alive, 큐 full, CGI, 종료 테스트.
 
 Phase 3 설계: [phase3-design.md](phase3-design.md) — Reverse Proxy, 경로 라우팅, keep-alive 풀, chunked stream-through, 502/504.
+Phase 3 테스트: `tests/integration_p3.sh`, `tests/test_chunked.c`, `tests/test_http_upstream.c`.
 
 ## 공통 원칙
 

@@ -9,8 +9,9 @@ make test          # 단위 테스트
 make integration   # 실제 서버 + curl/nc 통합 테스트
 make integration-s1 # 이벤트 루프 + CGI/타임아웃/종료 테스트
 make integration-s2 # max-conns/queue-full 503 테스트
+make integration-p3 # Reverse Proxy 라우팅/중계/502/504/chunked/gzip 테스트
 make shutdown-test # SIGINT/SIGTERM/keep-alive/CGI 종료 테스트
-make sanitize      # ASan/UBSan 빌드로 test + integration + integration-s1 + integration-s2 + shutdown-test
+make sanitize      # ASan/UBSan 빌드로 test + integration + integration-s1 + integration-s2 + integration-p3 + shutdown-test
 make fdtest        # fd 누수 검사
 make load          # ab 부하 테스트
 ```
@@ -161,6 +162,13 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 - **drain/watchdog**: SIGINT/SIGTERM 시 listen 중단 → idle/read 연결 close → ST_WRITE/ST_WAIT_TASK 응답 완료 → 5초 deadline → watchdog `_exit`. 두 번째 시그널은 `_exit(1)`.
 - **통합**: `server`가 `src/main_ev.c` + `src/server_ev.c` 기반 최종 서버로 교체됨. `server_ev`는 같은 소스의 호환 바이너리.
 - **검증**: `make integration`, `make integration-s1`, `make integration-s2`, `make shutdown-test`(SIGINT 중 CGI 응답 완료 포함), `make fdtest`(9→9), `make load`(close/keep-alive failed=0), `make sanitize` 모두 PASS. 단위 **283 assertions**. 추가로 `ab -n 10000 -c 100` close-only **3629 rps**, keep-alive **3671 rps**, failed=0.
+
+### Phase 3 (2026-11-25)
+
+- **Reverse Proxy**: `src/proxy.c`, `src/http_upstream.c`, `src/chunked.c`, `src/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
+- **검증**: `make test` **320 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **156 PASS**, `make sanitize` PASS, `make fdtest` 9→9.
+- **부하**: proxy `ab -k -n 10000 -c 100` failed=0, 약 **8.7k rps** (macOS 로컬, backend 2개, pool max_idle 8).
+- **알려진 한계**: path prefix strip 없음(backend가 `/api/...` 그대로 수신), 100 concurrent에서 upstream 연결 다수 생성(pool max_idle 8), active `/health`/캐싱/gzip 변환/Forward/CONNECT는 future, Linux epoll은 CI 확인.
 
 ## 남은 품질 항목
 

@@ -23,6 +23,13 @@ void config_init(config_t *cfg) {
     cfg->task_workers = DEFAULT_TASK_WORKERS;
     cfg->task_queue_size = DEFAULT_TASK_QUEUE;
     cfg->max_conns = DEFAULT_MAX_CONNS;
+
+    cfg->route_count = 0;
+    cfg->timeout_connect_sec = 2;
+    cfg->timeout_response_sec = 10;
+    cfg->timeout_body_sec = 10;
+    cfg->pool_max_idle = 8;
+    cfg->pool_idle_timeout_sec = 30;
 }
 
 static int copy_path(char *dst, size_t dst_size, const char *src) {
@@ -51,20 +58,34 @@ static int parse_size_arg(const char *s, size_t max, size_t *out) {
 }
 
 int config_parse_cli(int argc, char **argv, config_t *cfg) {
-    if (argc < 3)
-        return -1;
+    const char *config_path = NULL;
 
-    int port = 0;
-    if (parse_int_arg(argv[1], 1, 65535, &port) < 0)
-        return -1;
-    cfg->port = port;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0) {
+            if (config_path != NULL || i + 1 >= argc)
+                return -1;
+            config_path = argv[++i];
+        }
+    }
 
-    if (copy_path(cfg->docroot, sizeof cfg->docroot, argv[2]) < 0)
-        return -1;
+    int file_loaded = 0;
+    if (config_path != NULL) {
+        if (config_parse_file(cfg, config_path) < 0)
+            return -1;
+        file_loaded = 1;
+    }
 
-    cfg->cgi_dir[0] = '\0';
+    int pos = 0;
+    int port_set = 0;
+    int docroot_set = 0;
+    int cgi_set = 0;
 
-    for (int i = 3; i < argc; i++) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0) {
+            i++;
+            continue;
+        }
+
         if (strcmp(argv[i], "--timeout") == 0) {
             i++;
             if (i >= argc ||
@@ -115,12 +136,35 @@ int config_parse_cli(int argc, char **argv, config_t *cfg) {
             if (i >= argc ||
                 parse_int_arg(argv[i], 1, 65536, &cfg->max_conns) < 0)
                 return -1;
-        } else if (cfg->cgi_dir[0] == '\0') {
+        } else if (argv[i][0] == '-' && argv[i][1] == '-') {
+            return -1;
+        } else if (pos == 0) {
+            int port = 0;
+            if (parse_int_arg(argv[i], 1, 65535, &port) < 0)
+                return -1;
+            cfg->port = port;
+            port_set = 1;
+            pos = 1;
+        } else if (pos == 1) {
+            if (copy_path(cfg->docroot, sizeof cfg->docroot, argv[i]) < 0)
+                return -1;
+            docroot_set = 1;
+            pos = 2;
+        } else if (pos == 2) {
             if (copy_path(cfg->cgi_dir, sizeof cfg->cgi_dir, argv[i]) < 0)
                 return -1;
+            cgi_set = 1;
+            pos = 3;
         } else {
             return -1;
         }
+    }
+
+    if (!file_loaded) {
+        if (!port_set || !docroot_set)
+            return -1;
+        if (!cgi_set)
+            cfg->cgi_dir[0] = '\0';
     }
 
     return 0;
@@ -133,10 +177,62 @@ static int path_within(const char *root, const char *path) {
     return path[root_len] == '\0' || path[root_len] == '/';
 }
 
+route_spec_t *config_find_route(config_t *cfg, const char *path) {
+    if (cfg == NULL || path == NULL)
+        return NULL;
+
+    route_spec_t *best = NULL;
+    size_t best_len = 0;
+    for (int i = 0; i < cfg->route_count; i++) {
+        route_spec_t *r = &cfg->routes[i];
+        size_t len = strlen(r->prefix);
+        if (len >= best_len && strncmp(path, r->prefix, len) == 0) {
+            best = r;
+            best_len = len;
+        }
+    }
+    return best;
+}
+
 int config_validate(const config_t *cfg) {
     if (cfg->port < 1 || cfg->port > 65535) {
         fprintf(stderr, "invalid port: %d\n", cfg->port);
         return -1;
+    }
+    if (cfg->timeout_connect_sec < 1 || cfg->timeout_connect_sec > 3600 ||
+        cfg->timeout_response_sec < 1 || cfg->timeout_response_sec > 3600 ||
+        cfg->timeout_body_sec < 1 || cfg->timeout_body_sec > 3600) {
+        fprintf(stderr, "invalid proxy timeout\n");
+        return -1;
+    }
+    if (cfg->pool_max_idle < 0 || cfg->pool_max_idle > 1024 ||
+        cfg->pool_idle_timeout_sec < 1 ||
+        cfg->pool_idle_timeout_sec > 3600) {
+        fprintf(stderr, "invalid pool setting\n");
+        return -1;
+    }
+    if (cfg->route_count < 0 || cfg->route_count > MAX_ROUTES) {
+        fprintf(stderr, "invalid route count\n");
+        return -1;
+    }
+    for (int i = 0; i < cfg->route_count; i++) {
+        const route_spec_t *r = &cfg->routes[i];
+        if (r->prefix[0] != '/') {
+            fprintf(stderr, "invalid route prefix: %s\n", r->prefix);
+            return -1;
+        }
+        if (r->type != ROUTE_STATIC && r->type != ROUTE_PROXY) {
+            fprintf(stderr, "invalid route type: %s\n", r->prefix);
+            return -1;
+        }
+        if (r->backend_count < 0 || r->backend_count > MAX_BACKENDS) {
+            fprintf(stderr, "invalid backend count: %s\n", r->prefix);
+            return -1;
+        }
+        if (r->type == ROUTE_PROXY && r->backend_count == 0) {
+            fprintf(stderr, "proxy route has no backend: %s\n", r->prefix);
+            return -1;
+        }
     }
     if (cfg->task_workers < 1 || cfg->task_workers > 64) {
         fprintf(stderr, "invalid task workers: %d\n", cfg->task_workers);

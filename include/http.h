@@ -78,6 +78,7 @@ typedef struct {
     int keep_alive;
     int expect_continue;
     int has_host;
+    int chunked;
 } http_request_t;
 
 void http_request_init(http_request_t *req);

@@ -5,6 +5,8 @@
 #include "event_backend.h"
 #include "http.h"
 #include "logger.h"
+#include "proxy.h"
+#include "server_conn.h"
 #include "static_file.h"
 #include "task_pool.h"
 #include "util.h"
@@ -175,54 +177,15 @@ static int request_line_uri_too_long(const char *buf, size_t len,
     return target_len > max_uri;
 }
 
-typedef enum {
-    ST_READ,
-    ST_READ_BODY,
-    ST_WAIT_TASK,
-    ST_WRITE
-} conn_state_t;
-
-typedef struct conn {
-    int fd;
-    struct sockaddr_in peer;
-    conn_state_t state;
-    int closed;
-
-    char in[16384];
-    size_t in_len;
-
-    http_request_t req;
-
-    char *out;
-    size_t out_len;
-    size_t out_sent;
-
-    int file_fd;
-    off_t file_offset;
-    size_t file_remaining;
-    char *file_buf;
-    size_t file_buf_len;
-    size_t file_buf_sent;
-
-    int head_only;
-    int close_after;
-    int requests;
-    uint64_t task_id;
-    size_t body_received;
-    uint64_t deadline_ms;
-
-    access_log_t log;
-    int log_has_request;
-
-    struct conn *next;
-} conn_t;
-
 static conn_t *conn_new(int fd, const struct sockaddr_in *peer,
-                        const config_t *cfg) {
+                        const config_t *cfg, ev_loop_t *loop) {
     conn_t *c = calloc(1, sizeof *c);
     if (c == NULL)
         return NULL;
 
+    c->source.kind = EV_SRC_CLIENT;
+    c->loop = loop;
+    c->cfg = cfg;
     c->fd = fd;
     c->peer = *peer;
     c->state = ST_READ;
@@ -258,6 +221,7 @@ static void conn_log_end(conn_t *c) {
 }
 
 static void conn_free(conn_t *c) {
+    proxy_detach(c);
     if (c->file_fd >= 0)
         close(c->file_fd);
     free(c->file_buf);
@@ -270,9 +234,13 @@ static void conn_close(ev_loop_t *loop, conn_t *c) {
     if (c->closed)
         return;
     conn_log_end(c);
+    proxy_detach(c);
     c->closed = 1;
     if (c->fd >= 0) {
-        (void)ev_del(loop, c->fd);
+        if (c->in_loop) {
+            (void)ev_del(loop, c->fd);
+            c->in_loop = 0;
+        }
         close(c->fd);
         c->fd = -1;
     }
@@ -380,6 +348,33 @@ static int conn_build_error(conn_t *c, int status, int close_connection,
     c->deadline_ms = now_ms() + (uint64_t)timeout_sec * 1000;
     conn_log_response(c, status, head ? 0 : body_len);
     return 0;
+}
+
+int server_conn_build_error(conn_t *c, int status, int close_connection,
+                            int head, int retry_after) {
+    if (c == NULL || c->cfg == NULL)
+        return -1;
+    return conn_build_error(c, status, close_connection, head, retry_after,
+                            c->cfg->request_timeout_sec);
+}
+
+void server_conn_close(conn_t *c) {
+    if (c != NULL)
+        conn_close(c->loop, c);
+}
+
+void server_conn_log_response(conn_t *c, int status, size_t body_bytes) {
+    if (c != NULL)
+        conn_log_response(c, status, body_bytes);
+}
+
+void server_conn_log_end(conn_t *c) {
+    if (c != NULL)
+        conn_log_end(c);
+}
+
+int server_is_stopping(void) {
+    return g_stop != 0;
 }
 
 static int conn_build_options(conn_t *c, int close_connection,
@@ -618,16 +613,59 @@ static int process_buffer(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
 
     conn_log_begin(c, c->req.method_str, c->req.path);
 
+    size_t buffered = c->in_len > c->req.header_len
+                          ? c->in_len - c->req.header_len : 0;
+    int is_cgi = cfg->cgi_dir[0] != '\0' &&
+                 strncmp(c->req.path, "/cgi-bin/", 9) == 0;
+
+    if (!is_cgi) {
+        route_spec_t *route = config_find_route((config_t *)cfg, c->req.path);
+        if (route != NULL && route->type == ROUTE_PROXY) {
+            int route_index = (int)(route - cfg->routes);
+            int rc = proxy_start(c, route_index, &c->req);
+            if (rc < 0) {
+                http_request_free(&c->req);
+                return -1;
+            }
+
+            if (rc == 1) {
+                size_t body_len = 0;
+                if (c->req.chunked) {
+                    body_len = buffered;
+                } else if (c->req.content_length > 0) {
+                    body_len = buffered < c->req.content_length
+                                   ? buffered : c->req.content_length;
+                }
+                if (body_len > 0)
+                    memmove(c->in, c->in + c->req.header_len, body_len);
+                c->in_len = body_len;
+            } else {
+                c->in_len = 0;
+            }
+
+            http_request_free(&c->req);
+            if (rc == 1)
+                proxy_kick(c);
+            return 1;
+        }
+    }
+
+    if (c->req.chunked) {
+        if (conn_build_error(c, HTTP_NOT_IMPLEMENTED, 1, head, 0,
+                             cfg->request_timeout_sec) < 0) {
+            http_request_free(&c->req);
+            return -1;
+        }
+        c->requests++;
+        http_request_free(&c->req);
+        return 1;
+    }
+
     int keep = c->req.keep_alive &&
                (c->requests + 1 < cfg->keepalive_max_requests) &&
                !g_stop;
     int close_after = !keep;
     c->head_only = head;
-
-    size_t buffered = c->in_len > c->req.header_len
-                          ? c->in_len - c->req.header_len : 0;
-    int is_cgi = cfg->cgi_dir[0] != '\0' &&
-                 strncmp(c->req.path, "/cgi-bin/", 9) == 0;
 
     if (is_cgi && c->req.content_length > 0 &&
         buffered < c->req.content_length) {
@@ -971,7 +1009,7 @@ static void accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
             continue;
         }
 
-        conn_t *c = conn_new(fd, &peer, cfg);
+        conn_t *c = conn_new(fd, &peer, cfg, loop);
         if (c == NULL) {
             close(fd);
             continue;
@@ -981,6 +1019,7 @@ static void accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
             conn_free(c);
             continue;
         }
+        c->in_loop = 1;
 
         c->next = *head;
         *head = c;
@@ -989,15 +1028,19 @@ static void accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
 }
 
 static int next_timeout(conn_t *head) {
-    if (head == NULL)
-        return 1000;
-
     uint64_t now = now_ms();
     uint64_t min = UINT64_MAX;
     for (conn_t *c = head; c != NULL; c = c->next) {
+        if (c->state == ST_PROXY)
+            continue; /* proxy_next_timeout_ms() covers this connection */
         if (c->deadline_ms < min)
             min = c->deadline_ms;
     }
+
+    int proxy_ms = proxy_next_timeout_ms();
+    if (proxy_ms >= 0 && (uint64_t)proxy_ms < min)
+        min = (uint64_t)proxy_ms;
+
     if (min == UINT64_MAX)
         return 1000;
     if (min <= now)
@@ -1013,6 +1056,8 @@ static void expire_timers(ev_loop_t *loop, conn_t *head,
     for (conn_t *c = head; c != NULL; c = c->next) {
         if (c->closed || now < c->deadline_ms)
             continue;
+        if (c->state == ST_PROXY)
+            continue; /* proxy_sweep owns proxy deadlines */
 
         if (c->state == ST_READ && c->in_len == 0 && c->requests > 0) {
             conn_close(loop, c);
@@ -1104,6 +1149,17 @@ int server_ev_run(const config_t *cfg) {
         return -1;
     }
 
+    if (proxy_init(cfg) < 0) {
+        logger_stop();
+        task_pool_destroy(pool);
+        close(listenfd);
+        ev_destroy(loop);
+        close(g_signal_pipe[0]);
+        close(g_signal_pipe[1]);
+        g_signal_pipe[0] = g_signal_pipe[1] = -1;
+        return -1;
+    }
+
     log_error("listening on 0.0.0.0:%d (loop=%s, task_workers=%d, max_conns=%d, docroot: %s)",
               cfg->port, ev_loop_backend_name(loop), cfg->task_workers,
               cfg->max_conns, cfg->docroot);
@@ -1163,9 +1219,22 @@ int server_ev_run(const config_t *cfg) {
                 continue;
             }
 
-            conn_t *c = events[i].ptr;
-            if (c == NULL || c->closed)
+            ev_source_t *src = events[i].ptr;
+            if (src == NULL)
                 continue;
+            if (src->kind == EV_SRC_UPSTREAM) {
+                proxy_handle_upstream_event((proxy_conn_t *)src,
+                                            events[i].events);
+                continue;
+            }
+
+            conn_t *c = (conn_t *)src;
+            if (c->closed)
+                continue;
+            if (c->state == ST_PROXY) {
+                proxy_handle_client_event(c, events[i].events);
+                continue;
+            }
 
             int err = (events[i].events & EV_ERR) != 0;
             if (err)
@@ -1198,8 +1267,11 @@ int server_ev_run(const config_t *cfg) {
 
         conn_sweep(&head, &count);
         expire_timers(loop, head, cfg);
+        proxy_sweep();
         conn_sweep(&head, &count);
     }
+
+    proxy_shutdown_all();
 
     while (head != NULL) {
         conn_close(loop, head);
@@ -1221,6 +1293,7 @@ int server_ev_run(const config_t *cfg) {
     close(g_signal_pipe[1]);
     g_signal_pipe[0] = g_signal_pipe[1] = -1;
     ev_destroy(loop);
+    proxy_cleanup();
     log_error("server_ev stopped");
     logger_stop();
     return 0;
