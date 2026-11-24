@@ -171,6 +171,26 @@ fd_settled() {
 }
 FD0=$(fd_settled)
 
+# ---------------------------------------------------------------- 동시 처리 (phase 2)
+
+echo "== 동시 처리"
+# P2-S1: A 가 연결만 열고 아무것도 안 보내는 동안 B 가 요청 → 기다리지 않고 200
+exec 5<>/dev/tcp/127.0.0.1/"$PORT"
+sleep 0.2                                   # A 가 워커에 잡힐 시간
+T0=$(now_ms)
+H=$(curl -s -D - -o "$WORK/p2s1.body" "$URL/index.html" | tr -d '\r')
+EL=$(( $(now_ms) - T0 ))
+exec 5>&-
+expect_match "P2-S1 A 가 붙잡아도 B → 200"     '^HTTP/1.1 200 OK$' "$H"
+expect_match "P2-S1 Content-Type text/html"     '^Content-Type: text/html; charset=utf-8$' "$H"
+expect_match "P2-S1 Content-Length 12"          '^Content-Length: 12$' "$H"
+if cmp -s "$WORK/p2s1.body" "$R/index.html"; then
+    ok "P2-S1 본문 = index.html"
+else
+    fail "P2-S1 본문 = index.html" "내용이 다름"
+fi
+expect_between "P2-S1 B 응답 1초 안 (ms)"      0 1000 "$EL"
+
 # ---------------------------------------------------------------- 정적 파일
 
 echo "== 정적 파일"
