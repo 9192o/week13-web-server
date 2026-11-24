@@ -138,6 +138,19 @@ int config_validate(const config_t *cfg) {
         fprintf(stderr, "invalid port: %d\n", cfg->port);
         return -1;
     }
+    if (cfg->task_workers < 1 || cfg->task_workers > 64) {
+        fprintf(stderr, "invalid task workers: %d\n", cfg->task_workers);
+        return -1;
+    }
+    if (cfg->task_queue_size < 1 || cfg->task_queue_size > 65536) {
+        fprintf(stderr, "invalid task queue size: %d\n",
+                cfg->task_queue_size);
+        return -1;
+    }
+    if (cfg->max_conns < 1 || cfg->max_conns > 65536) {
+        fprintf(stderr, "invalid max conns: %d\n", cfg->max_conns);
+        return -1;
+    }
 
     struct stat st;
     if (stat(cfg->docroot, &st) < 0) {

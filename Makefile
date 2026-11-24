@@ -9,13 +9,14 @@ LDFLAGS  += -pthread
 
 EVENT_SRCS := src/event_backend.c src/event_poll.c src/event_epoll.c src/event_kqueue.c
 
-SERVER_SRCS := src/main.c src/config.c src/server.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c $(EVENT_SRCS)
-SERVER_OBJS := $(SERVER_SRCS:.c=.o)
-SERVER_BIN  := server
-
 EV_SERVER_SRCS := src/main_ev.c src/config.c src/server_ev.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c src/cgi_task.c src/task_pool.c $(EVENT_SRCS)
 EV_SERVER_OBJS := $(EV_SERVER_SRCS:.c=.o)
 EV_SERVER_BIN  := server_ev
+
+# Phase 2 merged: the final server is the event-loop/task-pool server.
+SERVER_SRCS := $(EV_SERVER_SRCS)
+SERVER_OBJS := $(EV_SERVER_OBJS)
+SERVER_BIN  := server
 
 CGI_BINS := cgi-bin/echo cgi-bin/sleep cgi-bin/crash cgi-bin/term cgi-bin/partial cgi-bin/created cgi-bin/dupct cgi-bin/status204 cgi-bin/badstatus cgi-bin/nocontent cgi-bin/notmodified cgi-bin/reset
 
@@ -88,4 +89,4 @@ linux-test:
 		sh -c "apt-get update && apt-get install -y curl netcat-openbsd && make test && make integration && make integration-s1 && make integration-s2 && make shutdown-test"
 
 clean:
-	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(CGI_BINS) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o
+	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(CGI_BINS) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o src/main.o src/server.o src/main.d src/server.d

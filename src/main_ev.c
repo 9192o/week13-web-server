@@ -12,7 +12,8 @@ int main(int argc, char **argv) {
                 "usage: %s <port> <docroot> [cgi_dir] "
                 "[--timeout N] [--max-uri N] [--max-header N] "
                 "[--max-body N] [--keepalive-idle N] "
-                "[--keepalive-max N]\n",
+                "[--keepalive-max N] [--task-workers N] "
+                "[--task-queue N] [--max-conns N]\n",
                 argv[0]);
         return 1;
     }

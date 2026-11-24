@@ -854,7 +854,15 @@ else
 fi
 
 # access log: ip "METHOD path" status bytes
-if grep -q '"GET /index.html" 200 ' "$LOG"; then
+i=0
+while [ "$i" -lt 20 ]; do
+    if grep -q '"GET /index.html" 200 ' "$LOG" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+if grep -q '"GET /index.html" 200 ' "$LOG" 2>/dev/null; then
     echo "PASS: access log"
 else
     echo "FAIL: access log (no GET /index.html 200 line)"

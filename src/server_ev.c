@@ -22,11 +22,14 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define EV_FILE_CHUNK 65536
+#define EV_DRAIN_TIMEOUT_MS 5000
 
 static volatile sig_atomic_t g_stop = 0;
+static volatile sig_atomic_t g_signal_count = 0;
 static uint64_t g_task_seq = 0;
 static int g_signal_pipe[2] = {-1, -1};
 
@@ -35,6 +38,8 @@ static int set_cloexec(int fd);
 
 static void on_signal(int sig) {
     (void)sig;
+    if (++g_signal_count >= 2)
+        _exit(1);
     g_stop = 1;
     if (g_signal_pipe[1] >= 0) {
         char byte = 'x';
@@ -287,6 +292,40 @@ static void conn_sweep(conn_t **head, int *count) {
     }
 }
 
+static void *shutdown_watchdog(void *arg) {
+    (void)arg;
+    struct timespec ts;
+    ts.tv_sec = EV_DRAIN_TIMEOUT_MS / 1000;
+    ts.tv_nsec = (long)(EV_DRAIN_TIMEOUT_MS % 1000) * 1000000L;
+    while (nanosleep(&ts, &ts) < 0 && errno == EINTR)
+        ;
+    _exit(0);
+    return NULL;
+}
+
+static void start_shutdown_watchdog(void) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, shutdown_watchdog, NULL) == 0)
+        pthread_detach(thread);
+}
+
+static void begin_drain(ev_loop_t *loop, int *listenfd, conn_t *head) {
+    if (*listenfd >= 0) {
+        (void)ev_del(loop, *listenfd);
+        close(*listenfd);
+        *listenfd = -1;
+    }
+
+    for (conn_t *c = head; c != NULL; c = c->next) {
+        if (c->closed)
+            continue;
+        if (c->state == ST_READ || c->state == ST_READ_BODY)
+            conn_close(loop, c);
+        else
+            c->close_after = 1;
+    }
+}
+
 static void conn_reset_response(conn_t *c) {
     if (c->file_fd >= 0) {
         close(c->file_fd);
@@ -527,7 +566,7 @@ static void drain_task_completions(ev_loop_t *loop, task_pool_t *pool,
                 res->response = NULL;
                 c->out_len = res->response_len;
                 c->out_sent = 0;
-                c->close_after = res->close_connection;
+                c->close_after = res->close_connection || g_stop;
                 c->file_fd = -1;
                 c->file_remaining = 0;
                 c->state = ST_WRITE;
@@ -1001,6 +1040,7 @@ static void expire_timers(ev_loop_t *loop, conn_t *head,
 
 int server_ev_run(const config_t *cfg) {
     g_stop = 0;
+    g_signal_count = 0;
     g_task_seq = 0;
 
     /*
@@ -1070,10 +1110,32 @@ int server_ev_run(const config_t *cfg) {
 
     conn_t *head = NULL;
     int count = 0;
+    int draining = 0;
+    uint64_t drain_deadline = 0;
 
-    while (!g_stop) {
+    while (!g_stop || !draining || head != NULL) {
+        if (g_stop && !draining) {
+            draining = 1;
+            drain_deadline = now_ms() + EV_DRAIN_TIMEOUT_MS;
+            start_shutdown_watchdog();
+            log_error("shutdown: draining %d connections", count);
+            begin_drain(loop, &listenfd, head);
+            conn_sweep(&head, &count);
+        }
+
+        if (draining && now_ms() >= drain_deadline)
+            break;
+        if (draining && head == NULL)
+            break;
+
         pthread_sigmask(SIG_UNBLOCK, &shutdown_signals, NULL);
         int timeout = next_timeout(head);
+        if (draining) {
+            uint64_t now = now_ms();
+            uint64_t remaining = drain_deadline > now ? drain_deadline - now : 0;
+            if (remaining < (uint64_t)timeout)
+                timeout = (int)remaining;
+        }
         ev_event_t events[64];
         int n = ev_wait(loop, events, 64, timeout);
 
@@ -1085,7 +1147,7 @@ int server_ev_run(const config_t *cfg) {
         }
 
         for (int i = 0; i < n; i++) {
-            if (events[i].fd == listenfd) {
+            if (listenfd >= 0 && events[i].fd == listenfd) {
                 if (events[i].events & EV_READ)
                     accept_new(listenfd, loop, &head, &count, cfg);
                 continue;
@@ -1151,8 +1213,10 @@ int server_ev_run(const config_t *cfg) {
     free_pending_results(pool);
     task_pool_destroy(pool);
 
-    (void)ev_del(loop, listenfd);
-    close(listenfd);
+    if (listenfd >= 0) {
+        (void)ev_del(loop, listenfd);
+        close(listenfd);
+    }
     close(g_signal_pipe[0]);
     close(g_signal_pipe[1]);
     g_signal_pipe[0] = g_signal_pipe[1] = -1;

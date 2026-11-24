@@ -263,12 +263,15 @@ typedef struct {
 ## 11. 종료/시그널
 
 - SIGINT/SIGTERM 핸들러는 **self-pipe에 1바이트**만 쓴다 (`write`는 async-signal-safe). S1에서 구현 완료.
-- 이벤트 루프가 self-pipe를 읽고 종료 절차 시작. 현재 S2b 구현:
-  1. 루프 종료 후 모든 연결 close
-  2. `task_pool_shutdown`으로 진행 중 작업 완료 대기
-  3. 결과 큐 drain 후 풀/이벤트 루프 정리
-- S2c 목표: listenfd close → 진행 중 요청 완료 → idle/read 연결 close → 새 작업 금지 → 5초 유예 → watchdog `_exit`.
-- macOS는 signal mask가 프로세스 공유라 워커의 `fork()`가 SIGINT를 블록한 채 남길 수 있다. `ev_wait` 전에 SIGINT/SIGTERM을 unblock하고 fork를 직렬화한다.
+- 이벤트 루프가 self-pipe를 읽고 종료 절차 시작. S2c-3b 구현:
+  1. `listenfd` close, 새 연결 중단
+  2. `ST_READ`/`ST_READ_BODY` 연결은 즉시 close
+  3. `ST_WRITE`/`ST_WAIT_TASK` 연결은 `close_after=1`로 현재 응답을 마치게 함
+  4. 5초 drain deadline, 넘으면 남은 연결 close
+  5. `task_pool_shutdown`으로 진행 중 작업 완료 대기
+  6. watchdog 스레드가 5초 뒤 `_exit(0)`로 강제 종료
+  7. 두 번째 SIGINT/SIGTERM은 즉시 `_exit(1)`
+- macOS는 signal mask가 프로세스 공유라 워커의 process creation이 SIGINT를 블록한 채 남길 수 있다. `ev_wait` 전에 SIGINT/SIGTERM을 unblock하고 spawn을 직렬화한다.
 - 작업 워커와 로거는 SIGINT/SIGTERM을 블록한다 (로거 도입 시).
 - `SIGPIPE` 무시.
 - `SIGCHLD`는 기본 동작. CGI 작업 워커가 자기 자식 `waitpid`.
@@ -308,14 +311,15 @@ typedef struct {
 >
 > 구현 상태 (S2c-2): `src/logger.c` + `include/logger.h` + `tests/test_logger.c`. 단일 로거 스레드/bounded 큐/drop 카운터, `server_ev` access log(정적/CGI/404/500/동시 요청) PASS.
 >
-> 구현 상태 (S2c-3a): CGI 실행을 `fork`+`execve`에서 `posix_spawn` + file actions로 전환. Phase 1 `server`/`server_ev` CGI 테스트 PASS. drain/watchdog와 `server` 통합은 S2c-3b.
+> 구현 상태 (S2c-3a): CGI 실행을 `fork`+`execve`에서 `posix_spawn` + file actions로 전환. Phase 1 `server`/`server_ev` CGI 테스트 PASS.
+>
+> 구현 상태 (S2c-3b): SIGINT/SIGTERM 단계별 drain + 5초 watchdog, 두 번째 시그널 강제 종료. `server`는 이제 `src/main_ev.c` + `src/server_ev.c` 기반 최종 서버이고, Phase 1 통합/종료/fd/load 테스트도 이 서버로 PASS. `server_ev`는 같은 소스의 호환 바이너리다.
 >
 > `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
 
 | 파일 | 변경 |
 |---|---|
-| `src/server.c` | Phase 1 서버 (S2c-3에서 `server_ev`로 교체/통합) |
-| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | S1 이벤트 루프 + S2b CGI + S2c-1 백프레셔 + S2c-2 access log |
+| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | 최종 이벤트 루프 서버 (S1 + S2 전체 + drain) |
 | `src/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
 | `src/logger.c`, `include/logger.h` | S2c-2 로거 스레드/큐/access log |
 | `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 + S2c-2 access log 테스트 |

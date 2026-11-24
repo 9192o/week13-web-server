@@ -1,5 +1,7 @@
 # 아키텍처 — Phase 1
 
+> **Phase 2 merged:** 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 구조는 [phase2-design.md](phase2-design.md)를 본다.
+
 ## 모듈
 
 ```text

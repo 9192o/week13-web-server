@@ -107,6 +107,8 @@
 | SHUT-07 | FR-30 | 스트레스 | 시작/종료 10회 | fd/스레드/좀비 누수 없음 |
 
 > 구현 상태 (S2b): SHUT-01(idle SIGINT) PASS. SHUT-02/03/05/06/07은 S2c의 drain/watchdog 작업에서 다룬다.
+>
+> 구현 상태 (S2c-3b): SHUT-01/02/03/06 PASS. `tests/shutdown.sh`에 SIGINT 중 CGI 응답 완료 테스트 추가. SHUT-05(즉시 재시작), SHUT-07(10회 반복)은 아직 자동화하지 않았다.
 
 ## 7. 로그
 

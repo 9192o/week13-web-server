@@ -176,4 +176,31 @@ else
     SRV_PID=
 fi
 
+# 5. SIGINT during CGI: the in-flight response completes, then the server exits
+PORT5=$((BASE_PORT + 4))
+if start_server "$PORT5" --timeout 5; then
+    CGI_OUT="$TMP/cgi-drain.out"
+    curl -sS --max-time 10 -o "$CGI_OUT" \
+        "http://$HOST:$PORT5/cgi-bin/sleep" >/dev/null 2>&1 &
+    CURL_PID=$!
+    sleep 0.3
+    kill -INT "$SRV_PID"
+
+    wait_exit "$CURL_PID" 6
+    curl_rc=$?
+    wait_exit "$SRV_PID" 6
+    rc=$?
+    SRV_PID=
+
+    body=$(cat "$CGI_OUT" 2>/dev/null || true)
+    if [ "$curl_rc" -eq 0 ] && [ "$rc" -eq 0 ] && [ "$body" = "slept" ]; then
+        pass "SIGINT during CGI: response completes, then exit"
+    else
+        fail "SIGINT during CGI (curl_rc=$curl_rc rc=$rc body='$body')"
+    fi
+else
+    fail "SIGINT during CGI: server did not start"
+    SRV_PID=
+fi
+
 exit "$FAIL"

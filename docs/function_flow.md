@@ -1,5 +1,7 @@
 # 함수 흐름 — Phase 1
 
+> **Phase 2 merged:** 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 구조는 [phase2-design.md](phase2-design.md)를 본다.
+
 이 문서는 서버가 **어떤 순서로 돌아가는지** 읽는 가이드다. `main`에서 시작해 `accept`, 연결 처리, keep-alive까지 따라간다.
 함수 하나하나의 상세 설명은 [function_reference.md](function_reference.md)에 모아 두었다.
 
