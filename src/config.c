@@ -26,15 +26,16 @@ int config_parse(int argc, char **argv, struct server_config *out,
 {
     const char *root = CONFIG_DEFAULT_ROOT;
     struct stat st;
-    int opt;
+    int opt, i, j;
 
     out->port = CONFIG_DEFAULT_PORT;
     out->workers = CONFIG_DEFAULT_WORKERS;
     out->queue_cap = CONFIG_DEFAULT_QUEUE;
+    out->routes.count = 0;
 
     optind = 1;   /* 여러 번 호출(테스트)해도 처음부터 다시 읽도록 "어디까지 읽었는지"를 전역변수에 저장 */
     opterr = 0;   /* getopt 자체 메시지 대신 errbuf 로 보고 */
-    while ((opt = getopt(argc, argv, "p:r:w:q:")) != -1) {
+    while ((opt = getopt(argc, argv, "p:r:w:q:R:")) != -1) {
         switch (opt) {
         case 'p':
             if (parse_int(optarg, 1, 65535, &out->port) < 0) {
@@ -59,6 +60,17 @@ int config_parse(int argc, char **argv, struct server_config *out,
                 return -1;
             }
             break;
+        case 'R':
+            if (out->routes.count == PROXY_MAX_ROUTES) {
+                snprintf(errbuf, errlen, "too many proxy rules (max %d)",
+                         PROXY_MAX_ROUTES);
+                return -1;
+            }
+            if (proxy_parse_rule(optarg, &out->routes.routes[out->routes.count],
+                                 errbuf, errlen) < 0)
+                return -1;
+            out->routes.count++;
+            break;
         default:
             snprintf(errbuf, errlen, "unknown option or missing value: -%c",
                      optopt);
@@ -68,6 +80,23 @@ int config_parse(int argc, char **argv, struct server_config *out,
     if (optind < argc) {
         snprintf(errbuf, errlen, "unexpected argument: %s", argv[optind]);
         return -1;
+    }
+
+    /* -p 가 -R 뒤에 올 수도 있으므로 다 읽은 뒤에 검사 */
+    for (i = 0; i < out->routes.count; i++) {
+        const struct proxy_route *r = &out->routes.routes[i];
+
+        if (proxy_is_self(r, out->port)) {
+            snprintf(errbuf, errlen, "proxy rule %s=%s points to this server (port %d)",
+                     r->prefix, r->name, out->port);
+            return -1;
+        }
+        for (j = 0; j < i; j++) {
+            if (strcmp(out->routes.routes[j].prefix, r->prefix) == 0) {
+                snprintf(errbuf, errlen, "duplicate proxy prefix %s", r->prefix);
+                return -1;
+            }
+        }
     }
 
     if (realpath(root, out->root) == NULL) {
@@ -88,10 +117,13 @@ int config_parse(int argc, char **argv, struct server_config *out,
 void config_usage(const char *prog)
 {
     fprintf(stderr, "usage: %s [-p port] [-r root] [-w workers] [-q queue]\n"
-                    "  -p port     listen port (1-65535, default %d)\n"
+                    "          [-R prefix=host:port]...\n"
+                    "  -p port    listen port (1-65535, default %d)\n"
                     "  -r root     static file root (default %s)\n"
                     "  -w workers  worker threads (1-%d, default %d)\n"
-                    "  -q queue    pending connection queue size (1-%d, default %d)\n",
+                    "  -q queue    pending connection queue size (1-%d, default %d)\n"
+                    "  -R rule     reverse proxy: paths starting with prefix go to host:port\n"
+                    "              (repeatable, e.g. -R /api/=127.0.0.1:8001)\n",
             prog, CONFIG_DEFAULT_PORT, CONFIG_DEFAULT_ROOT,
             CONFIG_MAX_WORKERS, CONFIG_DEFAULT_WORKERS,
             CONFIG_MAX_QUEUE, CONFIG_DEFAULT_QUEUE);

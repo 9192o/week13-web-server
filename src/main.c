@@ -52,7 +52,11 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
 
     fprintf(stderr, "listening on 0.0.0.0:%d, root=%s\n", cfg.port, cfg.root);
-    r = server_run(listen_fd, cfg.root, cfg.workers, cfg.queue_cap);  /* listen_fd 도 닫음 */
+    for (r = 0; r < cfg.routes.count; r++)
+        fprintf(stderr, "proxy %s -> %s\n", cfg.routes.routes[r].prefix,
+                cfg.routes.routes[r].name);
+    r = server_run(listen_fd, cfg.root, &cfg.routes, cfg.workers,
+                   cfg.queue_cap);  /* listen_fd 도 닫음 */
     if (r < 0)
         return EXIT_FAILURE;
     fprintf(stderr, "shutting down%s\n", r > 0 ? " (forced)" : "");

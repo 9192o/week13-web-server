@@ -100,7 +100,11 @@ extern volatile sig_atomic_t server_stop;
  * listen_fd 는 어느 경우든 server_run 이 닫는다.
  * 반환: 0 정상 종료, 1 강제로 끊은 연결이 있음, -1 큐/워커를 만들지 못함.
  */
-int server_run(int listen_fd, const char *root, int workers, int queue_cap);
+struct proxy_table;
+
+/* routes 는 -R 규칙 (없으면 count 0). 서버가 끝날 때까지 살아 있어야 한다. */
+int server_run(int listen_fd, const char *root, const struct proxy_table *routes,
+               int workers, int queue_cap);
 
 /*
  * 연결 하나 처리: 요청을 읽고 응답하기를 keep-alive 가 끝날 때까지 반복한다.
@@ -110,8 +114,10 @@ int server_run(int listen_fd, const char *root, int workers, int queue_cap);
  * 요청 사이 idle(KEEPALIVE_TIMEOUT_MS), EOF, 최대 요청 수, 종료로 닫히면
  * "(keep-alive closed: 이유, N requests, 초)" 한 줄을 로그에 남긴다.
  * peer 는 접근 로그에 찍을 "ip:port" 문자열, root 는 정적 파일 루트(realpath).
+ * routes 에 맞는 경로는 정적 파일·CGI 보다 먼저 백엔드로 프록시한다.
  */
-void server_handle(int conn_fd, const char *peer, const char *root);
+void server_handle(int conn_fd, const char *peer, const char *root,
+                   const struct proxy_table *routes);
 
 /*
  * buf[0..len) 에서 "\r\n\r\n" 을 찾아 그 다음 위치(본문 시작)를 돌려준다.

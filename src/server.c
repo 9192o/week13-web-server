@@ -4,6 +4,7 @@
 #include "http_parser.h"
 #include "http_response.h"
 #include "pool.h"
+#include "proxy.h"
 #include "queue.h"
 #include "static.h"
 #include "url.h"
@@ -569,6 +570,141 @@ static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
     return 0;
 }
 
+/*
+ * 백엔드 응답 헤더를 기다리는 시간. P1 은 사실상 제한 없음 (P4 에서 504 로 바꿈).
+ * 그동안은 백엔드가 응답하지 않으면 워커가 계속 묶이고, 강제 종료도 끝나지 않을 수 있다.
+ */
+#define PROXY_HEAD_WAIT_MS INT_MAX
+
+/* 접근 로그 비고: "(proxy host:port)" 또는 "(proxy host:port, 이유)" */
+static void proxy_note(char *out, size_t cap, const struct proxy_route *rt,
+                       const char *why)
+{
+    snprintf(out, cap, "(proxy %s%s%s)", rt->name, why ? ", " : "", why ? why : "");
+}
+
+/*
+ * 리버스 프록시 요청 하나: 요청 재작성 → connect → 전송 → 응답 헤더 검사 → 본문 중계.
+ * 클라이언트에 아무것도 보내기 전의 실패(connect, 깨진 응답 헤더 등)는 502.
+ * 응답 길이(Content-Length, 204/304)를 알면 그만큼만 중계하고 c->keep 에 따라 연결 유지,
+ * 모르면 백엔드가 닫을 때까지 중계하고 Connection: close.
+ * 헤더를 보낸 뒤 백엔드가 일찍 닫거나 클라이언트가 끊기면 로그만 남기고 닫는다.
+ * 백엔드 fd 는 여기서 닫는다. 반환: 1 연결 유지, 0 닫아야 함.
+ */
+static int serve_proxy(struct req_ctx *c, const struct http_request *req,
+                       const struct proxy_route *rt)
+{
+    char out[REQUEST_HEAD_MAX + 64];   /* 재작성은 Connection: close 정도만 늘어남 */
+    char rbuf[REQUEST_HEAD_MAX];
+    char note[PROXY_NAME_MAX + 128], why[96], eb[64];
+    struct proxy_response resp;
+    enum read_head_result rr;
+    long long deadline, sent = 0, remain;
+    const char *bad, *fail = NULL;
+    size_t rlen, chunk;
+    int bfd, n, keep, sr;
+
+    n = proxy_build_request(req, out, sizeof out);
+    if (n < 0) {
+        proxy_note(note, sizeof note, rt, "request head overflow");
+        return finish_error(c, 500, NULL, note);
+    }
+
+    bfd = proxy_connect(rt);
+    if (bfd < 0) {
+        if (strerror_r(errno, eb, sizeof eb) != 0)
+            snprintf(eb, sizeof eb, "errno %d", errno);
+        snprintf(why, sizeof why, "connect: %s", eb);
+        proxy_note(note, sizeof note, rt, why);
+        return finish_error(c, 502, NULL, note);
+    }
+
+    sr = send_all(bfd, out, (size_t)n, now_ms() + SEND_TIMEOUT_MS);
+    if (sr != SEND_OK) {
+        close(bfd);
+        proxy_note(note, sizeof note, rt, "send to backend failed");
+        return finish_error(c, 502, NULL, note);
+    }
+
+    rr = read_request_head(bfd, rbuf, sizeof rbuf, 0, PROXY_HEAD_WAIT_MS, &rlen);
+    if (rr != READ_HEAD_OK) {
+        close(bfd);
+        proxy_note(note, sizeof note, rt,
+                   rr == READ_HEAD_CLOSED    ? "backend closed before header" :
+                   rr == READ_HEAD_TOO_LARGE ? "backend header too large" :
+                   rr == READ_HEAD_TIMEOUT   ? "backend timeout" :
+                                               "backend read error");
+        return finish_error(c, 502, NULL, note);
+    }
+    bad = proxy_parse_response(rbuf, rlen, &resp);
+    if (bad != NULL) {
+        close(bfd);
+        snprintf(why, sizeof why, "bad response: %s", bad);
+        proxy_note(note, sizeof note, rt, why);
+        return finish_error(c, 502, NULL, note);
+    }
+
+    keep = c->keep && resp.body_len >= 0;
+    n = proxy_format_response_head(&resp, keep, out, sizeof out);
+    if (n < 0) {
+        close(bfd);
+        proxy_note(note, sizeof note, rt, "response head overflow");
+        return finish_error(c, 502, NULL, note);
+    }
+    deadline = now_ms() + SEND_TIMEOUT_MS;
+    sr = send_all(c->fd, out, (size_t)n, deadline);
+
+    /* 본문: 헤더와 함께 읽힌 앞부분부터. 길이를 알면 넘치는 바이트는 버린다 */
+    remain = resp.body_len;                  /* -1 이면 EOF 까지 */
+    chunk = rlen - resp.head_len;
+    memmove(rbuf, rbuf + resp.head_len, chunk);
+    while (sr == SEND_OK) {
+        ssize_t r;
+
+        if (remain >= 0 && (long long)chunk > remain)
+            chunk = (size_t)remain;
+        if (chunk > 0) {
+            sr = send_all(c->fd, rbuf, chunk, deadline);
+            if (sr != SEND_OK)
+                break;
+            sent += (long long)chunk;
+            if (remain >= 0)
+                remain -= (long long)chunk;
+        }
+        if (remain == 0)
+            break;
+        r = read(bfd, rbuf, sizeof rbuf);
+        if (r < 0 && errno == EINTR) {
+            chunk = 0;
+            continue;
+        }
+        if (r < 0) {
+            fail = "backend read error";
+            break;
+        }
+        if (r == 0) {
+            if (remain > 0)
+                fail = "backend closed early";
+            break;
+        }
+        chunk = (size_t)r;
+    }
+    close(bfd);
+    if (sr != SEND_OK)
+        fail = sr == SEND_TIMEOUT ? "send timeout" : "client closed";
+
+    proxy_note(note, sizeof note, rt, fail);
+    access_log(c->peer, c->reqline, resp.status, sent, note);
+    if (fail != NULL)
+        return 0;
+    c->sent_ok = resp.body_len >= 0;
+    if (keep)
+        return 1;
+    if (resp.status >= 400)
+        lingering_drain(c->fd);
+    return 0;
+}
+
 /* 요청 하나를 처리한 결과 */
 enum req_outcome {
     REQ_KEEP,         /* 응답을 다 보냈고 연결 유지 (fd 열림) */
@@ -583,8 +719,9 @@ enum req_outcome {
  * REQ_KEEP 이면 이번 요청 뒤에 남은 바이트를 buf 앞으로 옮기고 *have 에 길이를 넣는다.
  */
 static enum req_outcome handle_request(int conn_fd, const char *peer,
-                                       const char *root, char *buf,
-                                       size_t *have, int nreq)
+                                       const char *root,
+                                       const struct proxy_table *routes,
+                                       char *buf, size_t *have, int nreq)
 {
     char reqline[REQLINE_LOG_MAX + 4];
     char decoded[HTTP_URI_MAX + 1];
@@ -618,6 +755,7 @@ static enum req_outcome handle_request(int conn_fd, const char *peer,
 
     switch (rr) {
     case READ_HEAD_OK: {
+        const struct proxy_route *route;
         int is_cgi;
 
         status = http_parse_request(buf, len, &req);
@@ -626,13 +764,23 @@ static enum req_outcome handle_request(int conn_fd, const char *peer,
         if (status != 0)
             break;
         consumed = req.head_len;
-        is_cgi = url_is_cgi(decoded);
+        route = proxy_match(routes, decoded);    /* 프록시 규칙이 /cgi-bin 보다 먼저 */
+        is_cgi = route == NULL && url_is_cgi(decoded);
         keep_base = req.version_minor == 1 && !http_wants_close(&req) &&
                     !server_stop;
         /* 읽지 않을 본문이 있으면 다음 요청이 어디서 시작하는지 모름 → 닫기 */
         if (req.content_length > 0 && !(is_cgi && req.method == HTTP_POST))
             keep_base = 0;
         c.keep = keep_base && nreq < KEEPALIVE_MAX_REQUESTS;
+        if (route != NULL) {
+            /* P1 은 본문을 전달하지 않음 (POST 전달은 P8) */
+            if (req.method == HTTP_POST) {
+                status = 405;
+                break;
+            }
+            kept = serve_proxy(&c, &req, route);
+            goto done;
+        }
         if (is_cgi) {
             kept = serve_cgi(&c, buf, len, &req, root, decoded, &consumed);
             goto done;
@@ -739,7 +887,8 @@ static void keepalive_log(const char *peer, const char *why, int requests,
             peer, why, requests, el / 1000, (el % 1000) / 100);
 }
 
-void server_handle(int conn_fd, const char *peer, const char *root)
+void server_handle(int conn_fd, const char *peer, const char *root,
+                   const struct proxy_table *routes)
 {
     char buf[REQUEST_HEAD_MAX];
     size_t have = 0;           /* 앞 요청 뒤에 붙어 온 바이트 (pipelining) */
@@ -759,7 +908,7 @@ void server_handle(int conn_fd, const char *peer, const char *root)
                 return;
             }
         }
-        o = handle_request(conn_fd, peer, root, buf, &have, nreq);
+        o = handle_request(conn_fd, peer, root, routes, buf, &have, nreq);
         switch (o) {
         case REQ_KEEP: //응답을 다 보냈고 연결 유지
             continue;
@@ -817,24 +966,37 @@ static void reject_busy(int fd, const char *peer)
     close(fd);
 }
 
+/* 워커들이 함께 읽는 설정 (server_run 이 워커를 join 할 때까지 살아 있음) */
+struct handler_ctx {
+    const char *root;
+    const struct proxy_table *routes;
+};
+
 /* 워커 스레드에서 연결 하나 처리 (close 는 워커 풀이 함) */
-static void handle_item(const struct conn_item *item, void *root)
+static void handle_item(const struct conn_item *item, void *arg)
 {
-    server_handle(item->fd, item->peer, root);
+    const struct handler_ctx *h = arg;
+
+    server_handle(item->fd, item->peer, h->root, h->routes);
 }
 
-int server_run(int listen_fd, const char *root, int workers, int queue_cap)
+int server_run(int listen_fd, const char *root, const struct proxy_table *routes,
+               int workers, int queue_cap)
 {
     struct conn_queue q;
     struct worker_pool pool;
+    struct handler_ctx hctx;
     int dropped, active, forced, one = 1;
+
+    hctx.root = root;
+    hctx.routes = routes;
 
     if (queue_init(&q, queue_cap) < 0) {
         fprintf(stderr, "queue_init(%d): failed\n", queue_cap);
         close(listen_fd);
         return -1;
     }
-    if (pool_start(&pool, workers, &q, handle_item, (void *)root) < 0) {
+    if (pool_start(&pool, workers, &q, handle_item, &hctx) < 0) {
         queue_destroy(&q);
         close(listen_fd);
         return -1;

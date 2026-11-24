@@ -96,9 +96,37 @@ static void test_root_slash_rejected(void)
     CHECK_EQ_STR(err, "root must not be \"/\"");
 }
 
+static void test_proxy_rules(void)
+{
+    char *none[]  = {"server", NULL};
+    char *two[]   = {"server", "-R", "/api/=127.0.0.1:8001", "-R", "/s/=localhost:8002", NULL};
+    char *bad[]   = {"server", "-R", "api=127.0.0.1:8001", NULL};
+    char *dup[]   = {"server", "-R", "/a/=127.0.0.1:8001", "-R", "/a/=127.0.0.1:8002", NULL};
+    char *self[]  = {"server", "-p", "9090", "-R", "/a/=127.0.0.1:9090", NULL};
+    char *selfd[] = {"server", "-R", "/a/=localhost:8080", NULL};    /* 기본 포트 8080 */
+    char *selfl[] = {"server", "-R", "/a/=127.0.0.1:9090", "-p", "9090", NULL}; /* -p 가 뒤 */
+    char *other[] = {"server", "-p", "9090", "-R", "/a/=127.0.0.1:9091", NULL};
+
+    CHECK_EQ_INT(config_parse(ARGC(none), none, &cfg, err, sizeof err), 0);
+    CHECK_EQ_INT(cfg.routes.count, 0);
+    CHECK_EQ_INT(config_parse(ARGC(two), two, &cfg, err, sizeof err), 0);
+    CHECK_EQ_INT(cfg.routes.count, 2);
+    CHECK_EQ_STR(cfg.routes.routes[0].prefix, "/api/");
+    CHECK_EQ_STR(cfg.routes.routes[1].name, "localhost:8002");
+    CHECK_EQ_INT(config_parse(ARGC(bad), bad, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(dup), dup, &cfg, err, sizeof err), -1);
+    CHECK_EQ_STR(err, "duplicate proxy prefix /a/");
+    CHECK_EQ_INT(config_parse(ARGC(self), self, &cfg, err, sizeof err), -1);
+    CHECK(strstr(err, "points to this server") != NULL);
+    CHECK_EQ_INT(config_parse(ARGC(selfd), selfd, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(selfl), selfl, &cfg, err, sizeof err), -1);
+    CHECK_EQ_INT(config_parse(ARGC(other), other, &cfg, err, sizeof err), 0);
+}
+
 int main(void)
 {
     RUN_TEST(test_defaults);
+    RUN_TEST(test_proxy_rules);
     RUN_TEST(test_port_and_root);
     RUN_TEST(test_workers_and_queue);
     RUN_TEST(test_port_bounds);

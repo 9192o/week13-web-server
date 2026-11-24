@@ -19,6 +19,7 @@ static const struct {
     {431, "Request Header Fields Too Large"},
     {500, "Internal Server Error"},
     {501, "Not Implemented"},
+    {502, "Bad Gateway"},
     {503, "Service Unavailable"},
     {505, "HTTP Version Not Supported"},
 };

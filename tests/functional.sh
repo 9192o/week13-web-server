@@ -647,6 +647,111 @@ sleep 15' &
     expect "두 번째 SIGINT 서버 sanitizer 보고 없음" 0 "$(grep -cE 'Sanitizer|runtime error' "$LOG7")"
 fi
 
+# ---------------------------------------------------------------- 리버스 프록시 (phase 3)
+
+echo "== 리버스 프록시"
+# 백엔드 A 와 프록시를 따로 띄운다. 백엔드 파일 본문에 자기 포트를 넣어 누가 응답했는지 확인.
+PB=$((PORT + 10))      # 백엔드 A
+PP=$((PORT + 11))      # 프록시
+PD=$((PORT + 12))      # 아무도 listen 하지 않는 포트 (connect 거절)
+PX=$((PORT + 13))      # 자기 자신 규칙 거부 확인용 (실제로 listen 하지 않음)
+B=$WORK/backend
+mkdir -p "$B/api"
+echo '<h1>backend</h1>' > "$B/index.html"
+echo "backend $PB" > "$B/api/hello.txt"
+cp "$R/mid.bin" "$B/api/mid.bin"
+LOGB=$WORK/backend.log
+LOGP=$WORK/proxy.log
+start_extra "$PB" "$LOGB" -r "$B"
+SB=$XPID
+start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD"
+SP=$XPID
+PURL=http://127.0.0.1:$PP
+
+pfd() { ls "/proc/$SP/fd" 2>/dev/null | wc -l | tr -d ' '; }
+pfd_settled() {
+    local prev cur
+    prev=$(pfd)
+    for _ in $(seq 20); do
+        sleep 0.1
+        cur=$(pfd)
+        [ "$cur" = "$prev" ] && break
+        prev=$cur
+    done
+    echo "$cur"
+}
+# wait_log 파일 문자열 : 서버가 응답 뒤에 로그를 쓰므로 잠깐 기다리며 확인
+wait_log() {
+    for _ in $(seq 20); do grep -qF -- "$2" "$1" && return 0; sleep 0.05; done
+    return 1
+}
+PFD0=$(pfd_settled)
+
+# P1: /api/ 규칙 → 백엔드 A 가 응답
+H=$(curl -s -D - -o "$WORK/p1.body" "$PURL/api/hello.txt" | tr -d '\r')
+expect_match "P1 200"                              '^HTTP/1.1 200 OK$' "$H"
+expect "P1 본문 = 백엔드 A 의 파일"                  "backend $PB" "$(cat "$WORK/p1.body")"
+expect_match "P1 Content-Length = 받은 본문 길이"   "^Content-Length: $(wc -c < "$WORK/p1.body" | tr -d ' ')\$" "$H"
+expect_match "P1 Content-Type 은 백엔드 값 그대로"   '^Content-Type: text/plain; charset=utf-8$' "$H"
+expect "P1 Connection 헤더 없음 (연결 유지)"        "" "$(printf '%s\n' "$H" | grep -i '^Connection:')"
+if wait_log "$LOGB" "\"GET /api/hello.txt HTTP/1.0\" 200"; then
+    ok "P1 백엔드는 HTTP/1.0 요청으로 받음 (경로 그대로)"
+else
+    fail "P1 백엔드는 HTTP/1.0 요청으로 받음 (경로 그대로)" "백엔드 로그에 없음"
+fi
+if wait_log "$LOGP" "\"GET /api/hello.txt HTTP/1.1\" 200 $(wc -c < "$WORK/p1.body" | tr -d ' ') (proxy 127.0.0.1:$PB)"; then
+    ok "P1 프록시 로그 (proxy 127.0.0.1:$PB)"
+else
+    fail "P1 프록시 로그 (proxy 127.0.0.1:$PB)" "프록시 로그에 없음"
+fi
+
+curl -s -o /dev/null "$PURL/api/hello.txt?x=1&y=%20"
+if wait_log "$LOGB" "\"GET /api/hello.txt?x=1&y=%20 HTTP/1.0\" 200"; then
+    ok "쿼리 스트링도 원문 그대로 전달"
+else
+    fail "쿼리 스트링도 원문 그대로 전달" "백엔드 로그에 없음"
+fi
+
+expect "Content-Length 가 있으면 클라이언트 연결 유지 (두 요청 한 연결)" "200:1 200:0 " \
+       "$(curl -s -o /dev/null -o /dev/null -w '%{http_code}:%{num_connects} ' \
+              "$PURL/api/hello.txt" "$PURL/api/hello.txt")"
+expect "Connection: close 요청이면 응답도 close" "Connection: close" \
+       "$(curl -s -D - -o /dev/null -H 'Connection: close' "$PURL/api/hello.txt" | tr -d '\r' | grep -i '^Connection:')"
+expect "백엔드 404 는 그대로 전달"                   404 "$(code "$PURL/api/none.txt")"
+curl -s -o "$WORK/p1.mid" "$PURL/api/mid.bin"
+if cmp -s "$WORK/p1.mid" "$R/mid.bin"; then
+    ok "10MB 본문 중계 (cmp 일치)"
+else
+    fail "10MB 본문 중계 (cmp 일치)" "내용이 다름 ($(wc -c < "$WORK/p1.mid") 바이트)"
+fi
+expect "규칙에 없는 경로는 프록시 자신이 처리 (P7 결정 전 현재 동작)" '<h1>hi</h1>' \
+       "$(curl -s "$PURL/index.html")"
+expect "POST 는 405 (본문 전달은 P8)"               405 "$(code -X POST -d 'a=1' "$PURL/api/hello.txt")"
+
+# 꺼진 백엔드: connect 가 바로 거절 → 502
+expect "꺼진 백엔드 → 502"                          502 "$(code "$PURL/down/x")"
+if wait_log "$LOGP" "(proxy 127.0.0.1:$PD, connect: Connection refused)"; then
+    ok "502 로그 (connect: Connection refused)"
+else
+    fail "502 로그 (connect: Connection refused)" "프록시 로그에 없음"
+fi
+expect "502 뒤에도 프록시 정상"                     200 "$(code "$PURL/api/hello.txt")"
+
+# 자기 자신을 가리키는 규칙은 시작할 때 거부
+"$BIN" -p "$PX" -r "$R" -R "/a/=127.0.0.1:$PX" 2>"$WORK/self.err"
+expect "자기 자신 규칙 → 시작 실패 exit 1"           1 "$?"
+expect_match "자기 자신 규칙 메시지"                'points to this server' "$(cat "$WORK/self.err")"
+
+PFD1=$(pfd_settled)
+expect "프록시 fd 수 그대로 (connfd·backendfd 정리)" "$PFD0" "$PFD1"
+
+kill -TERM "$SP" "$SB"
+wait "$SP"; RCP=$?
+wait "$SB"; RCB=$?
+expect "프록시 SIGTERM → exit 0"                     0 "$RCP"
+expect "백엔드 SIGTERM → exit 0"                     0 "$RCB"
+expect "프록시·백엔드 sanitizer 보고 없음"            0 "$(cat "$LOGP" "$LOGB" | grep -cE 'Sanitizer|runtime error')"
+
 # ---------------------------------------------------------------- fd 누수
 
 # 위 시나리오(에러, CGI, 끊김, 시간 초과 등)를 모두 거친 뒤에도 시작 때와 정확히 같아야 한다.
