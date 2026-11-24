@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -826,7 +827,7 @@ int server_run(int listen_fd, const char *root, int workers, int queue_cap)
 {
     struct conn_queue q;
     struct worker_pool pool;
-    int dropped, active, forced;
+    int dropped, active, forced, one = 1;
 
     if (queue_init(&q, queue_cap) < 0) {
         fprintf(stderr, "queue_init(%d): failed\n", queue_cap);
@@ -859,6 +860,12 @@ int server_run(int listen_fd, const char *root, int workers, int queue_cap)
         /* CGI 자식이 연결 소켓을 물려받지 않게 (실패해도 처리는 계속) */
         if (fcntl(conn_fd, F_SETFD, FD_CLOEXEC) < 0)
             perror("fcntl(FD_CLOEXEC)");
+        /*
+         * 헤더와 본문을 send 두 번으로 나눠 보내므로, Nagle 이 켜져 있으면 두 번째 조각이
+         * 클라이언트의 지연 ACK(~40ms)를 기다린다. keep-alive 에서 요청마다 40ms 씩 늦어짐.
+         */
+        if (setsockopt(conn_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) < 0)
+            perror("setsockopt(TCP_NODELAY)");
 
         if (inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof ip) == NULL)
             strcpy(ip, "?");

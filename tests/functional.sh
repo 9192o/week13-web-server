@@ -467,6 +467,15 @@ head -1 <&3' | tr -d '\r')
     expect "slowloris (1바이트씩 계속) → 408"    "HTTP/1.1 408 Request Timeout" "$S"
     expect_ms "slowloris 408 까지 약 ${HEADER_MS}ms" "$HEADER_MS" $(( $(now_ms) - T0 ))
 
+    # keep-alive 응답 속도: 한 연결로 20개. Nagle + 지연 ACK 가 걸리면 요청마다 ~40ms (800ms+)
+    ARGS=()
+    for _ in $(seq 20); do ARGS+=(-o /dev/null "$URL/index.html"); done
+    T0=$(now_ms)
+    K=$(curl -s -w '%{num_connects}' "${ARGS[@]}")
+    EL=$(( $(now_ms) - T0 ))
+    expect "keep-alive 20개를 한 연결로"          "10000000000000000000" "$K"
+    expect_between "keep-alive 20개가 지연 ACK 없이 (ms, TCP_NODELAY)" 0 400 "$EL"
+
     # P2-S4: 응답 뒤 아무것도 안 보내면 약 KEEPALIVE_MS 뒤 응답 없이 닫힘 (408 없음)
     T0=$(now_ms)
     P=$(raw_all 'GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n')
