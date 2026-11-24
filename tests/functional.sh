@@ -6,8 +6,8 @@
 #     --timing  시간 제한 시나리오(408, 무응답 close, CGI 시간 초과, 전송 시간 초과,
 #               처리 중 SIGINT)까지 실행
 #     PORT      환경 변수로 포트 변경 (기본 18099)
-#     HEADER_MS BODY_MS CGI_MS SEND_MS KEEPALIVE_MS
-#               서버가 빌드된 시간 제한 값(ms). 기본은 실제 값 5000/10000/5000/30000/5000.
+#     HEADER_MS BODY_MS CGI_MS SEND_MS KEEPALIVE_MS SHUTDOWN_MS
+#               서버가 빌드된 시간 제한 값(ms). 기본은 실제 값 5000/10000/5000/30000/5000/10000.
 #               make ftest 는 짧은 값으로 빌드한 서버와 함께 그 값을 넘긴다.
 #
 # 실패가 있거나, SIGTERM 종료 코드가 0 이 아니거나, 서버 로그에 sanitizer 보고가
@@ -28,6 +28,7 @@ BODY_MS=${BODY_MS:-10000}
 CGI_MS=${CGI_MS:-5000}
 SEND_MS=${SEND_MS:-30000}
 KEEPALIVE_MS=${KEEPALIVE_MS:-5000}
+SHUTDOWN_MS=${SHUTDOWN_MS:-10000}
 PORT=${PORT:-18099}
 URL=http://127.0.0.1:$PORT
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -37,7 +38,7 @@ ADDER=$REPO/www/cgi-bin/adder
 checks=0
 failures=0
 SRV=
-SRV3=      # P2-S3 용 두 번째 서버 (-w 2 -q 2)
+EXTRA=()   # start_extra 로 더 띄운 서버들의 pid (cleanup 용)
 
 # ---------------------------------------------------------------- 판정 도우미
 
@@ -108,10 +109,12 @@ cleanup() {
         kill -KILL "$SRV" 2>/dev/null
         wait "$SRV" 2>/dev/null
     fi
-    if [ -n "$SRV3" ] && kill -0 "$SRV3" 2>/dev/null; then
-        kill -KILL "$SRV3" 2>/dev/null
-        wait "$SRV3" 2>/dev/null
-    fi
+    for pid in "${EXTRA[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+        fi
+    done
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -127,6 +130,26 @@ echo 'h1{}' > "$R/style.css"
 echo docs > "$R/docs/index.html"
 head -c 4096 /dev/urandom > "$R/cat.png"
 head -c 104857600 /dev/zero > "$R/big.bin"
+head -c 10485760 /dev/urandom > "$R/mid.bin"   # P2-S5: 소켓 버퍼보다 크지만 금방 받는 크기
+
+# start_extra 포트 로그 [서버 인자...] : 같은 문서 루트로 서버를 하나 더 띄운다 (pid 는 XPID).
+# 메인 서버처럼 0/1/2 외의 fd 는 닫고 시작한다.
+start_extra() {
+    local port=$1 log=$2
+    shift 2
+    (
+        for fd in $(ls "/proc/$BASHPID/fd"); do
+            [ "$fd" -gt 2 ] && eval "exec $fd>&-"
+        done
+        exec "$BIN" -p "$port" -r "$R" "$@"
+    ) 2>"$log" &
+    XPID=$!
+    EXTRA+=("$XPID")
+    for _ in $(seq 50); do
+        [ "$(code "http://127.0.0.1:$port/index.html")" = 200 ] && break
+        sleep 0.1
+    done
+}
 echo KEY=1 > "$R/.env"
 echo secret > "$WORK/secret.txt"
 ln -s ../secret.txt "$R/escape"
@@ -461,17 +484,8 @@ head -1 <&3' | tr -d '\r')
     P3=$((PORT + 1))
     U3=http://127.0.0.1:$P3
     LOG3=$WORK/server3.log
-    (
-        for fd in $(ls "/proc/$BASHPID/fd"); do
-            [ "$fd" -gt 2 ] && eval "exec $fd>&-"
-        done
-        exec "$BIN" -p "$P3" -r "$R" -w 2 -q 2
-    ) 2>"$LOG3" &
-    SRV3=$!
-    for _ in $(seq 50); do
-        [ "$(code "$U3/index.html")" = 200 ] && break
-        sleep 0.1
-    done
+    start_extra "$P3" "$LOG3" -w 2 -q 2
+    SRV3=$XPID
     S3FD0=$(ls "/proc/$SRV3/fd" 2>/dev/null | wc -l | tr -d ' ')
 
     # hold 파일 : 연결만 하고 아무것도 안 보냄, 끊길 때까지 받은 바이트 수를 파일에
@@ -538,6 +552,90 @@ cat <&3' > "$WORK/idle-stop" &
     fi
     expect_between "idle 중 SIGTERM → idle 시간 전에 종료 (ms)" 0 $(( KEEPALIVE_MS - 1 )) "$EL"
     expect "P2-S3 서버 sanitizer 보고 없음"       0 "$(grep -cE 'Sanitizer|runtime error' "$LOG3")"
+
+    # P2-S5: 응답 전송 중 SIGINT → 새 연결은 거부, 전송 중인 응답은 끝까지, 그 뒤 exit 0
+    P5=$((PORT + 2))
+    LOG5=$WORK/server5.log
+    start_extra "$P5" "$LOG5"
+    S5=$XPID
+    # B: mid.bin 을 요청하고 잠깐 읽지 않다가(서버가 전송 중에 멈춰 있게) 끝까지 읽음
+    timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$P5"'
+printf "GET /mid.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" >&3
+sleep '"$(ms_to_s $(( SHUTDOWN_MS / 5 )))"'
+cat <&3' > "$WORK/s5.b" &
+    B=$!
+    sleep_ms $(( SHUTDOWN_MS / 10 ))
+    kill -INT "$S5"
+    sleep 0.1                               # listen 소켓이 닫힐 시간
+    curl -s -o /dev/null --max-time 5 "http://127.0.0.1:$P5/index.html"
+    DRC=$?
+    wait "$B"
+    wait "$S5"
+    RC=$?
+    expect "P2-S5 종료 중 새 연결 D → 거부 (curl exit 7)" 7 "$DRC"
+    expect "P2-S5 B → 200"                        "HTTP/1.1 200 OK" "$(head -1 "$WORK/s5.b" | tr -d '\r')"
+    if tail -c 10485760 "$WORK/s5.b" | cmp -s - "$R/mid.bin"; then
+        ok "P2-S5 B 본문 10MB 끝까지 동일"
+    else
+        fail "P2-S5 B 본문 10MB 끝까지 동일" "받은 바이트 $(wc -c < "$WORK/s5.b")"
+    fi
+    expect "P2-S5 서버 exit 0 (정상 종료)"        0 "$RC"
+    if grep -qF "shutting down: waiting for 1 connection(s)" "$LOG5"; then
+        ok "P2-S5 로그 waiting for 1 connection(s)"
+    else
+        fail "P2-S5 로그 waiting for 1 connection(s)" "로그에 없음 (B 가 이미 다 받았을 수 있음)"
+    fi
+    expect "P2-S5 서버 sanitizer 보고 없음"       0 "$(grep -cE 'Sanitizer|runtime error' "$LOG5")"
+
+    # 강제 종료: 응답을 안 읽는 클라이언트가 있으면 약 SHUTDOWN_MS 뒤 끊고 exit 2
+    # stall 포트 : big.bin 을 요청하고 읽지 않은 채 연결만 잡고 있음
+    stall() {
+        timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$1"'
+printf "GET /big.bin HTTP/1.1\r\nHost: x\r\n\r\n" >&3
+sleep 15' &
+        STALL=$!
+    }
+    P6=$((PORT + 3))
+    LOG6=$WORK/server6.log
+    start_extra "$P6" "$LOG6"
+    S6=$XPID
+    stall "$P6"
+    sleep 0.3                               # 서버가 전송하다 소켓 버퍼가 찰 시간
+    T0=$(now_ms)
+    kill -INT "$S6"
+    wait "$S6"
+    RC=$?
+    EL=$(( $(now_ms) - T0 ))
+    kill "$STALL" 2>/dev/null
+    wait "$STALL" 2>/dev/null
+    expect "강제 종료(시간 초과) → exit 2"        2 "$RC"
+    expect_ms "강제 종료까지 약 ${SHUTDOWN_MS}ms" "$SHUTDOWN_MS" "$EL"
+    if grep -qF "forced close of 1 connection(s)" "$LOG6"; then
+        ok "강제 종료 로그 forced close of 1 connection(s)"
+    else
+        fail "강제 종료 로그 forced close of 1 connection(s)" "로그에 없음"
+    fi
+    expect "강제 종료 서버 sanitizer 보고 없음"   0 "$(grep -cE 'Sanitizer|runtime error' "$LOG6")"
+
+    # 두 번째 SIGINT: 남은 대기를 건너뛰고 바로 강제 종료
+    P7=$((PORT + 4))
+    LOG7=$WORK/server7.log
+    start_extra "$P7" "$LOG7"
+    S7=$XPID
+    stall "$P7"
+    sleep 0.3
+    T0=$(now_ms)
+    kill -INT "$S7"
+    sleep 0.2
+    kill -INT "$S7"
+    wait "$S7"
+    RC=$?
+    EL=$(( $(now_ms) - T0 ))
+    kill "$STALL" 2>/dev/null
+    wait "$STALL" 2>/dev/null
+    expect "두 번째 SIGINT → exit 2"              2 "$RC"
+    expect_between "두 번째 SIGINT → 대기 시간 전에 종료 (ms)" 0 $(( SHUTDOWN_MS * 9 / 10 )) "$EL"
+    expect "두 번째 SIGINT 서버 sanitizer 보고 없음" 0 "$(grep -cE 'Sanitizer|runtime error' "$LOG7")"
 fi
 
 # ---------------------------------------------------------------- fd 누수
