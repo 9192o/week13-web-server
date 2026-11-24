@@ -131,6 +131,8 @@
 | RACE-01 | NFR-14 | 스트레스 | TSan + `ab -c 32` | 리포트 0 |
 | LOAD-01 | NFR-13 | 부하 | `ab -c 1/10/32/100` | 실패 0, RPS/지연 기록 |
 
+> 구현 상태 (S2c-3b): `ab -n 10000 -c 100` close-only/keep-alive 모두 failed=0. macOS 로컬에서 close-only **3629 rps**, keep-alive **3671 rps** (mean 27.3ms/request, 0.27ms across all).
+
 ## 9. 테스트 순서
 
 ```text
