@@ -201,7 +201,7 @@ static void test_is_self(void)
 }
 
 /* raw 요청을 파싱해서 재작성한 결과를 out 에 */
-static int build(const char *raw, char *out, size_t cap)
+static int build(const char *raw, int with_body, char *out, size_t cap)
 {
     static char buf[4096];
     struct http_request req;
@@ -209,7 +209,7 @@ static int build(const char *raw, char *out, size_t cap)
     snprintf(buf, sizeof buf, "%s", raw);
     if (http_parse_request(buf, strlen(buf), &req) != 0)
         return -2;
-    return proxy_build_request(&req, out, cap);
+    return proxy_build_request(&req, with_body, out, cap);
 }
 
 static void test_build_request(void)
@@ -226,7 +226,7 @@ static void test_build_request(void)
               "Proxy-Connection: keep-alive\r\n"
               "Upgrade: h2c\r\n"
               "Accept: */*\r\n"
-              "\r\n", out, sizeof out);
+              "\r\n", 0, out, sizeof out);
     CHECK(n > 0);
     CHECK_EQ_STR(out,
                  "GET /api/hello?x=1&y=%20 HTTP/1.0\r\n"
@@ -238,16 +238,37 @@ static void test_build_request(void)
     CHECK_EQ_INT(n, (long long)strlen(out));
 
     /* HTTP/1.0, Host 없음, 쿼리 없음, 본문 길이는 전달하지 않음 (P1) */
-    n = build("GET /api/ HTTP/1.0\r\nContent-Length: 3\r\n\r\n", out, sizeof out);
+    n = build("GET /api/ HTTP/1.0\r\nContent-Length: 3\r\n\r\n", 0, out, sizeof out);
     CHECK_EQ_STR(out, "GET /api/ HTTP/1.0\r\nConnection: close\r\n\r\n");
 
     /* 빈 쿼리("?" 만)도 그대로 */
-    n = build("GET /api/x? HTTP/1.1\r\nHost: h\r\n\r\n", out, sizeof out);
+    n = build("GET /api/x? HTTP/1.1\r\nHost: h\r\n\r\n", 0, out, sizeof out);
     CHECK_EQ_STR(out, "GET /api/x? HTTP/1.0\r\nHost: h\r\nConnection: close\r\n\r\n");
 
     /* 버퍼 부족 */
-    n = build("GET /api/x HTTP/1.1\r\nHost: h\r\n\r\n", out, 20);
+    n = build("GET /api/x HTTP/1.1\r\nHost: h\r\n\r\n", 0, out, 20);
     CHECK_EQ_INT(n, -1);
+}
+
+/* P8: POST 는 Content-Length 그대로, Expect 는 뺌 (100-continue 는 프록시가 이미 처리) */
+static void test_build_request_with_body(void)
+{
+    char out[1024];
+
+    build("POST /cgi-bin/adder HTTP/1.1\r\n"
+          "Host: localhost:8080\r\n"
+          "Content-Type: application/x-www-form-urlencoded\r\n"
+          "Content-Length: 7\r\n"
+          "Expect: 100-continue\r\n"
+          "Connection: keep-alive\r\n"
+          "\r\n", 1, out, sizeof out);
+    CHECK_EQ_STR(out,
+                 "POST /cgi-bin/adder HTTP/1.0\r\n"
+                 "Host: localhost:8080\r\n"
+                 "Content-Type: application/x-www-form-urlencoded\r\n"
+                 "Content-Length: 7\r\n"
+                 "Connection: close\r\n"
+                 "\r\n");
 }
 
 /* raw 응답 헤더를 파싱. 실패면 이유 문자열 */
@@ -387,6 +408,7 @@ int main(void)
     RUN_TEST(test_pick_concurrent);
     RUN_TEST(test_is_self);
     RUN_TEST(test_build_request);
+    RUN_TEST(test_build_request_with_body);
     RUN_TEST(test_parse_response_ok);
     RUN_TEST(test_parse_response_bad);
     RUN_TEST(test_parse_response_nul);

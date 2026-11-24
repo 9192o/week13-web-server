@@ -80,12 +80,16 @@ const struct proxy_backend *proxy_find_self(const struct proxy_route *r,
 /*
  * 백엔드로 보낼 요청 헤더를 out 에 쓴다.
  *   "<METHOD> <원래 path>[?<query>] HTTP/1.0\r\n"
- *   + 클라이언트 헤더 (hop-by-hop 과 Content-Length 는 뺌, Host 등은 그대로)
+ *   + 클라이언트 헤더 (hop-by-hop 과 Expect 는 뺌, Host 등은 그대로)
  *   + "Connection: close\r\n\r\n"
- * Content-Length 를 빼는 이유: P1 은 본문을 전달하지 않는다 (POST 전달은 P8).
+ * with_body 가 1 이면 Content-Length 를 그대로 두고 (호출자가 본문을 이어서 보냄, P8),
+ * 0 이면 Content-Length 도 뺀다 (본문을 보내지 않는 GET).
+ * Expect 를 빼는 이유: 100-continue 는 프록시가 클라이언트와 이미 처리했고, 본문을
+ * 헤더와 함께 바로 보내므로 백엔드가 1xx 를 보낼 이유가 없다.
  * 반환: 쓴 바이트 수. cap 이 부족하면 -1.
  */
-int proxy_build_request(const struct http_request *req, char *out, size_t cap);
+int proxy_build_request(const struct http_request *req, int with_body,
+                        char *out, size_t cap);
 
 struct proxy_response {
     int status;

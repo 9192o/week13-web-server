@@ -355,7 +355,7 @@ static int finish_error(struct req_ctx *c, int status, const char *extra,
 }
 
 /*
- * /cgi-bin 으로 온 POST 의 본문: 411 → 413 → 100 Continue → 본문 읽기.
+ * /cgi-bin 이나 프록시 경로로 온 POST 의 본문: 411 → 413 → 100 Continue → 본문 읽기.
  * 반환: 0 성공 (*body 에 malloc 한 본문, 길이 0 이면 NULL,
  *         *consumed 에 buf 에서 쓴 바이트 = 헤더 + buf 안의 본문. 그 뒤는 다음 요청),
  *       -1 응답 없이 close (*note 에 이유), 그 외 응답할 상태 코드.
@@ -587,24 +587,38 @@ static void proxy_note(char *out, size_t cap, const struct proxy_backend *rt,
  * 응답 길이(Content-Length, 204/304)를 알면 그만큼만 중계하고 c->keep 에 따라 연결 유지,
  * 모르면 백엔드가 닫을 때까지 중계하고 Connection: close.
  * 헤더를 보낸 뒤 백엔드가 일찍 닫거나 클라이언트가 끊기면 로그만 남기고 닫는다.
+ * POST(P8)는 본문을 CGI 와 같은 규칙(411 → 413 → 100 Continue → 408)으로 먼저 다 받은 뒤,
+ * 백엔드에 헤더(Content-Length 그대로)와 함께 보낸다. *consumed 는 헤더 + buf 안의 본문.
  * 백엔드 fd 는 여기서 닫는다. 반환: 1 연결 유지, 0 닫아야 함.
  */
-static int serve_proxy(struct req_ctx *c, const struct http_request *req,
-                       struct proxy_route *route)
+static int serve_proxy(struct req_ctx *c, const char *buf, size_t len,
+                       const struct http_request *req, struct proxy_route *route,
+                       size_t *consumed)
 {
-    const struct proxy_backend *rt = proxy_pick(route);
+    const struct proxy_backend *rt;
     char out[REQUEST_HEAD_MAX + 64];   /* 재작성은 Connection: close 정도만 늘어남 */
     char rbuf[REQUEST_HEAD_MAX];
     char note[PROXY_NAME_MAX + 128], why[96], eb[64];
     struct proxy_response resp;
     enum read_head_result rr;
     long long deadline, sent = 0, remain;
-    const char *bad, *fail = NULL;
-    size_t rlen, chunk;
-    int bfd, n, keep, sr, tries;
+    const char *bad, *fail = NULL, *bnote = NULL;
+    char *body = NULL;
+    size_t rlen, chunk, body_len = 0;
+    int bfd, n, keep, sr, tries, with_body = req->method == HTTP_POST;
 
-    n = proxy_build_request(req, out, sizeof out);
+    /* 클라이언트 본문을 다 받고 나서 백엔드를 고른다: 느린 클라이언트가 백엔드 연결을 붙잡지 않게 */
+    if (with_body) {
+        int st = read_cgi_body(c->fd, buf, len, req, &bnote, &body, consumed);
+        if (st != 0)
+            return finish_error(c, st, NULL, bnote);
+        body_len = (size_t)req->content_length;
+    }
+
+    rt = proxy_pick(route);
+    n = proxy_build_request(req, with_body, out, sizeof out);
     if (n < 0) {
+        free(body);
         proxy_note(note, sizeof note, rt, "request head overflow");
         return finish_error(c, 500, NULL, note);
     }
@@ -628,6 +642,7 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
                 snprintf(note, sizeof note, "(proxy all %d backends failed)", tries);
             }
             /* 상태는 마지막 시도 기준: 늦어서 실패면 504, 거절 등이면 502 */
+            free(body);
             return finish_error(c, timed_out ? 504 : 502, NULL, note);
         }
         next = proxy_next(route, rt);
@@ -636,7 +651,11 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
         rt = next;
     }
 
-    sr = send_all(bfd, out, (size_t)n, now_ms() + SEND_TIMEOUT_MS);
+    deadline = now_ms() + SEND_TIMEOUT_MS;
+    sr = send_all(bfd, out, (size_t)n, deadline);
+    if (sr == SEND_OK && body_len > 0)
+        sr = send_all(bfd, body, body_len, deadline);
+    free(body);
     if (sr != SEND_OK) {
         close(bfd);
         proxy_note(note, sizeof note, rt, "send to backend failed");
@@ -797,16 +816,13 @@ static enum req_outcome handle_request(int conn_fd, const char *peer,
         keep_base = req.version_minor == 1 && !http_wants_close(&req) &&
                     !server_stop;
         /* 읽지 않을 본문이 있으면 다음 요청이 어디서 시작하는지 모름 → 닫기 */
-        if (req.content_length > 0 && !(is_cgi && req.method == HTTP_POST))
+        /* (본문을 읽는 건 CGI 와 프록시의 POST 뿐. GET 의 본문은 읽지 않음) */
+        if (req.content_length > 0 &&
+            !((is_cgi || route != NULL) && req.method == HTTP_POST))
             keep_base = 0;
         c.keep = keep_base && nreq < KEEPALIVE_MAX_REQUESTS;
         if (route != NULL) {
-            /* P1 은 본문을 전달하지 않음 (POST 전달은 P8) */
-            if (req.method == HTTP_POST) {
-                status = 405;
-                break;
-            }
-            kept = serve_proxy(&c, &req, route);
+            kept = serve_proxy(&c, buf, len, &req, route, &consumed);
             goto done;
         }
         if (is_cgi) {

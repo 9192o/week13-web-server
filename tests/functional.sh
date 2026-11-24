@@ -95,6 +95,18 @@ head -1 <&3' _ "$1" | tr -d '\r'
 
 repeat() { head -c "$2" /dev/zero | tr '\0' "$1"; }
 
+# raw_status_at / raw_all_at 포트 요청 : raw_status / raw_all 을 다른 서버(포트)로
+raw_status_at() {
+    timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$1"'
+printf "%b" "$1" >&3
+head -1 <&3' _ "$2" | tr -d '\r'
+}
+raw_all_at() {
+    timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$1"'
+printf "%b" "$1" >&3
+cat <&3' _ "$2" | tr -d '\r'
+}
+
 # raw 요청을 보내고 서버가 연결을 닫을 때까지 받은 전부를 출력 (\r 제거)
 raw_all() {
     timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'
@@ -693,6 +705,16 @@ start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD" \
 SP=$XPID
 PURL=http://127.0.0.1:$PP
 
+# P8 용 두 번째 프록시: /cgi-bin/ 을 백엔드 A 로 (첫 프록시는 /cgi-bin 을 직접 실행하는 P7 확인용)
+PP2=$((PORT + 19))
+LOGP2=$WORK/proxy2.log
+mkdir -p "$B/cgi-bin"
+cp "$ADDER" "$B/cgi-bin/adder"
+cp "$R/cgi-bin/len" "$B/cgi-bin/len"
+start_extra "$PP2" "$LOGP2" -R "/cgi-bin/=127.0.0.1:$PB"
+SP2=$XPID
+PURL2=http://127.0.0.1:$PP2
+
 pfd() { ls "/proc/$SP/fd" 2>/dev/null | wc -l | tr -d ' '; }
 pfd_settled() {
     local prev cur
@@ -754,7 +776,28 @@ expect "P7 규칙에 없는 /index.html → 프록시 자신의 파일" '<h1>hi<
        "$(curl -s "$PURL/index.html")"
 expect "P7 규칙에 없는 /cgi-bin 도 프록시 자신이 실행" 5 \
        "$(curl -s -X POST -d hello "$PURL/cgi-bin/len")"
-expect "POST 는 405 (본문 전달은 P8)"               405 "$(code -X POST -d 'a=1' "$PURL/api/hello.txt")"
+expect "정적 파일에 POST → 백엔드의 405 를 그대로 전달" 405 "$(code -X POST -d 'a=1' "$PURL/api/hello.txt")"
+
+# P8: POST 본문 전달. 본문으로만 나올 수 있는 결과로 확인 (본문이 안 가면 adder 는 400)
+expect "P8 POST a=1&b=2 → 백엔드 adder 가 3"         "3:200" \
+       "$(curl -s -w ':%{http_code}' -X POST -d 'a=1&b=2' "$PURL2/cgi-bin/adder" | tr -d '\n')"
+if wait_log "$LOGB" "\"POST /cgi-bin/adder HTTP/1.0\" 200"; then
+    ok "P8 백엔드는 HTTP/1.0 POST 로 받음"
+else
+    fail "P8 백엔드는 HTTP/1.0 POST 로 받음" "백엔드 로그에 없음"
+fi
+head -c 2000 /dev/zero | tr '\0' x > "$WORK/2000"
+expect "P8 Expect: 100-continue 본문 2000바이트 → 백엔드가 2000 받음" 2000 \
+       "$(curl -s -H 'Expect: 100-continue' --data-binary @"$WORK/2000" "$PURL2/cgi-bin/len" | tr -d ' \n')"
+expect "P8 Content-Length 없는 POST → 411"         "HTTP/1.1 411 Length Required" \
+       "$(raw_status_at "$PP2" 'POST /cgi-bin/adder HTTP/1.1\r\nHost: x\r\n\r\n')"
+expect "P8 본문 상한 초과 → 413"                     "HTTP/1.1 413 Content Too Large" \
+       "$(raw_status_at "$PP2" 'POST /cgi-bin/adder HTTP/1.1\r\nHost: x\r\nContent-Length: 2000000\r\n\r\n')"
+# 본문 뒤에 붙어 온 다음 요청도 처리 (프록시가 본문 길이만큼만 먹었는지)
+P=$(raw_all_at "$PP2" 'POST /cgi-bin/adder HTTP/1.1\r\nHost: x\r\nContent-Length: 7\r\n\r\na=1&b=2GET /index.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+expect "P8 pipelining POST+GET → 응답 2개"          2 "$(printf '%s\n' "$P" | grep -c '^HTTP/1.1 200 OK$')"
+expect_match "P8 pipelining POST 본문 → 3"          '^3$' "$P"
+expect_match "P8 pipelining 뒤 GET 은 프록시 자신의 파일" '^<h1>hi</h1>$' "$P"
 
 # 꺼진 백엔드: connect 가 바로 거절 → 502
 expect "꺼진 백엔드 → 502"                          502 "$(code "$PURL/down/x")"
@@ -907,14 +950,16 @@ expect_match "자기 자신 규칙 메시지"                'points to this ser
 PFD1=$(pfd_settled)
 expect "프록시 fd 수 그대로 (connfd·backendfd 정리)" "$PFD0" "$PFD1"
 
-kill -TERM "$SP" "$SB" "$SB2"
+kill -TERM "$SP" "$SP2" "$SB" "$SB2"
 wait "$SP"; RCP=$?
+wait "$SP2"; RCP2=$?
+expect "P8 프록시 SIGTERM → exit 0"                  0 "$RCP2"
 wait "$SB"; RCB=$?
 wait "$SB2"; RCB2=$?
 expect "프록시 SIGTERM → exit 0"                     0 "$RCP"
 expect "백엔드 A·B SIGTERM → exit 0"                 "0 0" "$RCB $RCB2"
 expect "프록시·백엔드 sanitizer 보고 없음"            0 \
-       "$(cat "$LOGP" "$LOGB" "$LOGB2" | grep -cE 'Sanitizer|runtime error')"
+       "$(cat "$LOGP" "$LOGP2" "$LOGB" "$LOGB2" | grep -cE 'Sanitizer|runtime error')"
 
 # ---------------------------------------------------------------- fd 누수
 

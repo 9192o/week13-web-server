@@ -222,7 +222,8 @@ static int append(char *out, size_t cap, size_t *off, const char *fmt, ...)
     return 0;
 }
 
-int proxy_build_request(const struct http_request *req, char *out, size_t cap)
+int proxy_build_request(const struct http_request *req, int with_body,
+                        char *out, size_t cap)
 {
     size_t off = 0, i;
 
@@ -232,7 +233,8 @@ int proxy_build_request(const struct http_request *req, char *out, size_t cap)
     for (i = 0; i < req->header_count; i++) {
         const struct http_header *h = &req->headers[i];
         if (is_hop_by_hop(req->headers, req->header_count, h->name) ||
-            strcasecmp(h->name, "Content-Length") == 0)
+            strcasecmp(h->name, "Expect") == 0 ||
+            (!with_body && strcasecmp(h->name, "Content-Length") == 0))
             continue;
         if (append(out, cap, &off, "%s: %s\r\n", h->name, h->value) < 0)
             return -1;
