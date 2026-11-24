@@ -238,6 +238,21 @@ static void child_exec(const struct cgi_request *req, char **env, int in_r, int 
     if (dup2(in_r, STDIN_FILENO) < 0 || dup2(out_w, STDOUT_FILENO) < 0)
         _exit(127);
 
+    /*
+     * 0/1/2 외의 fd 를 모두 닫는다. 다른 워커가 fd 를 만들고 FD_CLOEXEC 를 걸기 전
+     * (accept 직후, pipe 직후)에 fork 하면 그 fd 를 물려받을 수 있어서다.
+     * 물려받은 다른 CGI 의 파이프 쓰기 끝이 남아 있으면 그쪽 응답에 EOF 가 오지 않는다.
+     */
+    {
+        long max = sysconf(_SC_OPEN_MAX);
+        int fd;
+
+        if (max < 0)
+            max = 1024;
+        for (fd = 3; fd < max; fd++)
+            close(fd);
+    }
+
     snprintf(dir, sizeof dir, "%s", req->script_path);
     slash = strrchr(dir, '/');
     if (slash != NULL) {

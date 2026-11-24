@@ -129,7 +129,7 @@ int static_resolve(const char *root, const char *decoded,
 
 int static_send(int fd, const struct static_target *t, long long *sent)
 {
-    static char chunk[STATIC_CHUNK];      /* 연결을 하나씩 처리하는 Phase 1 이라 공유 가능 */
+    char chunk[STATIC_CHUNK];   /* 워커마다 따로 (스레드 스택: Linux 8MB, macOS 512KB 기본) */
     char head[512];
     struct stat st;
     long long left, deadline;
