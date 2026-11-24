@@ -40,6 +40,20 @@
 #define SEND_TIMEOUT_MS 30000
 #endif
 
+/*
+ * keep-alive: 응답 뒤 다음 요청의 첫 바이트를 기다리는 시간 (넘으면 응답 없이 close).
+ * 첫 바이트가 오면 그때부터 HEADER_TIMEOUT_MS 로 헤더 전체를 기다린다.
+ */
+#ifndef KEEPALIVE_TIMEOUT_MS
+#define KEEPALIVE_TIMEOUT_MS 5000
+#endif
+
+/* 한 연결에서 처리할 최대 요청 수 (마지막 응답은 Connection: close) */
+#define KEEPALIVE_MAX_REQUESTS 100
+
+/* idle 대기 중 종료 플래그를 확인하는 간격 (워커는 신호를 막아 두어 poll 이 안 깨짐) */
+#define IDLE_CHECK_MS 200
+
 enum send_result {
     SEND_OK = 0,
     SEND_ERROR = -1,     /* EPIPE, ECONNRESET 등 */
@@ -77,7 +91,11 @@ extern volatile sig_atomic_t server_stop;
 int server_run(int listen_fd, const char *root, int workers, int queue_cap);
 
 /*
- * 연결 하나 처리: 헤더를 읽고 파싱한 뒤 응답하고 닫는다.
+ * 연결 하나 처리: 요청을 읽고 응답하기를 keep-alive 가 끝날 때까지 반복한 뒤 닫는다.
+ * 유지 조건: HTTP/1.1, Connection 에 close 없음, 응답 경계가 확실한 상태 코드,
+ * 읽지 않은 본문 없음, 종료 중 아님, KEEPALIVE_MAX_REQUESTS 미만.
+ * 요청 사이 idle(KEEPALIVE_TIMEOUT_MS), EOF, 최대 요청 수, 종료로 닫히면
+ * "(keep-alive closed: 이유, N requests, 초)" 한 줄을 로그에 남긴다.
  * peer 는 접근 로그에 찍을 "ip:port" 문자열, root 는 정적 파일 루트(realpath).
  */
 void server_handle(int conn_fd, const char *peer, const char *root);
@@ -90,12 +108,15 @@ const char *find_header_end(const char *buf, size_t len);
 
 /*
  * fd 에서 헤더 끝(\r\n\r\n)이 나올 때까지 buf 에 누적해서 읽는다.
+ * buf[0..have) 에는 앞 요청 뒤에 붙어 온 바이트가 이미 들어 있을 수 있다 (keep-alive
+ * pipelining). 그 안에 헤더 끝이 있으면 읽지 않고 바로 OK.
  * 전체가 timeout_ms 안에 와야 한다 (poll 로 남은 시간만큼만 기다림).
- * *out_len 에는 읽은 총 바이트 수(헤더 뒤에 붙어 온 본문 일부 포함 가능).
+ * *out_len 에는 buf 의 총 바이트 수(헤더 뒤에 붙어 온 본문·다음 요청 포함 가능).
  * TIMEOUT 일 때 *out_len 으로 0바이트(무응답)와 1바이트 이상(408)을 구분한다.
  */
 enum read_head_result read_request_head(int fd, char *buf, size_t cap,
-                                        int timeout_ms, size_t *out_len);
+                                        size_t have, int timeout_ms,
+                                        size_t *out_len);
 
 /*
  * 부분 쓰기와 EINTR 을 처리하며 len 바이트를 모두 쓴다. 실패 시 -1.

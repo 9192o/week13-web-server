@@ -39,16 +39,31 @@ static void test_format_head_exact(void)
         "Connection: close\r\n"
         "\r\n";
     int n = http_format_head(buf, sizeof buf, 404, "text/html; charset=utf-8",
-                             162, NULL, FIXED_TIME);
+                             162, NULL, 0, FIXED_TIME);
     CHECK_EQ_INT(n, strlen(expected));
     CHECK_EQ_STR(buf, expected);
+}
+
+static void test_format_head_keep_alive(void)
+{
+    /* keep_alive=1: Connection 헤더 없이 Content-Length 바로 뒤에 빈 줄 */
+    CHECK(http_format_head(buf, sizeof buf, 200, "text/css", 7, NULL, 1,
+                           FIXED_TIME) > 0);
+    CHECK(strstr(buf, "Connection") == NULL);
+    CHECK(strstr(buf, "\r\nContent-Length: 7\r\n\r\n") != NULL);
+
+    /* extra 가 있어도 그 뒤에 바로 빈 줄 */
+    CHECK(http_format_head(buf, sizeof buf, 301, "text/html; charset=utf-8", 0,
+                           "Location: /docs/\r\n", 1, FIXED_TIME) > 0);
+    CHECK(strstr(buf, "Location: /docs/\r\n\r\n") != NULL);
+    CHECK(strstr(buf, "Connection") == NULL);
 }
 
 static void test_format_head_large_length(void)
 {
     /* S10: 100MB 파일도 Content-Length 로 그대로 표현 */
     CHECK(http_format_head(buf, sizeof buf, 200, "application/octet-stream",
-                           104857600LL, NULL, FIXED_TIME) > 0);
+                           104857600LL, NULL, 0, FIXED_TIME) > 0);
     CHECK(strstr(buf, "\r\nContent-Length: 104857600\r\n") != NULL);
     CHECK(strncmp(buf, "HTTP/1.1 200 OK\r\n", 17) == 0);
 }
@@ -57,20 +72,20 @@ static void test_format_head_extra_headers(void)
 {
     /* 301 Location, 405 Allow: Content-Length 뒤, Connection 앞에 그대로 붙는다 */
     CHECK(http_format_head(buf, sizeof buf, 301, "text/html; charset=utf-8", 0,
-                           "Location: /docs/\r\n", FIXED_TIME) > 0);
+                           "Location: /docs/\r\n", 0, FIXED_TIME) > 0);
     CHECK(strncmp(buf, "HTTP/1.1 301 Moved Permanently\r\n", 32) == 0);
     CHECK(strstr(buf, "Content-Length: 0\r\nLocation: /docs/\r\n"
                       "Connection: close\r\n\r\n") != NULL);
 
     CHECK(http_format_head(buf, sizeof buf, 405, "text/html; charset=utf-8", 0,
-                           "Allow: GET\r\n", FIXED_TIME) > 0);
+                           "Allow: GET\r\n", 0, FIXED_TIME) > 0);
     CHECK(strncmp(buf, "HTTP/1.1 405 Method Not Allowed\r\n", 33) == 0);
     CHECK(strstr(buf, "\r\nAllow: GET\r\n") != NULL);
 }
 
 static void test_format_head_unknown_status_becomes_500(void)
 {
-    CHECK(http_format_head(buf, sizeof buf, 418, "text/plain", 0, NULL, FIXED_TIME) > 0);
+    CHECK(http_format_head(buf, sizeof buf, 418, "text/plain", 0, NULL, 0, FIXED_TIME) > 0);
     CHECK(strncmp(buf, "HTTP/1.1 500 Internal Server Error\r\n", 36) == 0);
 }
 
@@ -78,13 +93,13 @@ static void test_format_head_raw(void)
 {
     /* CGI Status: 코드는 그대로, 문구는 표에 있으면 표, 없으면 빈 문구 */
     CHECK(http_format_head_raw(buf, sizeof buf, 201, "text/plain", 0, NULL,
-                               FIXED_TIME) > 0);
+                               0, FIXED_TIME) > 0);
     CHECK(strncmp(buf, "HTTP/1.1 201 \r\nDate: ", 21) == 0);
     CHECK(http_format_head_raw(buf, sizeof buf, 404, "text/plain", 0, NULL,
-                               FIXED_TIME) > 0);
+                               0, FIXED_TIME) > 0);
     CHECK(strncmp(buf, "HTTP/1.1 404 Not Found\r\n", 24) == 0);
     CHECK(http_format_head_raw(buf, sizeof buf, 599, "text/plain", 3, NULL,
-                               FIXED_TIME) > 0);
+                               0, FIXED_TIME) > 0);
     CHECK(strncmp(buf, "HTTP/1.1 599 \r\n", 15) == 0);
     CHECK(strstr(buf, "\r\nContent-Length: 3\r\n") != NULL);
 }
@@ -93,13 +108,13 @@ static void test_format_head_overflow(void)
 {
     char small[32];
     CHECK_EQ_INT(http_format_head(small, sizeof small, 200, "text/plain", 0,
-                                  NULL, FIXED_TIME), -1);
+                                  NULL, 0, FIXED_TIME), -1);
     /* 경계: 정확히 필요한 크기보다 1 작으면 실패, 딱 맞으면(+NUL) 성공 */
-    int need = http_format_head(buf, sizeof buf, 200, "text/plain", 0, NULL, FIXED_TIME);
+    int need = http_format_head(buf, sizeof buf, 200, "text/plain", 0, NULL, 0, FIXED_TIME);
     CHECK_EQ_INT(http_format_head(buf, (size_t)need, 200, "text/plain", 0,
-                                  NULL, FIXED_TIME), -1);
+                                  NULL, 0, FIXED_TIME), -1);
     CHECK_EQ_INT(http_format_head(buf, (size_t)need + 1, 200, "text/plain", 0,
-                                  NULL, FIXED_TIME), need);
+                                  NULL, 0, FIXED_TIME), need);
 }
 
 static void test_error_body(void)
@@ -132,6 +147,7 @@ int main(void)
     RUN_TEST(test_reason_table);
     RUN_TEST(test_normalize_status);
     RUN_TEST(test_format_head_exact);
+    RUN_TEST(test_format_head_keep_alive);
     RUN_TEST(test_format_head_large_length);
     RUN_TEST(test_format_head_extra_headers);
     RUN_TEST(test_format_head_unknown_status_becomes_500);

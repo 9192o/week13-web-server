@@ -34,12 +34,14 @@ int static_resolve(const char *root, const char *decoded,
 
 /*
  * 파일을 열어 200 헤더와 본문을 fd 로 보낸다. *sent 에 보낸 본문 바이트 수.
+ * keep_alive 는 http_format_head 로 넘긴다 (0 이면 Connection: close).
  * 반환:
  *    0  전송 완료
  *   -1  헤더를 보낸 뒤 실패 (EPIPE, 파일이 줄어듦 등) → 호출자는 그냥 close
  *   -2  SEND_TIMEOUT: 응답 전체를 SEND_TIMEOUT_MS 안에 다 보내지 못함 → 그냥 close
  *   그 외  아직 아무것도 보내지 않음 → 그 상태 코드로 에러 응답 (open 실패 등)
  */
-int static_send(int fd, const struct static_target *t, long long *sent);
+int static_send(int fd, const struct static_target *t, int keep_alive,
+                long long *sent);
 
 #endif

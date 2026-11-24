@@ -269,6 +269,27 @@ static void test_host_rules(void)
     CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost:\r\n\r\n"), 0);                /* 빈 값은 존재로 봄 */
 }
 
+/* ---------- Connection: close 토큰 ---------- */
+
+static void test_wants_close(void)
+{
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 0);                 /* 헤더 없음 */
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 1);
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\nconnection: CLOSE\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 1);                 /* 대소문자 무시 */
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive , Close\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 1);                 /* 토큰 목록 */
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n"
+                       "Connection: close\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 1);                 /* 두 번째 줄 */
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\nConnection: closed, xclose\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 0);                 /* 토큰 전체가 같아야 */
+    CHECK_EQ_INT(parse("GET / HTTP/1.1\r\nHost: x\r\nX-Connection: close\r\n\r\n"), 0);
+    CHECK_EQ_INT(http_wants_close(&req), 0);                 /* 다른 헤더 */
+}
+
 /* ---------- 버퍼 초과 분류 ---------- */
 
 static void test_classify_overflow(void)
@@ -318,6 +339,7 @@ int main(void)
     RUN_TEST(test_content_length_duplicates);
     RUN_TEST(test_transfer_encoding);
     RUN_TEST(test_host_rules);
+    RUN_TEST(test_wants_close);
     RUN_TEST(test_classify_overflow);
     return TEST_SUMMARY();
 }

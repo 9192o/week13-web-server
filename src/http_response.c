@@ -43,15 +43,16 @@ int http_normalize_status(int status)
 
 int http_format_head(char *buf, size_t cap, int status,
                      const char *content_type, long long content_length,
-                     const char *extra, time_t now)
+                     const char *extra, int keep_alive, time_t now)
 {
     return http_format_head_raw(buf, cap, http_normalize_status(status),
-                                content_type, content_length, extra, now);
+                                content_type, content_length, extra,
+                                keep_alive, now);
 }
 
 int http_format_head_raw(char *buf, size_t cap, int status,
                          const char *content_type, long long content_length,
-                         const char *extra, time_t now)
+                         const char *extra, int keep_alive, time_t now)
 {
     const char *reason = http_reason(status);
     char date[64];
@@ -73,10 +74,11 @@ int http_format_head_raw(char *buf, size_t cap, int status,
                  "Content-Type: %s\r\n"
                  "Content-Length: %lld\r\n"
                  "%s"
-                 "Connection: close\r\n"
+                 "%s"
                  "\r\n",
                  status, reason, date, content_type,
-                 content_length, extra ? extra : "");
+                 content_length, extra ? extra : "",
+                 keep_alive ? "" : "Connection: close\r\n");
     if (n < 0 || (size_t)n >= cap) {
         fprintf(stderr, "BUG: response head overflow\n");
         return -1;

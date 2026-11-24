@@ -39,8 +39,44 @@ static void test_read_head_ok(void)
     size_t len;
     int fd = pipe_with(req, strlen(req));
 
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len), READ_HEAD_OK);
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 0, 1000, &len), READ_HEAD_OK);
     CHECK_EQ_INT(len, strlen(req));
+    close(fd);
+}
+
+/* pipelining: 버퍼에 이미 헤더 전체가 있으면 fd 를 읽지 않고 바로 OK */
+static void test_read_head_carry_complete(void)
+{
+    const char *req = "GET /b HTTP/1.1\r\nHost: x\r\n\r\nGET /c";
+    char buf[REQUEST_HEAD_MAX];
+    size_t len;
+    int p[2];
+
+    if (pipe(p) < 0)
+        abort();
+    memcpy(buf, req, strlen(req));
+    /* 파이프에 아무것도 없으니 읽으려 했다면 TIMEOUT 이 났을 것 */
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, strlen(req), 100, &len),
+                 READ_HEAD_OK);
+    CHECK_EQ_INT(len, strlen(req));
+    close(p[0]);
+    close(p[1]);
+}
+
+/* 남은 바이트가 헤더 일부면 그 뒤에 이어서 읽는다 */
+static void test_read_head_carry_partial(void)
+{
+    const char *carry = "GET /c HTTP/1.1\r\nHo";
+    const char *rest = "st: x\r\n\r\n";
+    char buf[REQUEST_HEAD_MAX];
+    size_t len;
+    int fd = pipe_with(rest, strlen(rest));
+
+    memcpy(buf, carry, strlen(carry));
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, strlen(carry), 1000, &len),
+                 READ_HEAD_OK);
+    CHECK_EQ_INT(len, strlen(carry) + strlen(rest));
+    CHECK(memcmp(buf, "GET /c HTTP/1.1\r\nHost: x\r\n\r\n", len) == 0);
     close(fd);
 }
 
@@ -66,7 +102,7 @@ static void test_read_head_split_across_reads(void)
         _exit(0);
     }
     close(p[1]);
-    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 1000, &len), READ_HEAD_OK);
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 0, 1000, &len), READ_HEAD_OK);
     CHECK_EQ_INT(len, strlen(part1) + strlen(part2));
     close(p[0]);
     waitpid(pid, NULL, 0);
@@ -79,7 +115,7 @@ static void test_read_head_closed_early(void)
     size_t len;
     int fd = pipe_with(req, strlen(req));
 
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len),
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 0, 1000, &len),
                  READ_HEAD_CLOSED);
     CHECK_EQ_INT(len, strlen(req));
     close(fd);
@@ -91,7 +127,7 @@ static void test_read_head_empty_connection(void)
     size_t len;
     int fd = pipe_with("", 0);
 
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len),
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 0, 1000, &len),
                  READ_HEAD_CLOSED);
     CHECK_EQ_INT(len, 0);
     close(fd);
@@ -107,7 +143,7 @@ static void test_read_head_too_large(void)
 
     memset(junk, 'a', n);
     fd = pipe_with(junk, n);
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len),
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 0, 1000, &len),
                  READ_HEAD_TOO_LARGE);
     CHECK_EQ_INT(len, REQUEST_HEAD_MAX);
     close(fd);
@@ -125,7 +161,7 @@ static void test_read_head_exactly_fills_buffer(void)
     memset(req, 'a', REQUEST_HEAD_MAX);
     memcpy(req + REQUEST_HEAD_MAX - 4, "\r\n\r\n", 4);
     fd = pipe_with(req, REQUEST_HEAD_MAX);
-    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 1000, &len), READ_HEAD_OK);
+    CHECK_EQ_INT(read_request_head(fd, buf, sizeof buf, 0, 1000, &len), READ_HEAD_OK);
     close(fd);
     free(req);
 }
@@ -139,7 +175,7 @@ static void test_read_head_timeout_no_data(void)
 
     if (pipe(p) < 0)
         abort();
-    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 100, &len),
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 0, 100, &len),
                  READ_HEAD_TIMEOUT);
     CHECK_EQ_INT(len, 0);                          /* 무응답으로 닫을 경우 */
     close(p[0]);
@@ -156,7 +192,7 @@ static void test_read_head_timeout_partial(void)
     if (pipe(p) < 0)
         abort();
     write_all(p[1], part, strlen(part));
-    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 100, &len),
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 0, 100, &len),
                  READ_HEAD_TIMEOUT);
     CHECK_EQ_INT(len, strlen(part));               /* 408 로 응답할 경우 */
     close(p[0]);
@@ -186,7 +222,7 @@ static void test_read_head_deadline_is_total(void)
         _exit(0);
     }
     close(p[1]);
-    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 200, &len),
+    CHECK_EQ_INT(read_request_head(p[0], buf, sizeof buf, 0, 200, &len),
                  READ_HEAD_TIMEOUT);
     CHECK(len > 0 && len < 20);
     close(p[0]);
@@ -286,6 +322,8 @@ int main(void)
     RUN_TEST(test_read_head_timeout_partial);
     RUN_TEST(test_read_head_deadline_is_total);
     RUN_TEST(test_read_head_ok);
+    RUN_TEST(test_read_head_carry_complete);
+    RUN_TEST(test_read_head_carry_partial);
     RUN_TEST(test_read_head_split_across_reads);
     RUN_TEST(test_read_head_closed_early);
     RUN_TEST(test_read_head_empty_connection);

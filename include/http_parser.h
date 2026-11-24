@@ -57,4 +57,10 @@ int http_classify_overflow(const char *buf, size_t len);
 /* 이름이 같은(대소문자 무시) 첫 번째 헤더의 값. 없으면 NULL. */
 const char *http_get_header(const struct http_request *req, const char *name);
 
+/*
+ * Connection 헤더(여러 줄 가능)의 쉼표로 나뉜 토큰 중 "close" 가 있으면 1.
+ * 토큰 앞뒤 공백(SP/HTAB)은 무시하고, 대소문자는 구분하지 않는다.
+ */
+int http_wants_close(const struct http_request *req);
+
 #endif

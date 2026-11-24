@@ -279,3 +279,37 @@ const char *http_get_header(const struct http_request *req, const char *name)
             return req->headers[i].value;
     return NULL;
 }
+
+/* value 의 쉼표 구분 토큰 중 하나가 token 과 같으면 1 (OWS 무시, 대소문자 무시) */
+static int has_token(const char *value, const char *token)
+{
+    size_t tlen = strlen(token);
+    const char *p = value;
+
+    while (*p != '\0') {
+        const char *start, *end;
+
+        while (*p == ' ' || *p == '\t' || *p == ',')
+            p++;
+        start = p;
+        while (*p != '\0' && *p != ',')
+            p++;
+        end = p;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+            end--;
+        if ((size_t)(end - start) == tlen && strncasecmp(start, token, tlen) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+int http_wants_close(const struct http_request *req)
+{
+    size_t i;
+
+    for (i = 0; i < req->header_count; i++)
+        if (strcasecmp(req->headers[i].name, "Connection") == 0 &&
+            has_token(req->headers[i].value, "close"))
+            return 1;
+    return 0;
+}

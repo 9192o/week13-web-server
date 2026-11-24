@@ -117,12 +117,16 @@ int wait_readable(int fd, long long deadline)
 }
 
 enum read_head_result read_request_head(int fd, char *buf, size_t cap,
-                                        int timeout_ms, size_t *out_len)
+                                        size_t have, int timeout_ms,
+                                        size_t *out_len)
 {
     long long deadline = now_ms() + timeout_ms;
-    size_t total = 0;
+    size_t total = have;
 
-    *out_len = 0;
+    *out_len = total;
+    /* 앞 요청 뒤에 붙어 온 바이트(pipelining)에 이미 헤더 끝이 있으면 읽지 않음 */
+    if (total > 0 && find_header_end(buf, total) != NULL)
+        return READ_HEAD_OK;
     while (total < cap) {
         int ready = wait_readable(fd, deadline);
         if (ready == 0)
@@ -226,10 +230,11 @@ static void lingering_close(int fd)
 /*
  * 에러 페이지(헤더 + HTML 본문)를 보낸다.
  * extra 는 NULL 또는 추가 헤더 줄들 (301 의 Location, 405 의 Allow).
+ * keep_alive 가 0 이면 Connection: close 헤더를 붙인다.
  * 반환: 보낸 본문 바이트 수. 실패면 음수 (호출자는 그냥 닫음):
  *   SEND_TIMEOUT 시간 초과, -1 쓰기 실패나 생성기 버그.
  */
-static int send_error(int fd, int status, const char *extra)
+static int send_error(int fd, int status, const char *extra, int keep_alive)
 {
     char head[HTTP_URI_MAX + 512], body[512];   /* Location 에 URI 가 통째로 들어갈 수 있음 */
     long long deadline;
@@ -241,7 +246,8 @@ static int send_error(int fd, int status, const char *extra)
         return -1;
     }
     hl = http_format_head(head, sizeof head, status,
-                          "text/html; charset=utf-8", bl, extra, time(NULL));
+                          "text/html; charset=utf-8", bl, extra, keep_alive,
+                          time(NULL));
     if (hl < 0)
         return -1;
     deadline = now_ms() + SEND_TIMEOUT_MS;
@@ -295,47 +301,73 @@ static void access_log(const char *peer, const char *reqline, int status,
                 note ? " " : "", note ? note : "");
 }
 
+/* 요청 하나를 처리하는 동안 응답 함수들이 함께 쓰는 정보 */
+struct req_ctx {
+    int fd;
+    const char *peer;
+    const char *reqline;   /* 접근 로그용 요청 첫 줄 */
+    int keep;              /* 이 응답 뒤 연결 유지 예정 (0 이면 Connection: close) */
+    int sent_ok;           /* 유지 가능한 응답을 끝까지 보냄 (max 닫힘 로그 판정용) */
+};
+
 /*
- * 응답을 보내고 연결을 닫는다. status <= 0 이면 응답 없이 close (로그에 note).
- * 400 이상이면 lingering close.
+ * 응답 뒤 연결을 유지해도 되는 상태 코드: 다음 요청 경계가 확실한 경우만.
+ * 파싱 오류(400/408/411/413/414/431/501/505)와 500 뒤에는 닫는다.
  */
-static void finish_error(int fd, const char *peer, const char *reqline,
-                         int status, const char *extra, const char *note)
+static int status_keepable(int status)
 {
-    int body_len;
+    return status == 200 || status == 301 || status == 403 || status == 404 ||
+           status == 405;
+}
+
+/*
+ * 에러(또는 301) 응답을 보낸다. status <= 0 이면 응답 없이 close (로그에 note).
+ * c->keep 이고 status 가 유지 가능하면 연결을 열어 둔 채 1.
+ * 아니면 Connection: close 로 응답하고 닫은 뒤 0 (400 이상이면 lingering close).
+ */
+static int finish_error(struct req_ctx *c, int status, const char *extra,
+                        const char *note)
+{
+    int body_len, keep;
 
     if (status <= 0) {
-        access_log(peer, reqline, 0, 0, note);
-        close(fd);
-        return;
+        access_log(c->peer, c->reqline, 0, 0, note);
+        close(c->fd);
+        return 0;
     }
     status = http_normalize_status(status);
-    body_len = send_error(fd, status, extra);
+    keep = c->keep && status_keepable(status);
+    body_len = send_error(c->fd, status, extra, keep);
     if (body_len < 0) {
-        access_log(peer, reqline, 0, 0, send_fail_note(body_len));
-        close(fd);
-        return;
+        access_log(c->peer, c->reqline, 0, 0, send_fail_note(body_len));
+        close(c->fd);
+        return 0;
     }
-    access_log(peer, reqline, status, body_len, note);
+    access_log(c->peer, c->reqline, status, body_len, note);
+    if (status_keepable(status))
+        c->sent_ok = 1;
+    if (keep)
+        return 1;
     if (status >= 400)
-        lingering_close(fd);
+        lingering_close(c->fd);
     else
-        close(fd);
+        close(c->fd);
+    return 0;
 }
 
 /*
  * /cgi-bin 으로 온 POST 의 본문: 411 → 413 → 100 Continue → 본문 읽기.
- * 반환: 0 성공 (*body 에 malloc 한 본문, 길이 0 이면 NULL),
+ * 반환: 0 성공 (*body 에 malloc 한 본문, 길이 0 이면 NULL,
+ *         *consumed 에 buf 에서 쓴 바이트 = 헤더 + buf 안의 본문. 그 뒤는 다음 요청),
  *       -1 응답 없이 close (*note 에 이유), 그 외 응답할 상태 코드.
  */
 static int read_cgi_body(int fd, const char *buf, size_t len,
                          const struct http_request *req, const char **note,
-                         char **out_body)
+                         char **out_body, size_t *consumed)
 {
     struct body_input in;
     const char *expect;
     char *body = NULL;
-    size_t consumed;
     enum read_body_result r;
 
     *out_body = NULL;
@@ -370,8 +402,7 @@ static int read_cgi_body(int fd, const char *buf, size_t len,
         }
     }
 
-    r = read_request_body(fd, &in, BODY_TIMEOUT_MS, body, &consumed);
-    (void)consumed;            /* phase 1: 남는 바이트는 무시 (Connection: close) */
+    r = read_request_body(fd, &in, BODY_TIMEOUT_MS, body, consumed);
     if (r == READ_BODY_OK) {
         *out_body = body;
         return 0;
@@ -457,13 +488,17 @@ static void cgi_fail_note(const struct cgi_result *res, char *out, size_t cap)
 }
 
 /*
- * /cgi-bin 요청 전체 처리: 스크립트 찾기 → (POST) 본문 → 실행 → 응답 → close.
+ * /cgi-bin 요청 전체 처리: 스크립트 찾기 → (POST) 본문 → 실행 → 응답.
+ * CGI 출력은 다 모은 뒤 Content-Length 를 붙여 보내므로 응답 경계가 확실하다:
+ * 성공하면 c->keep 에 따라 연결 유지 (CGI 가 4xx/5xx Status 를 줘도 같음).
+ * *consumed: POST 면 헤더 + buf 안의 본문 바이트 (호출자가 미리 head_len 으로 채움).
+ * 반환: 1 연결 유지 (fd 열림), 0 닫음.
  */
-static void serve_cgi(int fd, const char *peer, const char *reqline,
-                      const char *buf, size_t len,
-                      const struct http_request *req, const char *root,
-                      const char *decoded)
+static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
+                     const struct http_request *req, const char *root,
+                     const char *decoded, size_t *consumed)
 {
+    int fd = c->fd;
     char script[PATH_MAX];
     char local_ip[INET_ADDRSTRLEN], remote_ip[INET_ADDRSTRLEN];
     char server_name[256], protocol[16], note_buf[64];
@@ -478,11 +513,9 @@ static void serve_cgi(int fd, const char *peer, const char *reqline,
 
     status = cgi_resolve(root, decoded, script);
     if (status == 0 && req->method == HTTP_POST)
-        status = read_cgi_body(fd, buf, len, req, &note, &body);
-    if (status != 0) {
-        finish_error(fd, peer, reqline, status, NULL, note);
-        return;
-    }
+        status = read_cgi_body(fd, buf, len, req, &note, &body, consumed);
+    if (status != 0)
+        return finish_error(c, status, NULL, note);
 
     memset(&creq, 0, sizeof creq);
     sock_addr(fd, 1, remote_ip, sizeof remote_ip, &creq.remote_port);
@@ -508,70 +541,115 @@ static void serve_cgi(int fd, const char *peer, const char *reqline,
     free(body);
     if (res.fail != CGI_OK) {
         cgi_fail_note(&res, note_buf, sizeof note_buf);
-        finish_error(fd, peer, reqline, 500, NULL, note_buf);   /* S11 */
-        return;
+        return finish_error(c, 500, NULL, note_buf);   /* S11 */
     }
 
     /* 상태 줄과 헤더는 서버가 쓴다 (문구는 서버 표, 없으면 빈 문구) */
     out_len = res.output_len - res.body_off;
     hl = http_format_head_raw(head, sizeof head, res.status, res.content_type,
-                              (long long)out_len, NULL, time(NULL));
+                              (long long)out_len, NULL, c->keep, time(NULL));
     if (hl < 0) {
         cgi_result_free(&res);
-        finish_error(fd, peer, reqline, 500, NULL, "(cgi head overflow)");
-        return;
+        return finish_error(c, 500, NULL, "(cgi head overflow)");
     }
     deadline = now_ms() + SEND_TIMEOUT_MS;   /* CGI 실행 시간과 별개로 전송부터 */
     sr = send_all(fd, head, (size_t)hl, deadline);
     if (sr == SEND_OK)
         sr = send_all(fd, res.output + res.body_off, out_len, deadline);
     if (sr != SEND_OK) {
-        access_log(peer, reqline, 0, 0, send_fail_note(sr));
+        access_log(c->peer, c->reqline, 0, 0, send_fail_note(sr));
         cgi_result_free(&res);
         close(fd);
-        return;
+        return 0;
     }
-    access_log(peer, reqline, res.status, (long long)out_len, NULL);
+    access_log(c->peer, c->reqline, res.status, (long long)out_len, NULL);
     cgi_result_free(&res);
+    c->sent_ok = 1;
+    if (c->keep)
+        return 1;
     if (res.status >= 400)
         lingering_close(fd);
     else
         close(fd);
+    return 0;
 }
 
-void server_handle(int conn_fd, const char *peer, const char *root)
+/* 요청 하나를 처리한 결과 */
+enum req_outcome {
+    REQ_KEEP,         /* 응답을 다 보냈고 연결 유지 (fd 열림) */
+    REQ_CLOSED,       /* 닫음 (요청 로그로 충분) */
+    REQ_CLOSED_MAX,   /* 최대 요청 수에 닿아 Connection: close 로 응답하고 닫음 */
+    REQ_GONE          /* 요청 사이에 클라이언트가 끊음 (0바이트, 닫음) */
+};
+
+/*
+ * 연결에서 요청 하나를 읽고 응답한다. nreq 는 이 연결의 몇 번째 요청인지 (1부터).
+ * buf[0..*have) 에는 앞 요청 뒤에 붙어 온 바이트가 있을 수 있다.
+ * REQ_KEEP 이면 이번 요청 뒤에 남은 바이트를 buf 앞으로 옮기고 *have 에 길이를 넣는다.
+ */
+static enum req_outcome handle_request(int conn_fd, const char *peer,
+                                       const char *root, char *buf,
+                                       size_t *have, int nreq)
 {
-    char buf[REQUEST_HEAD_MAX];
     char reqline[REQLINE_LOG_MAX + 4];
     char decoded[HTTP_URI_MAX + 1];
     char location[HTTP_URI_MAX + 64];
     const char *extra = NULL;
     struct http_request req;
     struct static_target target;
+    struct req_ctx c;
     enum read_head_result rr;
     const char *note = NULL;
     int status = 0;            /* 0 이면 응답 없이 닫는다 */
-    size_t len;
+    int keep_base = 0;         /* 최대 요청 수를 빼고 연결 유지 조건을 모두 만족 */
+    int kept = 0;
+    size_t len, consumed = 0;
 
-    rr = read_request_head(conn_fd, buf, sizeof buf, HEADER_TIMEOUT_MS, &len);
+    rr = read_request_head(conn_fd, buf, REQUEST_HEAD_MAX, *have,
+                           HEADER_TIMEOUT_MS, &len);
+    *have = 0;
     copy_reqline(buf, len, reqline, sizeof reqline);   /* 파서가 buf 를 바꾸기 전에 */
 
+    c.fd = conn_fd;
+    c.peer = peer;
+    c.reqline = reqline;
+    c.keep = 0;
+    c.sent_ok = 0;
+
+    /* keep-alive 요청 사이에 클라이언트가 닫음: 요청 로그 대신 호출자가 닫힘 로그 */
+    if (nreq > 1 && len == 0 &&
+        (rr == READ_HEAD_CLOSED || rr == READ_HEAD_ERROR)) {
+        close(conn_fd);
+        return REQ_GONE;
+    }
+
     switch (rr) {
-    case READ_HEAD_OK:
+    case READ_HEAD_OK: {
+        int is_cgi;
+
         status = http_parse_request(buf, len, &req);
         if (status == 0)
             status = url_check_path(req.path, decoded, sizeof decoded);
         if (status != 0)
             break;
-        if (url_is_cgi(decoded)) {
-            serve_cgi(conn_fd, peer, reqline, buf, len, &req, root, decoded);
-            return;
+        consumed = req.head_len;
+        is_cgi = url_is_cgi(decoded);
+        keep_base = req.version_minor == 1 && !http_wants_close(&req) &&
+                    !server_stop;
+        /* 읽지 않을 본문이 있으면 다음 요청이 어디서 시작하는지 모름 → 닫기 */
+        if (req.content_length > 0 && !(is_cgi && req.method == HTTP_POST))
+            keep_base = 0;
+        c.keep = keep_base && nreq < KEEPALIVE_MAX_REQUESTS;
+        if (is_cgi) {
+            kept = serve_cgi(&c, buf, len, &req, root, decoded, &consumed);
+            goto done;
         }
         if (req.method == HTTP_POST)
             status = 405;
         else
             status = static_resolve(root, decoded, &target);
         break;
+    }
     case READ_HEAD_TOO_LARGE:
         status = http_classify_overflow(buf, len);
         break;
@@ -590,20 +668,24 @@ void server_handle(int conn_fd, const char *peer, const char *root)
     }
 
     if (status == 0) {
-        finish_error(conn_fd, peer, reqline, 0, NULL, note);
-        return;
+        finish_error(&c, 0, NULL, note);
+        return REQ_CLOSED;
     }
 
     if (status == 200) {
         long long sent;
-        int r = static_send(conn_fd, &target, &sent);
+        int r = static_send(conn_fd, &target, c.keep, &sent);
 
         if (r <= 0) {          /* 완료, 또는 헤더를 보낸 뒤 실패 (S10: EPIPE, 시간 초과) */
             access_log(peer, reqline, 200, sent,
                        r == SEND_TIMEOUT ? "(send timeout)" :
                        r < 0             ? "(aborted)" : NULL);
-            close(conn_fd);
-            return;
+            if (r == 0)
+                c.sent_ok = 1;
+            kept = r == 0 && c.keep;
+            if (!kept)
+                close(conn_fd);
+            goto done;
         }
         status = r;            /* 아직 아무것도 안 보냄: 에러 응답으로 */
     }
@@ -616,7 +698,91 @@ void server_handle(int conn_fd, const char *peer, const char *root)
         extra = "Allow: GET\r\n";
     }
 
-    finish_error(conn_fd, peer, reqline, status, extra, NULL);
+    kept = finish_error(&c, status, extra, NULL);
+
+done:
+    if (kept) {
+        /* pipelining: 이번 요청(헤더 + 본문) 뒤에 붙어 온 바이트는 다음 요청 */
+        *have = len - consumed;
+        memmove(buf, buf + consumed, *have);
+        return REQ_KEEP;
+    }
+    if (c.sent_ok && keep_base && nreq >= KEEPALIVE_MAX_REQUESTS)
+        return REQ_CLOSED_MAX;
+    return REQ_CLOSED;
+}
+
+/*
+ * keep-alive: 다음 요청의 첫 바이트를 KEEPALIVE_TIMEOUT_MS 까지 기다린다.
+ * 워커는 종료 신호를 막아 두어 poll 이 깨지 않으므로 IDLE_CHECK_MS 마다 플래그 확인.
+ * 반환: 1 읽기 가능(데이터 또는 EOF), 0 idle 시간 초과, -1 poll 오류, -2 종료 중.
+ */
+static int wait_next_request(int fd)
+{
+    long long deadline = now_ms() + KEEPALIVE_TIMEOUT_MS;
+
+    for (;;) {
+        long long now = now_ms(), until;
+        int r;
+
+        if (server_stop)
+            return -2;
+        if (now >= deadline)
+            return 0;
+        until = now + IDLE_CHECK_MS;
+        if (until > deadline)
+            until = deadline;
+        r = wait_readable(fd, until);
+        if (r != 0)
+            return r;
+    }
+}
+
+/* keep-alive 연결이 닫힐 때 한 줄: 이유, 처리한 요청 수, 연결 유지 시간 */
+static void keepalive_log(const char *peer, const char *why, int requests,
+                          long long start_ms)
+{
+    long long el = now_ms() - start_ms;
+
+    fprintf(stderr, "%s (keep-alive closed: %s, %d requests, %lld.%llds)\n",
+            peer, why, requests, el / 1000, (el % 1000) / 100);
+}
+
+void server_handle(int conn_fd, const char *peer, const char *root)
+{
+    char buf[REQUEST_HEAD_MAX];
+    size_t have = 0;           /* 앞 요청 뒤에 붙어 온 바이트 (pipelining) */
+    long long start = now_ms();
+    int nreq; //몇 번째 요청인지
+
+    for (nreq = 1; ; nreq++) {
+        enum req_outcome o;
+
+        //2번째 요청부터, have == 0일 때만 idle 대기
+        if (nreq > 1 && have == 0) {
+            int w = wait_next_request(conn_fd);
+
+            if (w != 1) {
+                close(conn_fd);
+                keepalive_log(peer, w == 0 ? "idle" : w == -2 ? "shutdown" : "eof",
+                              nreq - 1, start);
+                return;
+            }
+        }
+        o = handle_request(conn_fd, peer, root, buf, &have, nreq);
+        switch (o) {
+        case REQ_KEEP: //응답을 다 보냈고 연결 유지
+            continue;
+        case REQ_GONE: //요청 사이에 클라이언트가 끊음
+            keepalive_log(peer, "eof", nreq - 1, start);
+            return;
+        case REQ_CLOSED_MAX: //100번째 요청에 닿아 닫음
+            keepalive_log(peer, "max", nreq, start);
+            return;
+        case REQ_CLOSED:
+            return;
+        }
+    }
 }
 
 volatile sig_atomic_t server_stop = 0;
@@ -636,7 +802,7 @@ static void reject_busy(int fd, const char *peer)
 
     bl = http_format_error_body(resp + 512, 512, 503);
     hl = bl < 0 ? -1 : http_format_head(resp, 512, 503, "text/html; charset=utf-8",
-                                        bl, NULL, time(NULL));
+                                        bl, NULL, 0, time(NULL));
     if (hl < 0) {
         access_log(peer, "-", 0, 0, "(queue full, format failed)");
         close(fd);

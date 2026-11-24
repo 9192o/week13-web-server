@@ -6,8 +6,8 @@
 #     --timing  시간 제한 시나리오(408, 무응답 close, CGI 시간 초과, 전송 시간 초과,
 #               처리 중 SIGINT)까지 실행
 #     PORT      환경 변수로 포트 변경 (기본 18099)
-#     HEADER_MS BODY_MS CGI_MS SEND_MS
-#               서버가 빌드된 시간 제한 값(ms). 기본은 실제 값 5000/10000/5000/30000.
+#     HEADER_MS BODY_MS CGI_MS SEND_MS KEEPALIVE_MS
+#               서버가 빌드된 시간 제한 값(ms). 기본은 실제 값 5000/10000/5000/30000/5000.
 #               make ftest 는 짧은 값으로 빌드한 서버와 함께 그 값을 넘긴다.
 #
 # 실패가 있거나, SIGTERM 종료 코드가 0 이 아니거나, 서버 로그에 sanitizer 보고가
@@ -27,6 +27,7 @@ HEADER_MS=${HEADER_MS:-5000}
 BODY_MS=${BODY_MS:-10000}
 CGI_MS=${CGI_MS:-5000}
 SEND_MS=${SEND_MS:-30000}
+KEEPALIVE_MS=${KEEPALIVE_MS:-5000}
 PORT=${PORT:-18099}
 URL=http://127.0.0.1:$PORT
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -89,6 +90,13 @@ head -1 <&3' _ "$1" | tr -d '\r'
 
 repeat() { head -c "$2" /dev/zero | tr '\0' "$1"; }
 
+# raw 요청을 보내고 서버가 연결을 닫을 때까지 받은 전부를 출력 (\r 제거)
+raw_all() {
+    timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$PORT"'
+printf "%b" "$1" >&3
+cat <&3' _ "$1" | tr -d '\r'
+}
+
 # ---------------------------------------------------------------- 임시 문서 루트
 
 WORK=$(mktemp -d /tmp/ws-ftest-XXXXXX)
@@ -115,6 +123,7 @@ fi
 
 mkdir -p "$R/empty" "$R/docs" "$R/cgi-bin"
 echo '<h1>hi</h1>' > "$R/index.html"
+echo 'h1{}' > "$R/style.css"
 echo docs > "$R/docs/index.html"
 head -c 4096 /dev/urandom > "$R/cat.png"
 head -c 104857600 /dev/zero > "$R/big.bin"
@@ -196,6 +205,63 @@ else
 fi
 expect_between "P2-S1 B 응답 1초 안 (ms)"      0 1000 "$EL"
 
+# ---------------------------------------------------------------- keep-alive (phase 2)
+
+echo "== keep-alive"
+# P2-S4: 같은 연결로 두 번 (curl 은 URL 여러 개를 한 연결로 보냄). num_connects 0 = 재사용
+W='%{http_code}:%{num_connects}:%{content_type} '
+K=$(curl -s -o /dev/null -o /dev/null -w "$W" "$URL/index.html" "$URL/style.css")
+expect "P2-S4 index.html 다음 style.css 를 같은 연결로" \
+       "200:1:text/html; charset=utf-8 200:0:text/css; charset=utf-8 " "$K"
+expect "404 뒤에도 연결 유지" "404:1 200:0 " \
+       "$(curl -s -o /dev/null -o /dev/null -w '%{http_code}:%{num_connects} ' \
+              "$URL/nope.html" "$URL/index.html")"
+for _ in $(seq 20); do log_has "(keep-alive closed: eof, 2 requests" && break; sleep 0.1; done
+if log_has "(keep-alive closed: eof, 2 requests"; then
+    ok "클라이언트가 닫으면 로그 (keep-alive closed: eof, 2 requests"
+else
+    fail "클라이언트가 닫으면 로그 (keep-alive closed: eof, 2 requests" "로그에 없음"
+fi
+
+# pipelining: 요청 두 개를 한 번에 → 응답 두 개가 순서대로 (두 번째는 Connection: close)
+P=$(raw_all 'GET /index.html HTTP/1.1\r\nHost: x\r\n\r\nGET /style.css HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+expect "pipelining GET+GET → 응답 2개"        2 "$(printf '%s\n' "$P" | grep -c '^HTTP/1.1 200 OK$')"
+expect "pipelining 순서 (html → css)"          "text/html; charset=utf-8 text/css; charset=utf-8" \
+       "$(printf '%s\n' "$P" | sed -n 's/^Content-Type: //p' | tr '\n' ' ' | sed 's/ $//')"
+# POST 본문 뒤에 붙어 온 다음 요청도 처리
+P=$(raw_all 'POST /cgi-bin/len HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhelloGET /index.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+expect "pipelining POST+GET → 응답 2개"       2 "$(printf '%s\n' "$P" | grep -c '^HTTP/1.1 200 OK$')"
+expect_match "pipelining POST 본문 5바이트"    '^5$' "$P"
+expect_match "pipelining 뒤 GET 본문"          '^<h1>hi</h1>$' "$P"
+
+# 연결을 닫는 경우: 응답에 Connection: close, idle 시간까지 기다리지 않고 바로 닫힘
+T0=$(now_ms)
+P=$(raw_all 'GET /index.html HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n')
+EL=$(( $(now_ms) - T0 ))
+expect_match "Connection: close 요청 → 응답 Connection: close" '^Connection: close$' "$P"
+expect_between "Connection: close → 바로 닫힘 (ms)" 0 $(( KEEPALIVE_MS * 9 / 10 )) "$EL"
+T0=$(now_ms)
+P=$(raw_all 'GET /index.html HTTP/1.0\r\n\r\n')
+EL=$(( $(now_ms) - T0 ))
+expect_match "HTTP/1.0 → 응답 Connection: close" '^Connection: close$' "$P"
+expect_between "HTTP/1.0 → 바로 닫힘 (ms)"     0 $(( KEEPALIVE_MS * 9 / 10 )) "$EL"
+# 비CGI 요청에 본문이 있으면 (읽지 않으므로) 닫음
+P=$(raw_all 'GET /index.html HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc')
+expect_match "본문 있는 GET → Connection: close" '^Connection: close$' "$P"
+
+# 최대 요청 수 100: 101개를 보내면 100번째 응답 뒤 닫히고 101번째는 새 연결
+ARGS=()
+for _ in $(seq 101); do ARGS+=(-o /dev/null "$URL/index.html"); done
+M=$(curl -s -w '%{num_connects} ' "${ARGS[@]}")
+expect "101개 요청 → 연결 2개"                 2 "$(echo $M | tr ' ' '\n' | grep -c '^1$')"
+expect "101번째 요청이 새 연결"                1 "$(echo $M | awk '{print $101}')"
+for _ in $(seq 20); do log_has "(keep-alive closed: max, 100 requests" && break; sleep 0.1; done
+if log_has "(keep-alive closed: max, 100 requests"; then
+    ok "로그 (keep-alive closed: max, 100 requests"
+else
+    fail "로그 (keep-alive closed: max, 100 requests" "로그에 없음"
+fi
+
 # ---------------------------------------------------------------- 정적 파일
 
 echo "== 정적 파일"
@@ -203,7 +269,11 @@ H=$(curl -si "$URL/index.html" | tr -d '\r')
 expect_match "S1 GET /index.html → 200"        '^HTTP/1.1 200 OK$' "$H"
 expect_match "S1 Content-Type text/html"        '^Content-Type: text/html; charset=utf-8$' "$H"
 expect_match "S1 Content-Length 12"             '^Content-Length: 12$' "$H"
-expect_match "S1 Connection: close"             '^Connection: close$' "$H"
+if printf '%s\n' "$H" | grep -qi '^Connection:'; then   # HTTP/1.1 keep-alive 기본값
+    fail "S1 Connection 헤더 없음 (keep-alive)" "$(printf '%s\n' "$H" | grep -i '^Connection:')"
+else
+    ok "S1 Connection 헤더 없음 (keep-alive)"
+fi
 expect_match "S1 Date (IMF-fixdate)"            '^Date: [A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$' "$H"
 expect "S2 /nope.html → 404"                    404 "$(code "$URL/nope.html")"
 expect "S3 /cat.png → 200"                      200 "$(code "$URL/cat.png")"
@@ -374,6 +444,19 @@ head -1 <&3' | tr -d '\r')
     expect "slowloris (1바이트씩 계속) → 408"    "HTTP/1.1 408 Request Timeout" "$S"
     expect_ms "slowloris 408 까지 약 ${HEADER_MS}ms" "$HEADER_MS" $(( $(now_ms) - T0 ))
 
+    # P2-S4: 응답 뒤 아무것도 안 보내면 약 KEEPALIVE_MS 뒤 응답 없이 닫힘 (408 없음)
+    T0=$(now_ms)
+    P=$(raw_all 'GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n')
+    EL=$(( $(now_ms) - T0 ))
+    expect "P2-S4 idle 닫힘: 응답은 200 하나뿐"   1 "$(printf '%s\n' "$P" | grep -c '^HTTP/1.1 ')"
+    expect "P2-S4 idle 닫힘: 408 없음"             0 "$(printf '%s\n' "$P" | grep -c '408')"
+    expect_ms "P2-S4 idle 닫힘까지 약 ${KEEPALIVE_MS}ms" "$KEEPALIVE_MS" "$EL"
+    if log_has "(keep-alive closed: idle, 1 requests"; then
+        ok "P2-S4 로그 (keep-alive closed: idle, 1 requests"
+    else
+        fail "P2-S4 로그 (keep-alive closed: idle, 1 requests" "로그에 없음"
+    fi
+
     # P2-S3: 워커 2 / 큐 2 서버를 따로 띄워, 워커와 큐가 모두 찼을 때 503
     P3=$((PORT + 1))
     U3=http://127.0.0.1:$P3
@@ -432,11 +515,28 @@ cat <&3 2>/dev/null | wc -c' > "$1"
         sleep 0.1
     done
     expect "P2-S3 서버 fd 수 그대로"              "$S3FD0" "$(ls "/proc/$SRV3/fd" 2>/dev/null | wc -l | tr -d ' ')"
+
+    # keep-alive idle 중 SIGTERM: idle 시간을 다 기다리지 않고 바로 닫고 종료
+    timeout 20 bash -c 'exec 3<>/dev/tcp/127.0.0.1/'"$P3"'
+printf "GET /index.html HTTP/1.1\r\nHost: x\r\n\r\n" >&3
+cat <&3' > "$WORK/idle-stop" &
+    IDL=$!
+    sleep_ms $(( KEEPALIVE_MS / 5 ))        # 응답을 받고 idle 대기에 들어갈 시간
+    T0=$(now_ms)
     kill -TERM "$SRV3"
     wait "$SRV3"
     RC=$?
+    EL=$(( $(now_ms) - T0 ))
     SRV3=
+    wait "$IDL"
     expect "P2-S3 서버 SIGTERM → exit 0"          0 "$RC"
+    expect "idle 중 SIGTERM: 응답 200 은 받음"    1 "$(grep -c '^HTTP/1.1 200 OK' "$WORK/idle-stop")"
+    if grep -qF "(keep-alive closed: shutdown, 1 requests" "$LOG3"; then
+        ok "idle 중 SIGTERM → 로그 (keep-alive closed: shutdown"
+    else
+        fail "idle 중 SIGTERM → 로그 (keep-alive closed: shutdown" "로그에 없음"
+    fi
+    expect_between "idle 중 SIGTERM → idle 시간 전에 종료 (ms)" 0 $(( KEEPALIVE_MS - 1 )) "$EL"
     expect "P2-S3 서버 sanitizer 보고 없음"       0 "$(grep -cE 'Sanitizer|runtime error' "$LOG3")"
 fi
 

@@ -127,7 +127,8 @@ int static_resolve(const char *root, const char *decoded,
     return 200;
 }
 
-int static_send(int fd, const struct static_target *t, long long *sent)
+int static_send(int fd, const struct static_target *t, int keep_alive,
+                long long *sent)
 {
     char chunk[STATIC_CHUNK];   /* 워커마다 따로 (스레드 스택: Linux 8MB, macOS 512KB 기본) */
     char head[512];
@@ -149,7 +150,8 @@ int static_send(int fd, const struct static_target *t, long long *sent)
     }
 
     left = (long long)st.st_size;         /* 실제로 연 파일 기준 크기 */
-    hl = http_format_head(head, sizeof head, 200, t->mime, left, NULL, time(NULL));
+    hl = http_format_head(head, sizeof head, 200, t->mime, left, NULL, keep_alive,
+                          time(NULL));
     if (hl < 0) {
         close(file);
         return 500;
