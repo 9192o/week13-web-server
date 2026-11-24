@@ -53,6 +53,8 @@
 > 구현 상태 (S2b): `tests/integration_s1.sh` — CGI GET/POST/crash/10 concurrent/keep-alive, `--timeout 1`에서 `sleep`/SIGTERM 무시 CGI 504, CGI 타임아웃 후 서버 생존, SIGINT 종료 PASS. 큐 full 503/max-conns 503은 S2c.
 >
 > 구현 상태 (S2c-1): `tests/integration_s2.sh` — `--max-conns 2`에서 3번째 연결 503 + `Retry-After: 1`, 연결 회수 후 200, `--task-workers 1 --task-queue 1`에서 3번째 CGI 503 + `Retry-After: 1`, 이후 서버 생존 PASS.
+>
+> 구현 상태 (S2c-2): `tests/test_logger.c` — 기본 라인/access log 포맷, 큐 full drop 카운터 PASS. `tests/integration_s1.sh` — 20 concurrent/10 concurrent CGI access log, 404/500 로그 PASS.
 
 ## 3. 연결 상한/백프레셔
 
@@ -113,6 +115,8 @@
 | LOG-01 | NFR-09 | 통합 | 동시 요청 100개 | 로그 줄이 섞이지 않음 |
 | LOG-02 | NFR-09 | 스트레스 | 로그 큐 초과 | drop 카운터, 크래시 없음 |
 | LOG-03 | FR-30 | 통합 | 종료 | flush 후 종료 |
+
+> 구현 상태 (S2c-2): LOG-01은 20 concurrent/10 concurrent CGI로 확인. LOG-02는 `test_logger_drop`으로 큐 full/drop 확인. LOG-03은 `logger_stop` join/flush로 확인.
 
 ## 8. 품질/회귀
 

@@ -64,6 +64,33 @@ static cgi_result_t *result_fail(cgi_result_t *res, FILE *tmp) {
     return res;
 }
 
+static void parse_response_meta(cgi_result_t *res) {
+    if (res->response == NULL || res->response_len == 0)
+        return;
+
+    if (strncmp(res->response, "HTTP/1.", 7) == 0) {
+        const char *sp = memchr(res->response, ' ', res->response_len);
+        if (sp != NULL) {
+            int code = atoi(sp + 1);
+            if (code >= 100 && code <= 599)
+                res->status = code;
+        }
+    }
+
+    const char *hdr_end = strstr(res->response, "\r\n\r\n");
+    size_t hdr_len = 0;
+    if (hdr_end != NULL) {
+        hdr_len = (size_t)(hdr_end - res->response) + 4;
+    } else {
+        const char *lf_end = strstr(res->response, "\n\n");
+        if (lf_end != NULL)
+            hdr_len = (size_t)(lf_end - res->response) + 2;
+    }
+
+    if (hdr_len <= res->response_len)
+        res->body_bytes = res->response_len - hdr_len;
+}
+
 cgi_result_t *cgi_job_execute(const cgi_job_t *job) {
     if (job == NULL || job->cfg == NULL)
         return NULL;
@@ -113,14 +140,16 @@ cgi_result_t *cgi_job_execute(const cgi_job_t *job) {
     if (size <= 0 || fseek(tmp, 0, SEEK_SET) != 0)
         return result_fail(res, tmp);
 
-    res->response = malloc((size_t)size);
+    res->response = malloc((size_t)size + 1);
     if (res->response == NULL)
         return result_fail(res, tmp);
 
     if (fread(res->response, 1, (size_t)size, tmp) != (size_t)size)
         return result_fail(res, tmp);
 
+    res->response[size] = '\0';
     res->response_len = (size_t)size;
+    parse_response_meta(res);
     res->close_connection = (rc == HANDLER_CLOSE) ? 1 : 0;
     fclose(tmp);
     return res;

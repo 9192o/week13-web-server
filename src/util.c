@@ -1,5 +1,6 @@
 #include "util.h"
 #include "access_log.h"
+#include "logger.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -163,9 +164,13 @@ ssize_t writen(int fd, const void *buf, size_t n) {
 void log_error(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    if (logger_running()) {
+        logger_vlog(fmt, ap);
+    } else {
+        vfprintf(stderr, fmt, ap);
+        fputc('\n', stderr);
+    }
     va_end(ap);
-    fputc('\n', stderr);
 }
 
 const char *mime_type(const char *path) {

@@ -1,4 +1,5 @@
 #include "access_log.h"
+#include "logger.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,16 @@ void access_log_init(access_log_t *log, const char *ip) {
     copy_sanitized(log->ip, sizeof log->ip, ip != NULL ? ip : "-");
 }
 
+void access_log_restart(access_log_t *log) {
+    if (log == NULL)
+        return;
+
+    char ip[ACCESS_LOG_IP_MAX];
+    memcpy(ip, log->ip, sizeof ip);
+    ip[sizeof ip - 1] = '\0';
+    access_log_init(log, ip);
+}
+
 void access_log_set_request(access_log_t *log, const char *method,
                             const char *path) {
     if (log == NULL || !log->active)
@@ -58,12 +69,15 @@ void access_log_end(access_log_t *log) {
     if (log == NULL || !log->active)
         return;
 
-    fprintf(stderr, "%s \"%s %s\" %d %zu\n",
-            log->ip,
-            log->method[0] != '\0' ? log->method : "-",
-            log->path[0] != '\0' ? log->path : "-",
-            log->status,
-            log->bytes);
+    const char *method = log->method[0] != '\0' ? log->method : "-";
+    const char *path = log->path[0] != '\0' ? log->path : "-";
+
+    if (logger_running()) {
+        logger_access(log->ip, method, path, log->status, log->bytes);
+    } else {
+        fprintf(stderr, "%s \"%s %s\" %d %zu\n",
+                log->ip, method, path, log->status, log->bytes);
+    }
     log->active = 0;
 }
 

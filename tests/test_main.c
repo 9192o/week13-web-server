@@ -61,6 +61,10 @@ void test_task_pool_timeout(void);
 void test_task_pool_empty(void);
 void test_task_pool_invalid(void);
 
+void test_logger_basic(void);
+void test_logger_not_running(void);
+void test_logger_drop(void);
+
 int g_tests_run = 0;
 int g_tests_failed = 0;
 
@@ -125,6 +129,9 @@ int main(void) {
     RUN_TEST(test_task_pool_timeout);
     RUN_TEST(test_task_pool_empty);
     RUN_TEST(test_task_pool_invalid);
+    RUN_TEST(test_logger_basic);
+    RUN_TEST(test_logger_not_running);
+    RUN_TEST(test_logger_drop);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

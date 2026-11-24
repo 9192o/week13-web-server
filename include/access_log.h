@@ -17,6 +17,7 @@ typedef struct {
 } access_log_t;
 
 void access_log_init(access_log_t *log, const char *ip);
+void access_log_restart(access_log_t *log);
 void access_log_set_request(access_log_t *log, const char *method,
                             const char *path);
 void access_log_set_status(access_log_t *log, int status);

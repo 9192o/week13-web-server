@@ -9,21 +9,21 @@ LDFLAGS  += -pthread
 
 EVENT_SRCS := src/event_backend.c src/event_poll.c src/event_epoll.c src/event_kqueue.c
 
-SERVER_SRCS := src/main.c src/config.c src/server.c src/util.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c $(EVENT_SRCS)
+SERVER_SRCS := src/main.c src/config.c src/server.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c $(EVENT_SRCS)
 SERVER_OBJS := $(SERVER_SRCS:.c=.o)
 SERVER_BIN  := server
 
-EV_SERVER_SRCS := src/main_ev.c src/config.c src/server_ev.c src/util.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c src/cgi_task.c src/task_pool.c $(EVENT_SRCS)
+EV_SERVER_SRCS := src/main_ev.c src/config.c src/server_ev.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c src/cgi_task.c src/task_pool.c $(EVENT_SRCS)
 EV_SERVER_OBJS := $(EV_SERVER_SRCS:.c=.o)
 EV_SERVER_BIN  := server_ev
 
 CGI_BINS := cgi-bin/echo cgi-bin/sleep cgi-bin/crash cgi-bin/term cgi-bin/partial cgi-bin/created cgi-bin/dupct cgi-bin/status204 cgi-bin/badstatus cgi-bin/nocontent cgi-bin/notmodified cgi-bin/reset
 
-TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c tests/test_event_backend.c tests/test_task_pool.c
+TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c tests/test_event_backend.c tests/test_task_pool.c tests/test_logger.c
 TEST_OBJS := $(TEST_SRCS:.c=.o)
 TEST_BIN  := run_tests
 
-TEST_SUPPORT_SRCS := src/http_request.c src/http_response.c src/config.c src/util.c src/access_log.c src/static_file.c src/task_pool.c $(EVENT_SRCS)
+TEST_SUPPORT_SRCS := src/http_request.c src/http_response.c src/config.c src/util.c src/logger.c src/access_log.c src/static_file.c src/task_pool.c $(EVENT_SRCS)
 TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:.c=.o)
 
 DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)

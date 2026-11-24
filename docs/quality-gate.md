@@ -144,6 +144,13 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 - **검증**: `tests/integration_s2.sh` PASS. `make sanitize`에 포함.
 - **다음(S2c-2)**: 로거 스레드/access log, `posix_spawn`, drain/watchdog, `server_ev` → `server` 통합.
 
+### Phase 2 S2c-2 (2026-11-24)
+
+- **logger**: `src/logger.c` — 단일 스레드, bounded 큐 1024, drop 카운터, shutdown join/flush. `log_error`도 로거가 켜져 있으면 큐로.
+- **access log**: `server_ev` 연결별 `access_log_t`. 정적/CGI/404/500/동시 요청 로그 PASS. 형식은 `ip "METHOD path" status body_bytes`.
+- **검증**: `tests/test_logger.c` 기본/drop PASS, 전체 **283 assertions**. `make integration-s1` access log PASS, `make sanitize` PASS.
+- **다음(S2c-3)**: `posix_spawn`, 단계별 drain/watchdog, `server_ev` → `server` 통합.
+
 ## 남은 품질 항목
 
 - README 작성 (사용자가 나중에 한 번에 작성)

@@ -275,11 +275,11 @@ typedef struct {
 
 ## 12. 로깅
 
-- 단일 로거 스레드 + bounded 큐(1024).
-- 이벤트 루프/작업 워커는 포맷 후 큐에 넣기만.
-- full이면 drop + 카운터.
-- 종료 시 sentinel + join + flush.
-- 접근 로그는 옵션/샘플링.
+- 단일 로거 스레드 + bounded 큐(1024). S2c-2에서 `src/logger.c`로 구현.
+- 이벤트 루프/작업 워커는 포맷 후 큐에 넣기만. `log_error`도 로거가 켜져 있으면 큐로 들어간다.
+- full이면 drop + 카운터. 종료 시 `logger: dropped N lines`를 남기고 flush/join.
+- 접근 로그: `ip "METHOD path" status body_bytes`. `server_ev`는 연결별 `access_log_t`를 두고 요청 시작/응답 완료 시 기록한다. 샘플링 옵션은 아직 없다.
+- 로거가 꺼져 있으면(Phase 1 `server`) 기존처럼 `stderr`에 직접 쓴다.
 
 ## 13. 설정/CLI
 
@@ -306,15 +306,19 @@ typedef struct {
 >
 > 구현 상태 (S2c-1): `--task-workers`, `--task-queue`, `--max-conns` config/CLI 추가. max-conns 초과 503 + `Retry-After: 1`, queue-full 503. `tests/integration_s2.sh` PASS.
 >
+> 구현 상태 (S2c-2): `src/logger.c` + `include/logger.h` + `tests/test_logger.c`. 단일 로거 스레드/bounded 큐/drop 카운터, `server_ev` access log(정적/CGI/404/500/동시 요청) PASS. `posix_spawn`/drain/watchdog/`server` 통합은 S2c-3.
+>
 > `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
 
 | 파일 | 변경 |
 |---|---|
-| `src/server.c` | Phase 1 서버 (S2c에서 `server_ev`로 교체/통합) |
-| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | S1 이벤트 루프 + S2b CGI 작업 제출/완료 + S2c-1 백프레셔 |
+| `src/server.c` | Phase 1 서버 (S2c-3에서 `server_ev`로 교체/통합) |
+| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | S1 이벤트 루프 + S2b CGI + S2c-1 백프레셔 + S2c-2 access log |
 | `src/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
-| `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 테스트 |
+| `src/logger.c`, `include/logger.h` | S2c-2 로거 스레드/큐/access log |
+| `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 + S2c-2 access log 테스트 |
 | `tests/integration_s2.sh` | S2c-1 max-conns/queue-full 503 테스트 |
+| `tests/test_logger.c` | S2c-2 로거 단위 테스트 |
 | `include/event_backend.h` | `ev_add`/`ev_mod`/`ev_del`/`ev_wait` 인터페이스 |
 | `src/event_backend.c` | 백엔드 선택/auto fallback, 공통 API |
 | `src/event_internal.h` | 백엔드 ops/state 내부 인터페이스 |

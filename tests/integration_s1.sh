@@ -85,6 +85,21 @@ check_status_slow() {
     fi
 }
 
+wait_log_count() {
+    pattern="$1"
+    want="$2"
+    i=0
+    count=0
+    while [ "$i" -lt 30 ]; do
+        count=$(grep -c "$pattern" "$LOG" 2>/dev/null || true)
+        [ "$count" -ge "$want" ] && break
+        i=$((i + 1))
+        sleep 0.1
+    done
+    echo "$count"
+    [ "$count" -ge "$want" ]
+}
+
 check_body() {
     desc="$1"
     url="$2"
@@ -200,6 +215,7 @@ else
 fi
 
 # 20 concurrent requests: all must be 200 and bodies must not cross.
+log_before=$(grep -c '^127.0.0.1 "GET /index.html" 200 ' "$LOG" 2>/dev/null || true)
 pids=""
 for i in $(seq 1 20); do
     curl -sS --max-time 5 -o "$TESTROOT/out.$i" -w '%{http_code}' \
@@ -218,6 +234,15 @@ if [ "$bad" = "0" ]; then
     echo "PASS: 20 concurrent requests"
 else
     echo "FAIL: concurrent requests ($bad problems)"
+    fail=1
+fi
+
+want=$((log_before + 20))
+log_count=$(wait_log_count '^127.0.0.1 "GET /index.html" 200 ' "$want") || true
+if [ "$log_count" -ge "$want" ]; then
+    echo "PASS: access log 20 concurrent requests"
+else
+    echo "FAIL: access log concurrent ($log_count < $want)"
     fail=1
 fi
 
@@ -255,7 +280,24 @@ esac
 
 check_status "CGI crash" "$BASE/cgi-bin/crash" "500"
 
+notfound_log=$(wait_log_count '^127.0.0.1 "GET /missing" 404 ' 1) || true
+if [ "$notfound_log" -ge 1 ]; then
+    echo "PASS: access log 404"
+else
+    echo "FAIL: access log 404 missing"
+    fail=1
+fi
+
+crash_log=$(wait_log_count '^127.0.0.1 "GET /cgi-bin/crash" 500 ' 1) || true
+if [ "$crash_log" -ge 1 ]; then
+    echo "PASS: access log CGI 500"
+else
+    echo "FAIL: access log CGI 500 missing"
+    fail=1
+fi
+
 # Concurrent CGI: task pool workers must keep each query separate.
+cgi_log_before=$(grep -c '^127.0.0.1 "GET /cgi-bin/echo" 200 ' "$LOG" 2>/dev/null || true)
 cgipids=""
 for i in $(seq 1 10); do
     curl -sS --max-time 5 -o "$TESTROOT/cgi.$i" \
@@ -273,6 +315,15 @@ if [ "$cgibad" = "0" ]; then
     echo "PASS: 10 concurrent CGI"
 else
     echo "FAIL: concurrent CGI ($cgibad mismatches)"
+    fail=1
+fi
+
+cgi_want=$((cgi_log_before + 10))
+cgi_log_count=$(wait_log_count '^127.0.0.1 "GET /cgi-bin/echo" 200 ' "$cgi_want") || true
+if [ "$cgi_log_count" -ge "$cgi_want" ]; then
+    echo "PASS: access log 10 concurrent CGI"
+else
+    echo "FAIL: access log concurrent CGI ($cgi_log_count < $cgi_want)"
     fail=1
 fi
 

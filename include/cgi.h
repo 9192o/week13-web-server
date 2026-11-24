@@ -26,6 +26,8 @@ typedef struct {
 typedef struct {
     char *response;
     size_t response_len;
+    int status;
+    size_t body_bytes;
     int close_connection;
     int error;
 } cgi_result_t;

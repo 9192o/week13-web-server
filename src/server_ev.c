@@ -1,8 +1,10 @@
 #include "server_ev.h"
 
+#include "access_log.h"
 #include "cgi.h"
 #include "event_backend.h"
 #include "http.h"
+#include "logger.h"
 #include "static_file.h"
 #include "task_pool.h"
 #include "util.h"
@@ -204,6 +206,9 @@ typedef struct conn {
     size_t body_received;
     uint64_t deadline_ms;
 
+    access_log_t log;
+    int log_has_request;
+
     struct conn *next;
 } conn_t;
 
@@ -220,7 +225,31 @@ static conn_t *conn_new(int fd, const struct sockaddr_in *peer,
     c->deadline_ms = now_ms() +
         (uint64_t)cfg->request_timeout_sec * 1000;
     http_request_init(&c->req);
+
+    char ip[INET_ADDRSTRLEN];
+    if (inet_ntop(AF_INET, &peer->sin_addr, ip, sizeof ip) == NULL)
+        snprintf(ip, sizeof ip, "?");
+    access_log_init(&c->log, ip);
     return c;
+}
+
+static void conn_log_begin(conn_t *c, const char *method, const char *path) {
+    access_log_restart(&c->log);
+    access_log_set_request(&c->log, method, path);
+    c->log_has_request = 1;
+}
+
+static void conn_log_response(conn_t *c, int status, size_t body_bytes) {
+    access_log_set_status(&c->log, status);
+    access_log_add_bytes(&c->log, body_bytes);
+}
+
+static void conn_log_end(conn_t *c) {
+    if (!c->log_has_request)
+        return;
+    if (access_log_get_status(&c->log) != 0)
+        access_log_end(&c->log);
+    c->log_has_request = 0;
 }
 
 static void conn_free(conn_t *c) {
@@ -235,6 +264,7 @@ static void conn_free(conn_t *c) {
 static void conn_close(ev_loop_t *loop, conn_t *c) {
     if (c->closed)
         return;
+    conn_log_end(c);
     c->closed = 1;
     if (c->fd >= 0) {
         (void)ev_del(loop, c->fd);
@@ -309,6 +339,7 @@ static int conn_build_error(conn_t *c, int status, int close_connection,
     c->close_after = close_connection;
     c->state = ST_WRITE;
     c->deadline_ms = now_ms() + (uint64_t)timeout_sec * 1000;
+    conn_log_response(c, status, head ? 0 : body_len);
     return 0;
 }
 
@@ -345,6 +376,7 @@ static int conn_build_options(conn_t *c, int close_connection,
     c->close_after = close_connection;
     c->state = ST_WRITE;
     c->deadline_ms = now_ms() + (uint64_t)timeout_sec * 1000;
+    conn_log_response(c, 200, 0);
     return 0;
 }
 
@@ -397,6 +429,8 @@ static int conn_build_static(conn_t *c, static_result_t *r,
             c->file_remaining = r->content_length;
         }
     }
+    conn_log_response(c, r->res.status,
+                      r->head_only ? 0 : r->body_len + r->content_length);
     return 0;
 }
 
@@ -499,6 +533,7 @@ static void drain_task_completions(ev_loop_t *loop, task_pool_t *pool,
                 c->state = ST_WRITE;
                 c->deadline_ms = now_ms() +
                     (uint64_t)cfg->request_timeout_sec * 1000;
+                conn_log_response(c, res->status, res->body_bytes);
                 if (ev_add(loop, c->fd, EV_WRITE, c) < 0)
                     conn_close(loop, c);
             }
@@ -529,6 +564,9 @@ static int process_buffer(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
                request_is_head(c->in, c->in_len);
 
     if (st != HTTP_OK) {
+        conn_log_begin(c,
+                       c->req.method_str[0] != '\0' ? c->req.method_str : "-",
+                       c->req.path[0] != '\0' ? c->req.path : "-");
         if (conn_build_error(c, st, 1, head, 0,
                              cfg->request_timeout_sec) < 0) {
             http_request_free(&c->req);
@@ -539,6 +577,7 @@ static int process_buffer(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
         return 1;
     }
 
+    conn_log_begin(c, c->req.method_str, c->req.path);
 
     int keep = c->req.keep_alive &&
                (c->requests + 1 < cfg->keepalive_max_requests) &&
@@ -707,6 +746,7 @@ static int on_readable(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
                 request_line_uri_too_long(c->in, c->in_len, cfg->max_uri))
                 status = HTTP_URI_TOO_LONG;
 
+            conn_log_begin(c, "-", "-");
             if (conn_build_error(c, status, 1,
                                  request_is_head(c->in, c->in_len), 0,
                                  cfg->request_timeout_sec) < 0)
@@ -818,6 +858,8 @@ static int on_writable(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
     c->file_buf_len = 0;
     c->file_buf_sent = 0;
 
+    conn_log_end(c);
+
     if (c->close_after)
         return -1;
 
@@ -840,13 +882,18 @@ static int on_writable(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
     return 0;
 }
 
-static void reject_overloaded(int fd) {
+static void reject_overloaded(int fd, const struct sockaddr_in *peer) {
     static const char response[] =
         "HTTP/1.1 503 Service Unavailable\r\n"
         "Retry-After: 1\r\n"
         "Content-Length: 0\r\n"
         "Connection: close\r\n"
         "\r\n";
+
+    char ip[INET_ADDRSTRLEN];
+    if (inet_ntop(AF_INET, &peer->sin_addr, ip, sizeof ip) == NULL)
+        snprintf(ip, sizeof ip, "?");
+    logger_access(ip, "-", "-", 503, 0);
 
     if (set_nonblocking(fd) < 0) {
         close(fd);
@@ -877,7 +924,7 @@ static void accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
         }
 
         if (*count >= cfg->max_conns) {
-            reject_overloaded(fd);
+            reject_overloaded(fd, &peer);
             continue;
         }
         if (set_nonblocking(fd) < 0 || set_cloexec(fd) < 0) {
@@ -934,6 +981,8 @@ static void expire_timers(ev_loop_t *loop, conn_t *head,
         }
 
         if (c->state == ST_READ || c->state == ST_READ_BODY) {
+            if (!c->log_has_request)
+                conn_log_begin(c, "-", "-");
             if (conn_build_error(c, HTTP_REQUEST_TIMEOUT, 1,
                                  request_is_head(c->in, c->in_len), 0,
                                  cfg->request_timeout_sec) < 0) {
@@ -1002,6 +1051,16 @@ int server_ev_run(const config_t *cfg) {
         task_pool_destroy(pool);
         close(listenfd);
         ev_destroy(loop);
+        return -1;
+    }
+
+    if (logger_start(STDERR_FILENO, LOGGER_DEFAULT_QUEUE) < 0) {
+        task_pool_destroy(pool);
+        close(listenfd);
+        ev_destroy(loop);
+        close(g_signal_pipe[0]);
+        close(g_signal_pipe[1]);
+        g_signal_pipe[0] = g_signal_pipe[1] = -1;
         return -1;
     }
 
@@ -1099,5 +1158,6 @@ int server_ev_run(const config_t *cfg) {
     g_signal_pipe[0] = g_signal_pipe[1] = -1;
     ev_destroy(loop);
     log_error("server_ev stopped");
+    logger_stop();
     return 0;
 }
