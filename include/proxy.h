@@ -116,10 +116,11 @@ int proxy_format_response_head(const struct proxy_response *r, int keep_alive,
                                char *out, size_t cap);
 
 /*
- * 백엔드에 연결한다 (blocking connect, 시간 제한 없음 — P4 에서 추가).
- * 소켓은 close-on-exec (CGI 자식이 물려받지 않게).
- * 반환: 연결된 fd, 실패면 -1 (errno 유지).
+ * 백엔드에 연결한다. timeout_ms 안에 연결되지 않으면 실패 (errno = ETIMEDOUT).
+ * 응답 없는 IP 로의 connect 가 커널 기본값(1~2분)까지 막히지 않게 한다.
+ * 소켓은 close-on-exec (CGI 자식이 물려받지 않게). 돌려줄 때는 blocking 모드.
+ * 반환: 연결된 fd, 실패면 -1 (errno 유지: ECONNREFUSED, ETIMEDOUT 등).
  */
-int proxy_connect(const struct proxy_backend *b);
+int proxy_connect(const struct proxy_backend *b, int timeout_ms);
 
 #endif

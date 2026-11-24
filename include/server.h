@@ -48,6 +48,19 @@
 #define KEEPALIVE_TIMEOUT_MS 5000
 #endif
 
+/*
+ * 리버스 프록시 백엔드 시간 제한 (P4).
+ * CONNECT: 백엔드 connect 한 번 (넘으면 다음 백엔드, 마지막이면 504).
+ * TIMEOUT: 응답 헤더 전체를 받는 시간 (넘으면 504), 그리고 본문 조각 사이 무응답 시간
+ *          (넘으면 이미 헤더를 보냈으므로 클라이언트 연결을 끊음).
+ */
+#ifndef PROXY_CONNECT_TIMEOUT_MS
+#define PROXY_CONNECT_TIMEOUT_MS 5000
+#endif
+#ifndef PROXY_TIMEOUT_MS
+#define PROXY_TIMEOUT_MS 5000
+#endif
+
 /* 한 연결에서 처리할 최대 요청 수 (마지막 응답은 Connection: close) */
 #define KEEPALIVE_MAX_REQUESTS 100
 

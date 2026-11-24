@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -376,9 +377,19 @@ int proxy_format_response_head(const struct proxy_response *r, int keep_alive,
     return (int)off;
 }
 
-int proxy_connect(const struct proxy_backend *b)
+/* fd 를 닫고 errno 를 e 로 둔 채 -1 */
+static int fail_close(int fd, int e)
 {
-    int fd, e;
+    close(fd);
+    errno = e;
+    return -1;
+}
+
+int proxy_connect(const struct proxy_backend *b, int timeout_ms)
+{
+    struct pollfd p;
+    socklen_t elen = sizeof(int);
+    int fd, e, flags, r;
 
 #ifdef SOCK_CLOEXEC
     fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -388,19 +399,34 @@ int proxy_connect(const struct proxy_backend *b)
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;
-    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
-        e = errno;
-        close(fd);
-        errno = e;
-        return -1;
-    }
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0)
+        return fail_close(fd, errno);
 #endif
-    /* 워커는 신호를 막아 두므로 EINTR 은 오지 않는다 (오면 실패로 처리) */
+    /*
+     * 시간 제한이 있는 connect: non-blocking 으로 시작하고 POLLOUT 을 timeout_ms 까지 기다린 뒤
+     * SO_ERROR 로 결과를 본다. 끝나면 blocking 으로 되돌린다 (이후 읽기는 poll 로 시간을 잰다).
+     */
+    flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return fail_close(fd, errno);
     if (connect(fd, (const struct sockaddr *)&b->addr, sizeof b->addr) < 0) {
-        e = errno;
-        close(fd);
-        errno = e;
-        return -1;
+        if (errno != EINPROGRESS)
+            return fail_close(fd, errno);   /* 꺼진 로컬 포트: 바로 ECONNREFUSED */
+        p.fd = fd;
+        p.events = POLLOUT;
+        p.revents = 0;
+        /* 워커는 신호를 막아 두므로 EINTR 은 오지 않는다 (오면 실패로 처리) */
+        r = poll(&p, 1, timeout_ms);
+        if (r == 0)
+            return fail_close(fd, ETIMEDOUT);
+        if (r < 0)
+            return fail_close(fd, errno);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &elen) < 0)
+            return fail_close(fd, errno);
+        if (e != 0)
+            return fail_close(fd, e);
     }
+    if (fcntl(fd, F_SETFL, flags) < 0)
+        return fail_close(fd, errno);
     return fd;
 }

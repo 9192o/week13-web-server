@@ -4,15 +4,18 @@
 #
 #   사용법: tests/functional.sh <서버 바이너리> [--timing]
 #     --timing  시간 제한 시나리오(408, 무응답 close, CGI 시간 초과, 전송 시간 초과,
-#               처리 중 SIGINT)까지 실행
+#               처리 중 SIGINT, 프록시 504)까지 실행
 #     PORT      환경 변수로 포트 변경 (기본 18099)
-#     HEADER_MS BODY_MS CGI_MS SEND_MS KEEPALIVE_MS SHUTDOWN_MS
-#               서버가 빌드된 시간 제한 값(ms). 기본은 실제 값 5000/10000/5000/30000/5000/10000.
+#     HEADER_MS BODY_MS CGI_MS SEND_MS KEEPALIVE_MS SHUTDOWN_MS PROXY_MS
+#               서버가 빌드된 시간 제한 값(ms).
+#               기본은 실제 값 5000/10000/5000/30000/5000/10000/5000.
 #               make ftest 는 짧은 값으로 빌드한 서버와 함께 그 값을 넘긴다.
+#               (PROXY_MS 는 PROXY_CONNECT_TIMEOUT_MS 와 PROXY_TIMEOUT_MS 둘 다)
 #
 # 실패가 있거나, SIGTERM 종료 코드가 0 이 아니거나, 서버 로그에 sanitizer 보고가
 # 있거나, 서버 fd 수가 시작 때와 다르거나, CGI 가 0/1/2 외의 fd 를 물려받았으면 exit 1.
-# 필요 도구: bash(/dev/tcp), curl, coreutils(head, cmp, timeout, ls), /proc.
+# 필요 도구: bash(/dev/tcp), curl, coreutils(head, cmp, timeout, ls), /proc,
+#            nc(OpenBSD netcat, --timing 의 프록시 504 시나리오).
 
 set -u
 
@@ -29,6 +32,7 @@ CGI_MS=${CGI_MS:-5000}
 SEND_MS=${SEND_MS:-30000}
 KEEPALIVE_MS=${KEEPALIVE_MS:-5000}
 SHUTDOWN_MS=${SHUTDOWN_MS:-10000}
+PROXY_MS=${PROXY_MS:-5000}
 PORT=${PORT:-18099}
 URL=http://127.0.0.1:$PORT
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -657,6 +661,9 @@ PD=$((PORT + 12))      # 아무도 listen 하지 않는 포트 (connect 거절)
 PX=$((PORT + 13))      # 자기 자신 규칙 거부 확인용 (실제로 listen 하지 않음)
 PB2=$((PORT + 14))     # 백엔드 B (라운드로빈)
 PD2=$((PORT + 15))     # 또 하나의 꺼진 포트 (모든 백엔드 실패)
+PN=$((PORT + 16))      # P4: nc -l (받기만 하고 응답 없음)
+PS=$((PORT + 17))      # P4: nc -l (헤더와 본문 일부만 보내고 멈춤)
+BH=192.0.2.1:80        # P4: 응답 없는 IP (TEST-NET-1, 보통 패킷이 버려져 connect 가 멈춤)
 B=$WORK/backend
 B2=$WORK/backend2
 mkdir -p "$B/api" "$B/rr" "$B2/rr" "$B/half"
@@ -677,7 +684,9 @@ SB2=$XPID
 start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD" \
             -R "/rr/=127.0.0.1:$PB,127.0.0.1:$PB2" \
             -R "/half/=127.0.0.1:$PD,127.0.0.1:$PB" \
-            -R "/alldown/=127.0.0.1:$PD,127.0.0.1:$PD2"
+            -R "/alldown/=127.0.0.1:$PD,127.0.0.1:$PD2" \
+            -R "/hang/=127.0.0.1:$PN" -R "/stall/=127.0.0.1:$PS" \
+            -R "/blackhole/=$BH" -R "/bhretry/=$BH,127.0.0.1:$PB"
 SP=$XPID
 PURL=http://127.0.0.1:$PP
 
@@ -790,6 +799,68 @@ if wait_log "$LOGP" "(proxy all 2 backends failed)"; then
     ok "P3 502 로그 (proxy all 2 backends failed)"
 else
     fail "P3 502 로그 (proxy all 2 backends failed)" "프록시 로그에 없음"
+fi
+
+# P4: 백엔드가 늦음 → 504 (--timing: 프록시 시간 제한 PROXY_MS 만큼 기다림)
+if [ "$TIMING" = 1 ]; then
+    HOLD=$(( PROXY_MS / 1000 + 3 ))        # nc 가 프록시 시간 제한보다 오래 버티게
+    mkdir -p "$B/bhretry"
+    echo "backend $PB" > "$B/bhretry/hello.txt"
+
+    # 연결만 받고 아무것도 보내지 않는 백엔드
+    sleep "$HOLD" | nc -l 127.0.0.1 "$PN" > /dev/null &
+    NC1=$!
+    # 헤더와 본문 3바이트(Content-Length 10)만 보내고 멈추는 백엔드
+    { printf 'HTTP/1.0 200 OK\r\nContent-Length: 10\r\n\r\nabc'; sleep "$HOLD"; } |
+        nc -l 127.0.0.1 "$PS" > /dev/null &
+    NC2=$!
+    sleep 0.3                                # nc 가 listen 할 시간
+
+    T0=$(now_ms)
+    S=$(code "$PURL/hang/x")
+    EL=$(( $(now_ms) - T0 ))
+    expect "P4 연결 후 무응답 → 504"                 504 "$S"
+    expect_ms "P4 504 까지 약 ${PROXY_MS}ms"         "$PROXY_MS" "$EL"
+    if wait_log "$LOGP" "(proxy 127.0.0.1:$PN, backend timeout)"; then
+        ok "P4 504 로그 (backend timeout)"
+    else
+        fail "P4 504 로그 (backend timeout)" "프록시 로그에 없음"
+    fi
+
+    T0=$(now_ms)
+    curl -s -o "$WORK/stall.out" "$PURL/stall/x"
+    RC=$?
+    EL=$(( $(now_ms) - T0 ))
+    expect "P4 본문 도중 멈춤 → curl exit 18 (덜 받음)" 18 "$RC"
+    expect "P4 본문 도중 멈춤 → 받은 것은 3바이트"     3 "$(wc -c < "$WORK/stall.out" | tr -d ' ')"
+    expect_ms "P4 본문 멈춤 감지까지 약 ${PROXY_MS}ms" "$PROXY_MS" "$EL"
+    if wait_log "$LOGP" "200 3 (proxy 127.0.0.1:$PS, backend timeout)"; then
+        ok "P4 본문 멈춤 로그 (200 3, backend timeout)"
+    else
+        fail "P4 본문 멈춤 로그 (200 3, backend timeout)" "프록시 로그에 없음"
+    fi
+    kill "$NC1" "$NC2" 2>/dev/null
+    wait "$NC1" "$NC2" 2>/dev/null
+
+    # 응답 없는 IP: connect 가 멈추는 환경에서만 (어떤 네트워크는 바로 거절함)
+    timeout 1 bash -c "exec 3<>/dev/tcp/${BH%:*}/${BH#*:}" 2>/dev/null
+    if [ $? -eq 124 ]; then                  # 1초 안에 성공도 실패도 안 함 = 멈춤
+        T0=$(now_ms)
+        S=$(code "$PURL/blackhole/x")
+        EL=$(( $(now_ms) - T0 ))
+        expect "P4 응답 없는 IP 로 connect → 504"     504 "$S"
+        expect_ms "P4 connect 시간 제한 약 ${PROXY_MS}ms" "$PROXY_MS" "$EL"
+        if wait_log "$LOGP" "(proxy $BH, connect: Connection timed out)"; then
+            ok "P4 connect 시간 초과 로그"
+        else
+            fail "P4 connect 시간 초과 로그" "프록시 로그에 없음"
+        fi
+        # 응답 없는 IP 다음 백엔드로 재시도 → A 가 200 (connect 시간만큼 늦음)
+        expect "P4 connect 시간 초과 뒤 다음 백엔드로 재시도 → 200" \
+               "backend $PB:200" "$(curl -s -w ':%{http_code}' "$PURL/bhretry/hello.txt" | tr -d '\n')"
+    else
+        echo "skip P4 응답 없는 IP ($BH 로의 connect 가 이 환경에서는 바로 실패함)"
+    fi
 fi
 
 # 자기 자신을 가리키는 규칙은 시작할 때 거부

@@ -570,12 +570,6 @@ static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
     return 0;
 }
 
-/*
- * 백엔드 응답 헤더를 기다리는 시간. P1 은 사실상 제한 없음 (P4 에서 504 로 바꿈).
- * 그동안은 백엔드가 응답하지 않으면 워커가 계속 묶이고, 강제 종료도 끝나지 않을 수 있다.
- */
-#define PROXY_HEAD_WAIT_MS INT_MAX
-
 /* 접근 로그 비고: "(proxy host:port)" 또는 "(proxy host:port, 이유)" */
 static void proxy_note(char *out, size_t cap, const struct proxy_backend *rt,
                        const char *why)
@@ -587,7 +581,9 @@ static void proxy_note(char *out, size_t cap, const struct proxy_backend *rt,
  * 리버스 프록시 요청 하나: 백엔드 고르기(라운드로빈) → 요청 재작성 → connect → 전송
  * → 응답 헤더 검사 → 본문 중계.
  * connect 실패는 목록의 다음 백엔드로 재시도 (백엔드마다 한 번, 접근 로그와 별도로 한 줄).
- * 클라이언트에 아무것도 보내기 전의 실패(모든 connect 실패, 깨진 응답 헤더 등)는 502.
+ * 클라이언트에 아무것도 보내기 전의 실패(모든 connect 실패, 깨진 응답 헤더 등)는 502,
+ * 백엔드가 늦은 경우(마지막 connect 시간 초과, 응답 헤더 시간 초과)는 504 (P4).
+ * 본문 중계 중 PROXY_TIMEOUT_MS 동안 아무것도 안 오면 이미 헤더를 보냈으므로 그냥 끊는다.
  * 응답 길이(Content-Length, 204/304)를 알면 그만큼만 중계하고 c->keep 에 따라 연결 유지,
  * 모르면 백엔드가 닫을 때까지 중계하고 Connection: close.
  * 헤더를 보낸 뒤 백엔드가 일찍 닫거나 클라이언트가 끊기면 로그만 남기고 닫는다.
@@ -618,8 +614,9 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
      * 목록의 다음 백엔드로 넘겨도 안전하다. 백엔드마다 한 번씩, 다 실패하면 502.
      * 요청을 보낸 뒤의 실패는 백엔드가 이미 처리했을 수 있으므로 재시도하지 않는다.
      */
-    for (tries = 1; (bfd = proxy_connect(rt)) < 0; tries++) {
+    for (tries = 1; (bfd = proxy_connect(rt, PROXY_CONNECT_TIMEOUT_MS)) < 0; tries++) {
         const struct proxy_backend *next;
+        int timed_out = errno == ETIMEDOUT;
 
         if (strerror_r(errno, eb, sizeof eb) != 0)
             snprintf(eb, sizeof eb, "errno %d", errno);
@@ -630,7 +627,8 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
             } else {
                 snprintf(note, sizeof note, "(proxy all %d backends failed)", tries);
             }
-            return finish_error(c, 502, NULL, note);
+            /* 상태는 마지막 시도 기준: 늦어서 실패면 504, 거절 등이면 502 */
+            return finish_error(c, timed_out ? 504 : 502, NULL, note);
         }
         next = proxy_next(route, rt);
         fprintf(stderr, "%s (proxy retry: %s connect: %s, trying %s)\n", c->peer,
@@ -645,7 +643,8 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
         return finish_error(c, 502, NULL, note);
     }
 
-    rr = read_request_head(bfd, rbuf, sizeof rbuf, 0, PROXY_HEAD_WAIT_MS, &rlen);
+    /* 응답 헤더 전체가 PROXY_TIMEOUT_MS 안에 와야 한다 (P4: nc -l 처럼 받기만 하는 백엔드) */
+    rr = read_request_head(bfd, rbuf, sizeof rbuf, 0, PROXY_TIMEOUT_MS, &rlen);
     if (rr != READ_HEAD_OK) {
         close(bfd);
         proxy_note(note, sizeof note, rt,
@@ -653,7 +652,7 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
                    rr == READ_HEAD_TOO_LARGE ? "backend header too large" :
                    rr == READ_HEAD_TIMEOUT   ? "backend timeout" :
                                                "backend read error");
-        return finish_error(c, 502, NULL, note);
+        return finish_error(c, rr == READ_HEAD_TIMEOUT ? 504 : 502, NULL, note);
     }
     bad = proxy_parse_response(rbuf, rlen, &resp);
     if (bad != NULL) {
@@ -692,6 +691,16 @@ static int serve_proxy(struct req_ctx *c, const struct http_request *req,
         }
         if (remain == 0)
             break;
+        /* 본문 조각 사이 무응답 제한 (전체가 아니라 조각마다: 큰 응답도 계속 오면 OK) */
+        r = wait_readable(bfd, now_ms() + PROXY_TIMEOUT_MS);
+        if (r == 0) {
+            fail = "backend timeout";
+            break;
+        }
+        if (r < 0) {
+            fail = "backend read error";
+            break;
+        }
         r = read(bfd, rbuf, sizeof rbuf);
         if (r < 0 && errno == EINTR) {
             chunk = 0;
