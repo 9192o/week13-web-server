@@ -5,3 +5,6 @@
 /server-asan
 /server-asan-fast
 /www/cgi-bin/adder
+
+# 부하 테스트 wrk 원본 출력 (요약은 summary.csv / runs.csv 로 커밋)
+/bench/results/*/raw/

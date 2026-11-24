@@ -1,0 +1,24 @@
+== logcost-phase2-w8-q64-c100-kaon-file-r1
+-- 상태 코드별 요청 로그 줄 수
+ 648775 200
+  61942 503
+-- keep-alive 닫힘 이유
+     21 eof
+   6485 max
+-- 로그 크기: 36024522 bytes, 717227 lines
+== logcost-phase2-w8-q64-c100-kaon-file-r2
+-- 상태 코드별 요청 로그 줄 수
+ 620894 200
+  59851 503
+-- keep-alive 닫힘 이유
+     20 eof
+   6206 max
+-- 로그 크기: 34499789 bytes, 686975 lines
+== logcost-phase2-w8-q64-c100-kaon-file-r3
+-- 상태 코드별 요청 로그 줄 수
+ 659254 200
+  62949 503
+-- keep-alive 닫힘 이유
+     20 eof
+   6589 max
+-- 로그 크기: 36606533 bytes, 728816 lines
