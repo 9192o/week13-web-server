@@ -40,7 +40,7 @@ Phase 2 테스트 계획: [phase2-test-plan.md](phase2-test-plan.md) — 동시�
 |---|---|---|---|
 | D1 | Phase 1 동적 처리 | 1 | **결정: CGI (C 프로그램)** |
 | D2 | Phase 2 동시성 모델 | 2 | **결정: 이벤트 루프 + 작업 스레드 풀** |
-| D3 | Phase 3 프록시 종류 | 3 | **미확정** (추천: Reverse) |
+| D3 | Phase 3 프록시 종류 | 3 | **결정: Reverse Proxy** |
 | D4 | Reverse 라우팅 | 3 | **미확정** (추천: 경로 기반) |
 | D5 | 프록시 정적 서빙 | 3 | **미확정** (추천: 직접 서빙) |
 | D6 | 설정 방식 | 1/3 | **결정: CLI (Phase 1) + Phase 3 설정 파일** |
