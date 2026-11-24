@@ -9,7 +9,7 @@
 - Reverse: 경로/호스트 라우팅, Round-Robin 로드 밸런싱, 백엔드 타임아웃.
 - Forward: 절대 URL 파싱, 외부 서버 연결, 응답 중계, 선택적 캐싱.
 - `Transfer-Encoding: chunked` 중계 (프록시에서 필수).
-- gzip은 **Phase 3에서 결정**한다.
+- gzip은 **그대로 중계**한다 (Phase 3 결정).
 - **설정 파일 (D6):** Phase 3에서 라우팅 규칙/백엔드/타임아웃을 설정 파일로 받는다. Phase 1 CLI를 유지하고, CLI override를 허용한다.
 - 제외: TLS 종료/발급, HTTP/2, HTTP/3, 전체 캐시 계층.
 
@@ -22,10 +22,11 @@
 | D5 | 프록시 정적 서빙 | **결정: 프록시 직접 서빙** | Phase 2 정적 파일 재사용, 정적/동적 라우팅을 모두 시연 |
 | D8 | 캐싱 | **결정: Phase 3 MVP는 캐싱 없음** | 정확성/무효화 복잡. 작은 LRU는 future |
 | D6 | 설정 파일 (Phase 3) | **결정: INI 유사 형식** | 파서가 단순하고 fail fast가 쉬움. JSON은 과함 |
-| D16 | 업스트림 연결 | **결정: keep-alive 풀** | 확장성/지연 개선. 기본 중계 완성 후 2차로 구현 |
+| D16 | 업스트림 연결 | **결정: keep-alive 풀 (Phase 3 필수)** | 확장성/지연 개선. 기본 중계와 함께 Phase 3 완료 조건에 포함 |
 | D17 | 헬스체크 | **결정: passive only** | dead backend 회피를 저비용으로. active `/health`는 future |
 | D18 | DNS | **결정: 시작 시 1회 resolve** | hostname 허용, 이벤트 루프 블로킹 방지. DNS 변경 시 재시작 |
-| gzip | Phase 3 처리 | **추천: 그대로 중계** (확정 대기) | zlib 없이 `Content-Encoding`/`Content-Length` 보존 |
+| gzip | Phase 3 처리 | **결정: 그대로 중계** | zlib 없이 `Content-Encoding`/`Content-Length` 보존 |
+| chunked | Phase 3 처리 | **결정: stream-through** | 원본 chunk를 중계, 큰 body 버퍼링 없음 |
 
 ### D3 선택지
 
@@ -84,27 +85,28 @@
 - **결정:** 캐싱은 구현하지 않고 문서에만 남긴다. future로 “GET + `Cache-Control: max-age`만 지원하는 작은 메모리 LRU”를 검토한다.
 - **이유:** cache key/`Vary`/freshness/conditional/무효화/보안(`Set-Cookie`, `Authorization`)까지 범위가 커진다. Phase 3의 핵심인 라우팅/중계/청크/타임아웃/백프레셔를 먼저 완성하는 편이 안전하다.
 
-### D16 — 업스트림 keep-alive 풀 (확정, 2차 구현)
+### D16 — 업스트림 keep-alive 풀 (확정, Phase 3 필수)
 
-- **결정:** 최종 Phase 3는 backend별 keep-alive 연결 풀을 사용한다. 다만 기본 중계(connect → send → read → close)가 먼저 동작한 뒤 2차로 붙인다.
+- **결정:** Phase 3 완료 조건에 backend별 keep-alive 연결 풀을 포함한다. “2차/future”로 미루지 않는다.
 - **keep-alive와 풀의 차이:**
   - keep-alive는 “응답 후 연결을 닫지 않는 HTTP 동작”이다.
   - 풀은 그렇게 남은 idle 연결을 backend별로 저장해 다음 요청에 재사용하는 **프록시 내부 자료구조**다.
   - keep-alive만 켜고 풀이 없으면, 응답 후 연결을 보관할 곳이 없어 결국 close한다.
-- **이유:** 연결 재사용은 latency/throughput/backend 연결 수에서 확장성 이점이 크다. 반면 idle timeout, stale 연결, `Connection: close`, health 연동, 풀 정리 상태가 필요하므로 기본 중계와 동시에 넣으면 디버깅이 어렵다.
+- **이유:** 연결 재사용은 latency/throughput/backend 연결 수에서 확장성 이점이 크다.
 - **관리 항목:** backend별 idle 목록, max idle, idle timeout, 사용 중 연결 제외, backend down 시 풀 close.
 - **정확성 규칙:** 응답 body를 끝까지 읽은 뒤에만 풀에 반납한다. `Connection: close` 응답, 파싱 실패, 에러 응답은 풀에 넣지 않는다. 한 연결에 동시에 두 요청을 보내지 않는다(HTTP pipelining 금지).
+- **구현 순서:** 기본 중계(connect → send → read → headers/body relay)를 먼저 동작시킨 뒤 같은 Phase 3 안에서 풀을 붙인다. 풀은 릴리스 범위에서 제외하지 않는다.
 
 ### D17 — passive 헬스체크 (확정)
 
 - **결정:** Phase 3 MVP는 passive만 한다. connect 실패/timeout 시 backend를 `down_until = now + cooldown`으로 표시하고 Round-Robin에서 건너뛴다.
 - **이유:** 추가 타이머/스레드 없이 dead backend를 회피할 수 있다. active `/health`는 backend endpoint 계약/주기/오탐/threshold가 필요하므로 future로 둔다.
 
-### gzip — 그대로 중계 (추천)
+### gzip — 그대로 중계 (확정)
 
-- **추천:** `Content-Encoding: gzip` 응답을 해제하지 않고 바이트 그대로 중계한다. `Content-Encoding`/`Content-Length`/`Vary: Accept-Encoding`을 보존한다.
+- **결정:** `Content-Encoding: gzip` 응답을 해제하지 않고 바이트 그대로 중계한다. `Content-Encoding`/`Content-Length`/`Vary: Accept-Encoding`을 보존한다.
 - **이유:** zlib 의존성과 압축/해제 CPU 비용이 없다. 프록시는 body 내용을 검사할 필요가 없다.
-- **대안:** 압축 해제/재압축은 body 변형/캐싱/보안 검사가 필요할 때만.
+- **대안:** 압축 해제/재압축은 body 변형/캐싱/보안 검사가 필요할 때만. Phase 3에서는 하지 않는다.
 
 ### D18 — 시작 시 1회 resolve (확정)
 
@@ -112,9 +114,12 @@
 - **이유:** hostname을 허용하면서도 이벤트 루프가 DNS로 블로킹되지 않는다. DNS가 바뀌면 재시작이 필요하지만, Phase 3 데모/로컬 backend에는 충분하다.
 - **참고:** `127.0.0.1` 같은 IP literal은 resolve 없이 그대로 사용한다.
 
-### chunked — 미확정
+### chunked — stream-through (확정)
 
-- **추천:** stream-through. 요청/응답 chunk를 파싱해 원본 바이트를 중계하고 `Transfer-Encoding: chunked`를 유지한다. dechunk+`Content-Length`는 큰 body 버퍼링이 필요해 프록시에는 덜 적합하다.
+- **결정:** 요청/응답 chunk를 파싱해 원본 바이트를 중계하고 `Transfer-Encoding: chunked`를 유지한다.
+- **이유:** 큰 body를 메모리에 모으지 않아도 되고 프록시 semantics를 보존한다.
+- **주의:** chunk size/data/CRLF/trailer 상태 머신, `Content-Length`와 `Transfer-Encoding` 충돌 거부, 요청 chunked parser 확장이 필요하다.
+- **대안:** dechunk+`Content-Length`는 큰 body 버퍼링이 필요해 프록시에는 덜 적합하다.
 
 ## 2. 기능 요구사항
 
@@ -227,10 +232,10 @@
 - **D5**: **결정: 프록시 직접 정적 서빙** (2026-11-24).
 - **D8**: **결정: Phase 3 MVP는 캐싱 없음** (future: 작은 LRU) (2026-11-24).
 - **D6 형식**: **결정: INI 유사** (2026-11-24).
-- **D16 업스트림 연결**: **결정: keep-alive 풀, 기본 중계 후 2차 구현** (2026-11-24).
+- **D16 업스트림 연결**: **결정: keep-alive 풀, Phase 3 필수** (2026-11-24).
 - **D17 헬스체크**: **결정: passive only, active는 future** (2026-11-24).
 - **D18 DNS**: **결정: 시작 시 1회 resolve** (2026-11-24).
-- **gzip**: 추천은 그대로 중계. 최종 확정 대기.
-- **chunked**: 추천은 stream-through. 최종 확정 대기.
+- **gzip**: **결정: 그대로 중계** (2026-11-24).
+- **chunked**: **결정: stream-through** (2026-11-24).
 - **CONNECT**: D3=Reverse이므로 Phase 3 범위에서 제외.
 - 라우팅 규칙/백엔드 포트/타임아웃 기본값.
