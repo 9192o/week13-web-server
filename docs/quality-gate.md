@@ -105,7 +105,7 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 - **access log 조기 에러**: 헤더가 완성되기 전의 `408`/`414`/`431`은 access log에 남지 않는다. 현재는 파싱된 요청만 로깅한다. 모든 요청을 로깅하려면 헤더 읽기 시작 시점에 log context를 열고 method를 prefix에서 감지해야 한다.
 - **CGI PATH**: `build_cgi_env`는 `PATH=/usr/bin:/bin`만 넘긴다. C CGI는 문제없지만 `#!/usr/bin/env python3` 같은 스크립트는 macOS의 `/usr/local/bin`/`/opt/homebrew/bin`이 없어 실패할 수 있다. 현재 지원 범위는 C CGI.
 - **CGI 실행 권한 검사**: `access(X_OK)` 대신 mode bit(`S_IXUSR|S_IXGRP|S_IXOTH`)만 본다. 서버 사용자 기준 effective 실행 권한과 다를 수 있어 `execve` 실패 시 `500`이 될 수 있다. `faccessat(..., AT_EACCESS)`로 개선 가능.
-- **macOS CGI 실행 race**: Linux는 `fexecve(script_fd)`지만 macOS는 `close(script_fd); execve(resolved)` fallback이라 최종 파일 교체 race가 남는다. Phase 2 `posix_spawn`/플랫폼별 fd 실행으로 정리한다.
+- **CGI 실행 race**: `posix_spawn`은 path 기반이라 `realpath`/검증 후 실행 사이에 파일이 교체될 수 있는 TOCTOU가 남는다. CGI 디렉터리를 신뢰할 수 있는 경우에만 운영한다. fd 기반 실행이 필요하면 Linux `fexecve` + fork 경로를 별도로 검토한다.
 
 ### Phase 2에서 정리
 
@@ -150,6 +150,12 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 - **access log**: `server_ev` 연결별 `access_log_t`. 정적/CGI/404/500/동시 요청 로그 PASS. 형식은 `ip "METHOD path" status body_bytes`.
 - **검증**: `tests/test_logger.c` 기본/drop PASS, 전체 **283 assertions**. `make integration-s1` access log PASS, `make sanitize` PASS.
 - **다음(S2c-3)**: `posix_spawn`, 단계별 drain/watchdog, `server_ev` → `server` 통합.
+
+### Phase 2 S2c-3a (2026-11-24)
+
+- **posix_spawn**: `src/cgi.c`가 `posix_spawn` + `posix_spawn_file_actions`로 CGI를 실행. stdin(POST 본문/`/dev/null`), stdout 파이프, 불필요 fd close.
+- **검증**: Phase 1 `make integration` CGI 계약/`partial`/`crash`/`term`, `make integration-s1` CGI/타임아웃/동시성 PASS. `make sanitize` PASS.
+- **남은 작업**: 단계별 drain/watchdog, `server_ev` → `server` 통합.
 
 ## 남은 품질 항목
 

@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,13 +22,13 @@
 #define CGI_PREFIX "/cgi-bin/"
 
 /*
- * macOS keeps the signal mask per process rather than per thread, and fork()
- * blocks signals around the fork and restores them afterwards. Concurrent
- * forks from task-pool workers can therefore race and leave SIGINT/SIGTERM
- * blocked for the whole server. Serialize fork so each block/restore pair
- * completes before the next one starts.
+ * macOS keeps the signal mask per process rather than per thread, and process
+ * creation blocks signals around the operation. Concurrent CGI spawns from
+ * task-pool workers used to race and leave SIGINT/SIGTERM blocked for the
+ * whole server. Serialize CGI spawn as a defensive measure; server_ev also
+ * unblocks the shutdown signals before each wait.
  */
-static pthread_mutex_t g_fork_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_spawn_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int path_within_root(const char *root, const char *resolved) {
     size_t root_len = strlen(root);
@@ -346,12 +347,40 @@ handler_result_t cgi_handle(int connfd, const http_request_t *req,
     }
 
     char *argv[] = { resolved, NULL };
-    pthread_mutex_lock(&g_fork_mutex);
-    pid_t pid = fork();
-    int fork_errno = errno;
-    pthread_mutex_unlock(&g_fork_mutex);
-    if (pid < 0) {
-        errno = fork_errno;
+
+    posix_spawn_file_actions_t actions;
+    int spawn_rc = posix_spawn_file_actions_init(&actions);
+    if (spawn_rc == 0) {
+        if (in_fd >= 0) {
+            spawn_rc = posix_spawn_file_actions_adddup2(
+                &actions, in_fd, STDIN_FILENO);
+            if (spawn_rc == 0 && in_fd > STDERR_FILENO)
+                spawn_rc = posix_spawn_file_actions_addclose(&actions, in_fd);
+        } else {
+            spawn_rc = posix_spawn_file_actions_addopen(
+                &actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        }
+    }
+    if (spawn_rc == 0) {
+        spawn_rc = posix_spawn_file_actions_adddup2(
+            &actions, out_pipe[1], STDOUT_FILENO);
+    }
+    if (spawn_rc == 0 && out_pipe[1] > STDERR_FILENO)
+        spawn_rc = posix_spawn_file_actions_addclose(&actions, out_pipe[1]);
+    if (spawn_rc == 0 && out_pipe[0] > STDERR_FILENO)
+        spawn_rc = posix_spawn_file_actions_addclose(&actions, out_pipe[0]);
+    if (spawn_rc == 0 && connfd > STDERR_FILENO)
+        spawn_rc = posix_spawn_file_actions_addclose(&actions, connfd);
+
+    pid_t pid = -1;
+    if (spawn_rc == 0) {
+        pthread_mutex_lock(&g_spawn_mutex);
+        spawn_rc = posix_spawn(&pid, resolved, &actions, NULL, argv, envp);
+        pthread_mutex_unlock(&g_spawn_mutex);
+    }
+    posix_spawn_file_actions_destroy(&actions);
+
+    if (spawn_rc != 0) {
         close(script_fd);
         free_env(envp);
         if (body_tmp != NULL)
@@ -359,32 +388,6 @@ handler_result_t cgi_handle(int connfd, const http_request_t *req,
         close(out_pipe[0]);
         close(out_pipe[1]);
         return send_close_error(connfd, HTTP_INTERNAL_SERVER_ERROR, head);
-    }
-
-    if (pid == 0) {
-        if (in_fd >= 0) {
-            dup2(in_fd, STDIN_FILENO);
-            close(in_fd);
-        } else {
-            int devnull = open("/dev/null", O_RDONLY);
-            if (devnull >= 0) {
-                dup2(devnull, STDIN_FILENO);
-                close(devnull);
-            }
-        }
-
-        dup2(out_pipe[1], STDOUT_FILENO);
-        close(out_pipe[0]);
-        close(out_pipe[1]);
-        close(connfd);
-
-#if defined(__linux__)
-        fexecve(script_fd, argv, envp);
-#else
-        close(script_fd);
-        execve(resolved, argv, envp);
-#endif
-        _exit(127);
     }
 
     close(script_fd);

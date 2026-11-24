@@ -219,7 +219,7 @@ typedef struct {
 
 - 이벤트 루프가 요청을 복사해 작업 큐에 넣는다.
 - 큐가 가득 차면 **503**.
-- 작업 워커는 `posix_spawn`으로 CGI를 실행하고 (S2c 목표; S2b는 `fork`+`execve`), 출력/타임아웃/크래시를 처리해 **응답 버퍼**를 만든다.
+- 작업 워커는 `posix_spawn`으로 CGI를 실행하고 (S2c-3a 구현), 출력/타임아웃/크래시를 처리해 **응답 버퍼**를 만든다.
 - 완료되면 결과 큐에 넣고 **completion pipe에 1바이트** 쓴다.
 - 이벤트 루프가 결과를 꺼내 `conn_id`로 연결을 찾고, `out`에 붙인 뒤 `WRITE`로 전이.
 - 연결이 이미 닫혔으면 결과를 버린다.
@@ -227,8 +227,8 @@ typedef struct {
 
 ### 8.2 CGI 실행
 
-- **S2b 현재 구현**: 작업 워커가 `fork` + `execve`로 CGI를 실행하고, Phase 1 `cgi_handle`의 출력은 임시 파일에 캡처해 응답 버퍼로 만든다. `posix_spawn` 전환은 S2c.
-- **macOS signal mask**: macOS는 signal mask를 프로세스 단위로 공유하고 `fork()`가 그 주변에서 signal을 블록한다. 동시 fork가 겹치면 SIGINT/SIGTERM이 영구히 블록될 수 있으므로, `cgi.c`의 fork를 뮤텍스로 직렬화하고 이벤트 루프가 `ev_wait` 전에 shutdown signal을 unblock한다.
+- **S2c-3a 현재 구현**: 작업 워커가 `posix_spawn` + 부모에서 만든 `envp`로 CGI를 실행한다. `posix_spawn_file_actions`로 stdin(POST 본문 또는 `/dev/null`), stdout(파이프), 불필요한 fd를 정리한다. Phase 1 `cgi_handle`의 출력은 임시 파일에 캡처해 응답 버퍼로 만든다.
+- **macOS signal mask**: macOS는 signal mask를 프로세스 단위로 공유하고 process creation이 그 주변에서 signal을 블록한다. 동시 spawn이 겹치면 SIGINT/SIGTERM이 영구히 블록될 수 있으므로, `cgi.c`의 spawn을 뮤텍스로 직렬화하고 이벤트 루프가 `ev_wait` 전에 shutdown signal을 unblock한다.
 - stdin은 POST 본문 임시 파일, stdout은 파이프.
 - `poll`로 출력 대기, `request_timeout_sec` 초과 시 `SIGKILL` → 504.
 - 출력 1MB 제한, 0바이트/크래시 → 500.
@@ -306,7 +306,9 @@ typedef struct {
 >
 > 구현 상태 (S2c-1): `--task-workers`, `--task-queue`, `--max-conns` config/CLI 추가. max-conns 초과 503 + `Retry-After: 1`, queue-full 503. `tests/integration_s2.sh` PASS.
 >
-> 구현 상태 (S2c-2): `src/logger.c` + `include/logger.h` + `tests/test_logger.c`. 단일 로거 스레드/bounded 큐/drop 카운터, `server_ev` access log(정적/CGI/404/500/동시 요청) PASS. `posix_spawn`/drain/watchdog/`server` 통합은 S2c-3.
+> 구현 상태 (S2c-2): `src/logger.c` + `include/logger.h` + `tests/test_logger.c`. 단일 로거 스레드/bounded 큐/drop 카운터, `server_ev` access log(정적/CGI/404/500/동시 요청) PASS.
+>
+> 구현 상태 (S2c-3a): CGI 실행을 `fork`+`execve`에서 `posix_spawn` + file actions로 전환. Phase 1 `server`/`server_ev` CGI 테스트 PASS. drain/watchdog와 `server` 통합은 S2c-3b.
 >
 > `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
 
