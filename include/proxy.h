@@ -13,14 +13,25 @@
  * 실제 중계(읽고 보내기)는 server.c 의 serve_proxy 가 한다.
  */
 
-#define PROXY_MAX_ROUTES  16
-#define PROXY_PREFIX_MAX  256
-#define PROXY_NAME_MAX    320   /* "host:port" 로그 표시용 */
+#define PROXY_MAX_ROUTES   16
+#define PROXY_MAX_BACKENDS 8     /* 규칙 하나에 둘 수 있는 백엔드 수 */
+#define PROXY_PREFIX_MAX   256
+#define PROXY_NAME_MAX     320   /* "host:port" 로그 표시용 */
+
+struct proxy_backend {
+    char name[PROXY_NAME_MAX];       /* 규칙에 적힌 "host:port" 그대로 (로그용) */
+    struct sockaddr_in addr;         /* 시작할 때 getaddrinfo(AF_INET) 로 한 번 해석 */
+};
 
 struct proxy_route {
     char prefix[PROXY_PREFIX_MAX];   /* '/' 로 시작. 문자열 앞부분이 같으면 매칭 */
-    char name[PROXY_NAME_MAX];       /* 규칙에 적힌 "host:port" 그대로 (로그용) */
-    struct sockaddr_in addr;         /* 시작할 때 getaddrinfo(AF_INET) 로 한 번 해석 */
+    struct proxy_backend backends[PROXY_MAX_BACKENDS];
+    int nbackends;                   /* 1 이상 */
+    /*
+     * 라운드로빈 카운터. 워커들이 함께 쓰므로 atomic (그냥 ++ 하면 lost update 로
+     * 같은 백엔드에 몰리거나 증가가 사라진다). 규칙마다 따로 센다.
+     */
+    _Atomic unsigned long long next;
 };
 
 struct proxy_table {
@@ -29,10 +40,12 @@ struct proxy_table {
 };
 
 /*
- * "-R" 인자 하나를 해석한다: "/api/=127.0.0.1:8001" 또는 "/api/=localhost:8001".
+ * "-R" 인자 하나를 해석한다: "/api/=127.0.0.1:8001,localhost:8002".
  *  - prefix 는 '/' 로 시작, PROXY_PREFIX_MAX 미만
+ *  - '=' 뒤는 쉼표로 나눈 백엔드 1~PROXY_MAX_BACKENDS 개 (같은 백엔드를 여러 번 적어도 됨)
  *  - 백엔드는 마지막 ':' 앞이 호스트(비어 있으면 안 됨), 뒤가 1~65535 포트
  *  - 호스트는 getaddrinfo(AF_INET) 의 첫 결과로 정한다
+ * 라운드로빈 카운터는 0 에서 시작한다 (첫 요청은 첫 번째 백엔드).
  * 성공 0, 실패 -1 (errbuf 에 이유).
  */
 int proxy_parse_rule(const char *spec, struct proxy_route *out,
@@ -40,16 +53,22 @@ int proxy_parse_rule(const char *spec, struct proxy_route *out,
 
 /*
  * 디코딩된 경로에 맞는 규칙. 여러 개가 맞으면 prefix 가 가장 긴 것.
- * 없으면 NULL.
+ * 없으면 NULL. (카운터를 바꾸는 proxy_pick 에 넘기므로 const 가 아님)
  */
-const struct proxy_route *proxy_match(const struct proxy_table *t,
-                                      const char *path);
+struct proxy_route *proxy_match(struct proxy_table *t, const char *path);
 
 /*
- * 규칙이 프록시 자기 자신을 가리키는지: 백엔드가 루프백(127.0.0.0/8) 또는
- * 0.0.0.0 이고 포트가 listen_port 와 같으면 1.
+ * 라운드로빈으로 이번 요청의 백엔드를 고른다: (카운터++) % nbackends.
+ * 여러 워커가 동시에 불러도 안전하다 (atomic fetch-add).
  */
-int proxy_is_self(const struct proxy_route *r, int listen_port);
+const struct proxy_backend *proxy_pick(struct proxy_route *r);
+
+/*
+ * 규칙의 백엔드 중 프록시 자기 자신을 가리키는 것: 루프백(127.0.0.0/8) 또는
+ * 0.0.0.0 이고 포트가 listen_port 와 같은 첫 백엔드. 없으면 NULL.
+ */
+const struct proxy_backend *proxy_find_self(const struct proxy_route *r,
+                                            int listen_port);
 
 /*
  * 백엔드로 보낼 요청 헤더를 out 에 쓴다.
@@ -94,6 +113,6 @@ int proxy_format_response_head(const struct proxy_response *r, int keep_alive,
  * 소켓은 close-on-exec (CGI 자식이 물려받지 않게).
  * 반환: 연결된 fd, 실패면 -1 (errno 유지).
  */
-int proxy_connect(const struct proxy_route *r);
+int proxy_connect(const struct proxy_backend *b);
 
 #endif

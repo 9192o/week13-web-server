@@ -577,14 +577,15 @@ static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
 #define PROXY_HEAD_WAIT_MS INT_MAX
 
 /* 접근 로그 비고: "(proxy host:port)" 또는 "(proxy host:port, 이유)" */
-static void proxy_note(char *out, size_t cap, const struct proxy_route *rt,
+static void proxy_note(char *out, size_t cap, const struct proxy_backend *rt,
                        const char *why)
 {
     snprintf(out, cap, "(proxy %s%s%s)", rt->name, why ? ", " : "", why ? why : "");
 }
 
 /*
- * 리버스 프록시 요청 하나: 요청 재작성 → connect → 전송 → 응답 헤더 검사 → 본문 중계.
+ * 리버스 프록시 요청 하나: 백엔드 고르기(라운드로빈) → 요청 재작성 → connect → 전송
+ * → 응답 헤더 검사 → 본문 중계.
  * 클라이언트에 아무것도 보내기 전의 실패(connect, 깨진 응답 헤더 등)는 502.
  * 응답 길이(Content-Length, 204/304)를 알면 그만큼만 중계하고 c->keep 에 따라 연결 유지,
  * 모르면 백엔드가 닫을 때까지 중계하고 Connection: close.
@@ -592,8 +593,9 @@ static void proxy_note(char *out, size_t cap, const struct proxy_route *rt,
  * 백엔드 fd 는 여기서 닫는다. 반환: 1 연결 유지, 0 닫아야 함.
  */
 static int serve_proxy(struct req_ctx *c, const struct http_request *req,
-                       const struct proxy_route *rt)
+                       struct proxy_route *route)
 {
+    const struct proxy_backend *rt = proxy_pick(route);
     char out[REQUEST_HEAD_MAX + 64];   /* 재작성은 Connection: close 정도만 늘어남 */
     char rbuf[REQUEST_HEAD_MAX];
     char note[PROXY_NAME_MAX + 128], why[96], eb[64];
@@ -720,7 +722,7 @@ enum req_outcome {
  */
 static enum req_outcome handle_request(int conn_fd, const char *peer,
                                        const char *root,
-                                       const struct proxy_table *routes,
+                                       struct proxy_table *routes,
                                        char *buf, size_t *have, int nreq)
 {
     char reqline[REQLINE_LOG_MAX + 4];
@@ -755,7 +757,7 @@ static enum req_outcome handle_request(int conn_fd, const char *peer,
 
     switch (rr) {
     case READ_HEAD_OK: {
-        const struct proxy_route *route;
+        struct proxy_route *route;
         int is_cgi;
 
         status = http_parse_request(buf, len, &req);
@@ -888,7 +890,7 @@ static void keepalive_log(const char *peer, const char *why, int requests,
 }
 
 void server_handle(int conn_fd, const char *peer, const char *root,
-                   const struct proxy_table *routes)
+                   struct proxy_table *routes)
 {
     char buf[REQUEST_HEAD_MAX];
     size_t have = 0;           /* 앞 요청 뒤에 붙어 온 바이트 (pipelining) */
@@ -969,7 +971,7 @@ static void reject_busy(int fd, const char *peer)
 /* 워커들이 함께 읽는 설정 (server_run 이 워커를 join 할 때까지 살아 있음) */
 struct handler_ctx {
     const char *root;
-    const struct proxy_table *routes;
+    struct proxy_table *routes;
 };
 
 /* 워커 스레드에서 연결 하나 처리 (close 는 워커 풀이 함) */
@@ -980,7 +982,7 @@ static void handle_item(const struct conn_item *item, void *arg)
     server_handle(item->fd, item->peer, h->root, h->routes);
 }
 
-int server_run(int listen_fd, const char *root, const struct proxy_table *routes,
+int server_run(int listen_fd, const char *root, struct proxy_table *routes,
                int workers, int queue_cap)
 {
     struct conn_queue q;

@@ -22,7 +22,7 @@ struct server_config {
 };
 
 /*
- * 명령행 인자를 해석한다: [-p port] [-r root] [-w workers] [-q queue] [-R prefix=host:port]...
+ * 명령행 인자를 해석한다: [-p port] [-r root] [-w workers] [-q queue] [-R prefix=host:port[,host:port...]]...
  *  - port 는 1~65535 정수만 허용
  *  - workers 는 1~CONFIG_MAX_WORKERS, queue 는 1~CONFIG_MAX_QUEUE
  *  - -R 은 여러 번 줄 수 있다 (최대 PROXY_MAX_ROUTES). 같은 prefix 두 번,

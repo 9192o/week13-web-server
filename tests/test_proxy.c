@@ -3,6 +3,8 @@
 #include "test.h"
 
 #include <arpa/inet.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 static char err[256];
 
@@ -12,15 +14,16 @@ static void test_parse_rule_ok(void)
 
     CHECK_EQ_INT(proxy_parse_rule("/api/=127.0.0.1:8001", &r, err, sizeof err), 0);
     CHECK_EQ_STR(r.prefix, "/api/");
-    CHECK_EQ_STR(r.name, "127.0.0.1:8001");
-    CHECK_EQ_INT(ntohs(r.addr.sin_port), 8001);
-    CHECK_EQ_INT(ntohl(r.addr.sin_addr.s_addr), 0x7f000001);
+    CHECK_EQ_STR(r.backends[0].name, "127.0.0.1:8001");
+    CHECK_EQ_INT(r.nbackends, 1);
+    CHECK_EQ_INT(ntohs(r.backends[0].addr.sin_port), 8001);
+    CHECK_EQ_INT(ntohl(r.backends[0].addr.sin_addr.s_addr), 0x7f000001);
 
     /* 호스트명은 시작할 때 한 번 해석 */
     CHECK_EQ_INT(proxy_parse_rule("/=localhost:65535", &r, err, sizeof err), 0);
     CHECK_EQ_STR(r.prefix, "/");
-    CHECK_EQ_INT(ntohs(r.addr.sin_port), 65535);
-    CHECK_EQ_INT(ntohl(r.addr.sin_addr.s_addr) >> 24, 127);
+    CHECK_EQ_INT(ntohs(r.backends[0].addr.sin_port), 65535);
+    CHECK_EQ_INT(ntohl(r.backends[0].addr.sin_addr.s_addr) >> 24, 127);
 }
 
 static void test_parse_rule_bad(void)
@@ -36,6 +39,12 @@ static void test_parse_rule_bad(void)
         "/api/=127.0.0.1:65536",
         "/api/=127.0.0.1:80x",
         "/api/=127.0.0.1:",
+        "/api/=127.0.0.1:8001,",                    /* 빈 백엔드 */
+        "/api/=,127.0.0.1:8001",
+        "/api/=127.0.0.1:8001,,127.0.0.1:8002",
+        "/api/=127.0.0.1:8001,127.0.0.1:x",         /* 두 번째가 잘못됨 */
+        "/api/=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3,127.0.0.1:4,"
+        "127.0.0.1:5,127.0.0.1:6,127.0.0.1:7,127.0.0.1:8,127.0.0.1:9",  /* 9개 > 8 */
     };
     size_t i;
 
@@ -66,19 +75,114 @@ static void test_match(void)
     CHECK(proxy_match(&t, "/index.html") == NULL);
 }
 
+static void test_parse_rule_list(void)
+{
+    struct proxy_route r;
+
+    CHECK_EQ_INT(proxy_parse_rule("/api/=127.0.0.1:8001,localhost:8002,127.0.0.1:8001",
+                                  &r, err, sizeof err), 0);
+    CHECK_EQ_INT(r.nbackends, 3);
+    CHECK_EQ_STR(r.backends[0].name, "127.0.0.1:8001");
+    CHECK_EQ_STR(r.backends[1].name, "localhost:8002");
+    CHECK_EQ_STR(r.backends[2].name, "127.0.0.1:8001");   /* 같은 백엔드 여러 번 허용 */
+    CHECK_EQ_INT(ntohs(r.backends[1].addr.sin_port), 8002);
+
+    CHECK_EQ_INT(proxy_parse_rule("/a/=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3,127.0.0.1:4,"
+                                  "127.0.0.1:5,127.0.0.1:6,127.0.0.1:7,127.0.0.1:8",
+                                  &r, err, sizeof err), 0);
+    CHECK_EQ_INT(r.nbackends, PROXY_MAX_BACKENDS);
+}
+
+/* P2: 첫 요청이 첫 번째 백엔드, 그 뒤로 차례대로 */
+static void test_pick_round_robin(void)
+{
+    struct proxy_route r, one;
+    int i;
+
+    proxy_parse_rule("/api/=127.0.0.1:8001,127.0.0.1:8002", &r, err, sizeof err);
+    for (i = 0; i < 6; i++)
+        CHECK_EQ_INT(ntohs(proxy_pick(&r)->addr.sin_port), i % 2 == 0 ? 8001 : 8002);
+
+    proxy_parse_rule("/a/=127.0.0.1:8001,127.0.0.1:8002,127.0.0.1:8003", &r, err, sizeof err);
+    CHECK_EQ_INT(ntohs(proxy_pick(&r)->addr.sin_port), 8001);
+    CHECK_EQ_INT(ntohs(proxy_pick(&r)->addr.sin_port), 8002);
+    CHECK_EQ_INT(ntohs(proxy_pick(&r)->addr.sin_port), 8003);
+    CHECK_EQ_INT(ntohs(proxy_pick(&r)->addr.sin_port), 8001);
+
+    /* 백엔드 하나면 항상 그것 */
+    proxy_parse_rule("/b/=127.0.0.1:9000", &one, err, sizeof err);
+    CHECK(proxy_pick(&one) == &one.backends[0]);
+    CHECK(proxy_pick(&one) == &one.backends[0]);
+}
+
+/* 규칙마다 카운터가 따로: 한 규칙을 써도 다른 규칙의 순서는 그대로 */
+static void test_pick_per_route(void)
+{
+    struct proxy_table t;
+
+    proxy_parse_rule("/a/=127.0.0.1:8001,127.0.0.1:8002", &t.routes[0], err, sizeof err);
+    proxy_parse_rule("/b/=127.0.0.1:9001,127.0.0.1:9002", &t.routes[1], err, sizeof err);
+    t.count = 2;
+    proxy_pick(proxy_match(&t, "/a/x"));
+    CHECK_EQ_INT(ntohs(proxy_pick(proxy_match(&t, "/b/x"))->addr.sin_port), 9001);
+    CHECK_EQ_INT(ntohs(proxy_pick(proxy_match(&t, "/a/x"))->addr.sin_port), 8002);
+}
+
+#define RR_THREADS 8
+#define RR_PICKS   100000
+
+static struct proxy_route rr_route;
+static int rr_counts[RR_THREADS][2];
+
+static void *rr_worker(void *arg)
+{
+    int *counts = arg, i;
+
+    for (i = 0; i < RR_PICKS; i++)
+        counts[proxy_pick(&rr_route) == &rr_route.backends[0] ? 0 : 1]++;
+    return NULL;
+}
+
+/*
+ * 여러 워커가 동시에 골라도 증가가 사라지지 않는다: 번호표가 겹치지 않으면
+ * 전체 결과는 정확히 반반 (lost update 가 있으면 한쪽으로 쏠리거나 총합이 어긋남).
+ */
+static void test_pick_concurrent(void)
+{
+    pthread_t th[RR_THREADS];
+    long long a = 0, b = 0;
+    int i;
+
+    proxy_parse_rule("/api/=127.0.0.1:8001,127.0.0.1:8002", &rr_route, err, sizeof err);
+    memset(rr_counts, 0, sizeof rr_counts);
+    for (i = 0; i < RR_THREADS; i++)
+        pthread_create(&th[i], NULL, rr_worker, rr_counts[i]);
+    for (i = 0; i < RR_THREADS; i++) {
+        pthread_join(th[i], NULL);
+        a += rr_counts[i][0];
+        b += rr_counts[i][1];
+    }
+    CHECK_EQ_INT(a, (long long)RR_THREADS * RR_PICKS / 2);
+    CHECK_EQ_INT(b, (long long)RR_THREADS * RR_PICKS / 2);
+    CHECK_EQ_INT((long long)atomic_load(&rr_route.next), (long long)RR_THREADS * RR_PICKS);
+}
+
 static void test_is_self(void)
 {
     struct proxy_route r;
 
+    proxy_parse_rule("/a/=10.0.0.1:8080,127.0.0.1:8080", &r, err, sizeof err);
+    CHECK(proxy_find_self(&r, 8080) == &r.backends[1]);   /* 여러 개 중 하나라도 */
+
     proxy_parse_rule("/a/=127.0.0.1:8080", &r, err, sizeof err);
-    CHECK_EQ_INT(proxy_is_self(&r, 8080), 1);
-    CHECK_EQ_INT(proxy_is_self(&r, 8081), 0);
+    CHECK(proxy_find_self(&r, 8080) != NULL);
+    CHECK(proxy_find_self(&r, 8081) == NULL);
     proxy_parse_rule("/a/=localhost:8080", &r, err, sizeof err);
-    CHECK_EQ_INT(proxy_is_self(&r, 8080), 1);
+    CHECK(proxy_find_self(&r, 8080) != NULL);
     proxy_parse_rule("/a/=0.0.0.0:8080", &r, err, sizeof err);
-    CHECK_EQ_INT(proxy_is_self(&r, 8080), 1);
+    CHECK(proxy_find_self(&r, 8080) != NULL);
     proxy_parse_rule("/a/=10.0.0.1:8080", &r, err, sizeof err);
-    CHECK_EQ_INT(proxy_is_self(&r, 8080), 0);
+    CHECK(proxy_find_self(&r, 8080) == NULL);
 }
 
 /* raw 요청을 파싱해서 재작성한 결과를 out 에 */
@@ -261,6 +365,10 @@ int main(void)
     RUN_TEST(test_parse_rule_ok);
     RUN_TEST(test_parse_rule_bad);
     RUN_TEST(test_match);
+    RUN_TEST(test_parse_rule_list);
+    RUN_TEST(test_pick_round_robin);
+    RUN_TEST(test_pick_per_route);
+    RUN_TEST(test_pick_concurrent);
     RUN_TEST(test_is_self);
     RUN_TEST(test_build_request);
     RUN_TEST(test_parse_response_ok);

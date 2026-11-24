@@ -112,7 +112,7 @@ static void test_proxy_rules(void)
     CHECK_EQ_INT(config_parse(ARGC(two), two, &cfg, err, sizeof err), 0);
     CHECK_EQ_INT(cfg.routes.count, 2);
     CHECK_EQ_STR(cfg.routes.routes[0].prefix, "/api/");
-    CHECK_EQ_STR(cfg.routes.routes[1].name, "localhost:8002");
+    CHECK_EQ_STR(cfg.routes.routes[1].backends[0].name, "localhost:8002");
     CHECK_EQ_INT(config_parse(ARGC(bad), bad, &cfg, err, sizeof err), -1);
     CHECK_EQ_INT(config_parse(ARGC(dup), dup, &cfg, err, sizeof err), -1);
     CHECK_EQ_STR(err, "duplicate proxy prefix /a/");

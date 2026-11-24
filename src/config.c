@@ -85,10 +85,11 @@ int config_parse(int argc, char **argv, struct server_config *out,
     /* -p 가 -R 뒤에 올 수도 있으므로 다 읽은 뒤에 검사 */
     for (i = 0; i < out->routes.count; i++) {
         const struct proxy_route *r = &out->routes.routes[i];
+        const struct proxy_backend *self = proxy_find_self(r, out->port);
 
-        if (proxy_is_self(r, out->port)) {
-            snprintf(errbuf, errlen, "proxy rule %s=%s points to this server (port %d)",
-                     r->prefix, r->name, out->port);
+        if (self != NULL) {
+            snprintf(errbuf, errlen, "proxy rule %s: backend %s points to this server (port %d)",
+                     r->prefix, self->name, out->port);
             return -1;
         }
         for (j = 0; j < i; j++) {
@@ -117,13 +118,14 @@ int config_parse(int argc, char **argv, struct server_config *out,
 void config_usage(const char *prog)
 {
     fprintf(stderr, "usage: %s [-p port] [-r root] [-w workers] [-q queue]\n"
-                    "          [-R prefix=host:port]...\n"
+                    "          [-R prefix=host:port[,host:port...]]...\n"
                     "  -p port    listen port (1-65535, default %d)\n"
                     "  -r root     static file root (default %s)\n"
                     "  -w workers  worker threads (1-%d, default %d)\n"
                     "  -q queue    pending connection queue size (1-%d, default %d)\n"
-                    "  -R rule     reverse proxy: paths starting with prefix go to host:port\n"
-                    "              (repeatable, e.g. -R /api/=127.0.0.1:8001)\n",
+                    "  -R rule     reverse proxy: paths starting with prefix go to the backend(s)\n"
+                    "              (repeatable; several backends = round-robin,\n"
+                    "               e.g. -R /api/=127.0.0.1:8001,127.0.0.1:8002)\n",
             prog, CONFIG_DEFAULT_PORT, CONFIG_DEFAULT_ROOT,
             CONFIG_MAX_WORKERS, CONFIG_DEFAULT_WORKERS,
             CONFIG_MAX_QUEUE, CONFIG_DEFAULT_QUEUE);

@@ -52,9 +52,15 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
 
     fprintf(stderr, "listening on 0.0.0.0:%d, root=%s\n", cfg.port, cfg.root);
-    for (r = 0; r < cfg.routes.count; r++)
-        fprintf(stderr, "proxy %s -> %s\n", cfg.routes.routes[r].prefix,
-                cfg.routes.routes[r].name);
+    for (r = 0; r < cfg.routes.count; r++) {
+        const struct proxy_route *rt = &cfg.routes.routes[r];
+        int b;
+
+        fprintf(stderr, "proxy %s ->", rt->prefix);
+        for (b = 0; b < rt->nbackends; b++)
+            fprintf(stderr, "%s %s", b ? "," : "", rt->backends[b].name);
+        fprintf(stderr, "%s\n", rt->nbackends > 1 ? " (round-robin)" : "");
+    }
     r = server_run(listen_fd, cfg.root, &cfg.routes, cfg.workers,
                    cfg.queue_cap);  /* listen_fd 도 닫음 */
     if (r < 0)

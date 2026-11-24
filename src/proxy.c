@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,20 +13,70 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+/*
+ * 백엔드 하나 "host:port" (s[0..len)) 를 해석한다. spec 은 에러 메시지용 규칙 원문.
+ * 성공 0, 실패 -1.
+ */
+static int parse_backend(const char *spec, const char *s, size_t len,
+                         struct proxy_backend *b, char *errbuf, size_t errlen)
+{
+    char item[PROXY_NAME_MAX], *colon, *end;
+    struct addrinfo hints, *res = NULL;
+    long port;
+    int gr;
+
+    if (len == 0) {
+        snprintf(errbuf, errlen, "proxy rule %s: empty backend", spec);
+        return -1;
+    }
+    if (len >= sizeof item) {
+        snprintf(errbuf, errlen, "proxy rule %s: backend too long", spec);
+        return -1;
+    }
+    memcpy(item, s, len);
+    item[len] = '\0';
+
+    colon = strrchr(item, ':');
+    if (colon == NULL || colon == item) {
+        snprintf(errbuf, errlen, "proxy rule %s: expected host:port, got %s", spec, item);
+        return -1;
+    }
+    errno = 0;
+    port = strtol(colon + 1, &end, 10);
+    if (errno != 0 || end == colon + 1 || *end != '\0' || port < 1 || port > 65535) {
+        snprintf(errbuf, errlen, "proxy rule %s: invalid port in %s", spec, item);
+        return -1;
+    }
+    snprintf(b->name, sizeof b->name, "%s", item);
+    *colon = '\0';                      /* item = 호스트만 */
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;          /* IPv6 는 나중 단위 */
+    hints.ai_socktype = SOCK_STREAM;
+    gr = getaddrinfo(item, NULL, &hints, &res);
+    if (gr != 0 || res == NULL) {
+        snprintf(errbuf, errlen, "proxy rule %s: cannot resolve %s: %s", spec, item,
+                 gr != 0 ? gai_strerror(gr) : "no address");
+        if (res != NULL)
+            freeaddrinfo(res);
+        return -1;
+    }
+    memcpy(&b->addr, res->ai_addr, sizeof b->addr);
+    b->addr.sin_port = htons((unsigned short)port);
+    freeaddrinfo(res);
+    return 0;
+}
+
 int proxy_parse_rule(const char *spec, struct proxy_route *out,
                      char *errbuf, size_t errlen)
 {
     const char *eq = strchr(spec, '=');
-    const char *backend, *colon;
-    char host[PROXY_NAME_MAX];
-    struct addrinfo hints, *res = NULL;
-    size_t plen, hlen;
-    char *end;
-    long port;
-    int gr;
+    const char *p;
+    size_t plen;
 
     if (eq == NULL) {
-        snprintf(errbuf, errlen, "proxy rule %s: expected prefix=host:port", spec);
+        snprintf(errbuf, errlen, "proxy rule %s: expected prefix=host:port[,host:port...]",
+                 spec);
         return -1;
     }
     plen = (size_t)(eq - spec);
@@ -39,52 +90,32 @@ int proxy_parse_rule(const char *spec, struct proxy_route *out,
         return -1;
     }
 
-    backend = eq + 1;
-    colon = strrchr(backend, ':');
-    if (colon == NULL || colon == backend) {
-        snprintf(errbuf, errlen, "proxy rule %s: expected host:port after '='", spec);
-        return -1;
-    }
-    hlen = (size_t)(colon - backend);
-    if (hlen >= sizeof host || strlen(backend) >= PROXY_NAME_MAX) {
-        snprintf(errbuf, errlen, "proxy rule %s: backend too long", spec);
-        return -1;
-    }
-    errno = 0;
-    port = strtol(colon + 1, &end, 10);
-    if (errno != 0 || end == colon + 1 || *end != '\0' || port < 1 || port > 65535) {
-        snprintf(errbuf, errlen, "proxy rule %s: invalid port", spec);
-        return -1;
-    }
-    memcpy(host, backend, hlen);
-    host[hlen] = '\0';
-
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;          /* IPv6 는 나중 단위 */
-    hints.ai_socktype = SOCK_STREAM;
-    gr = getaddrinfo(host, NULL, &hints, &res);
-    if (gr != 0 || res == NULL) {
-        snprintf(errbuf, errlen, "proxy rule %s: cannot resolve %s: %s", spec, host,
-                 gr != 0 ? gai_strerror(gr) : "no address");
-        if (res != NULL)
-            freeaddrinfo(res);
-        return -1;
-    }
-
     memset(out, 0, sizeof *out);
     memcpy(out->prefix, spec, plen);
     out->prefix[plen] = '\0';
-    snprintf(out->name, sizeof out->name, "%s", backend);
-    memcpy(&out->addr, res->ai_addr, sizeof out->addr);
-    out->addr.sin_port = htons((unsigned short)port);
-    freeaddrinfo(res);
+    atomic_init(&out->next, 0);
+
+    for (p = eq + 1; ; p++) {
+        size_t n = strcspn(p, ",");
+
+        if (out->nbackends == PROXY_MAX_BACKENDS) {
+            snprintf(errbuf, errlen, "proxy rule %s: too many backends (max %d)", spec,
+                     PROXY_MAX_BACKENDS);
+            return -1;
+        }
+        if (parse_backend(spec, p, n, &out->backends[out->nbackends], errbuf, errlen) < 0)
+            return -1;
+        out->nbackends++;
+        p += n;
+        if (*p == '\0')
+            break;
+    }
     return 0;
 }
 
-const struct proxy_route *proxy_match(const struct proxy_table *t,
-                                      const char *path)
+struct proxy_route *proxy_match(struct proxy_table *t, const char *path)
 {
-    const struct proxy_route *best = NULL;
+    struct proxy_route *best = NULL;
     size_t best_len = 0;
     int i;
 
@@ -99,13 +130,27 @@ const struct proxy_route *proxy_match(const struct proxy_table *t,
     return best;
 }
 
-int proxy_is_self(const struct proxy_route *r, int listen_port)
+const struct proxy_backend *proxy_pick(struct proxy_route *r)
 {
-    unsigned long a = ntohl(r->addr.sin_addr.s_addr);
+    /* 순서만 맞으면 되고 다른 메모리와 동기화할 것이 없으므로 relaxed */
+    unsigned long long k = atomic_fetch_add_explicit(&r->next, 1, memory_order_relaxed);
 
-    if (ntohs(r->addr.sin_port) != listen_port)
-        return 0;
-    return (a >> 24) == 127 || a == 0;
+    return &r->backends[k % (unsigned long long)r->nbackends];
+}
+
+const struct proxy_backend *proxy_find_self(const struct proxy_route *r,
+                                            int listen_port)
+{
+    int i;
+
+    for (i = 0; i < r->nbackends; i++) {
+        const struct proxy_backend *b = &r->backends[i];
+        unsigned long a = ntohl(b->addr.sin_addr.s_addr);
+
+        if (ntohs(b->addr.sin_port) == listen_port && ((a >> 24) == 127 || a == 0))
+            return b;
+    }
+    return NULL;
 }
 
 /* list(쉼표로 나뉜 토큰, 앞뒤 SP/HTAB 무시)에 name 이 있으면 1 (대소문자 무시) */
@@ -323,7 +368,7 @@ int proxy_format_response_head(const struct proxy_response *r, int keep_alive,
     return (int)off;
 }
 
-int proxy_connect(const struct proxy_route *r)
+int proxy_connect(const struct proxy_backend *b)
 {
     int fd, e;
 
@@ -343,7 +388,7 @@ int proxy_connect(const struct proxy_route *r)
     }
 #endif
     /* 워커는 신호를 막아 두므로 EINTR 은 오지 않는다 (오면 실패로 처리) */
-    if (connect(fd, (const struct sockaddr *)&r->addr, sizeof r->addr) < 0) {
+    if (connect(fd, (const struct sockaddr *)&b->addr, sizeof b->addr) < 0) {
         e = errno;
         close(fd);
         errno = e;

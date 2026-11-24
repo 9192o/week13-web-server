@@ -655,16 +655,25 @@ PB=$((PORT + 10))      # 백엔드 A
 PP=$((PORT + 11))      # 프록시
 PD=$((PORT + 12))      # 아무도 listen 하지 않는 포트 (connect 거절)
 PX=$((PORT + 13))      # 자기 자신 규칙 거부 확인용 (실제로 listen 하지 않음)
+PB2=$((PORT + 14))     # 백엔드 B (라운드로빈)
 B=$WORK/backend
-mkdir -p "$B/api"
+B2=$WORK/backend2
+mkdir -p "$B/api" "$B/rr" "$B2/rr"
 echo '<h1>backend</h1>' > "$B/index.html"
+echo '<h1>backend2</h1>' > "$B2/index.html"
 echo "backend $PB" > "$B/api/hello.txt"
+echo "backend $PB" > "$B/rr/hello.txt"
+echo "backend $PB2" > "$B2/rr/hello.txt"
 cp "$R/mid.bin" "$B/api/mid.bin"
 LOGB=$WORK/backend.log
+LOGB2=$WORK/backend2.log
 LOGP=$WORK/proxy.log
 start_extra "$PB" "$LOGB" -r "$B"
 SB=$XPID
-start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD"
+start_extra "$PB2" "$LOGB2" -r "$B2"
+SB2=$XPID
+start_extra "$PP" "$LOGP" -R "/api/=127.0.0.1:$PB" -R "/down/=127.0.0.1:$PD" \
+            -R "/rr/=127.0.0.1:$PB,127.0.0.1:$PB2"
 SP=$XPID
 PURL=http://127.0.0.1:$PP
 
@@ -737,6 +746,26 @@ else
 fi
 expect "502 뒤에도 프록시 정상"                     200 "$(code "$PURL/api/hello.txt")"
 
+# P2: /rr/ → A, B 라운드로빈. 따로 4번 → A B A B (규칙마다 카운터가 따로라 /api/ 요청과 무관)
+RR=
+for _ in 1 2 3 4; do
+    RR="$RR$(curl -s "$PURL/rr/hello.txt" | sed 's/^backend //') "
+done
+expect "P2 라운드로빈 4번 → $PB $PB2 $PB $PB2" "$PB $PB2 $PB $PB2 " "$RR"
+# 한 연결(keep-alive) 안에서도 요청마다 다음 백엔드
+expect "P2 한 연결의 요청 두 개도 차례대로" "backend $PB
+backend $PB2" "$(curl -s "$PURL/rr/hello.txt" "$PURL/rr/hello.txt")"
+# 동시 요청 40개 (curl 4개 × 10개씩 병렬) → 정확히 20 : 20
+RRP=()
+for i in 1 2 3 4; do
+    curl -s $(for _ in $(seq 10); do printf '%s ' "$PURL/rr/hello.txt"; done) > "$WORK/rr$i.out" &
+    RRP+=("$!")
+done
+wait "${RRP[@]}"                            # 인자 없는 wait 는 띄워 둔 서버까지 기다림
+cat "$WORK"/rr[1-4].out > "$WORK/rr.out"
+expect "P2 동시 40개 → A 20개" 20 "$(grep -c "^backend $PB\$" "$WORK/rr.out")"
+expect "P2 동시 40개 → B 20개" 20 "$(grep -c "^backend $PB2\$" "$WORK/rr.out")"
+
 # 자기 자신을 가리키는 규칙은 시작할 때 거부
 "$BIN" -p "$PX" -r "$R" -R "/a/=127.0.0.1:$PX" 2>"$WORK/self.err"
 expect "자기 자신 규칙 → 시작 실패 exit 1"           1 "$?"
@@ -745,12 +774,14 @@ expect_match "자기 자신 규칙 메시지"                'points to this ser
 PFD1=$(pfd_settled)
 expect "프록시 fd 수 그대로 (connfd·backendfd 정리)" "$PFD0" "$PFD1"
 
-kill -TERM "$SP" "$SB"
+kill -TERM "$SP" "$SB" "$SB2"
 wait "$SP"; RCP=$?
 wait "$SB"; RCB=$?
+wait "$SB2"; RCB2=$?
 expect "프록시 SIGTERM → exit 0"                     0 "$RCP"
-expect "백엔드 SIGTERM → exit 0"                     0 "$RCB"
-expect "프록시·백엔드 sanitizer 보고 없음"            0 "$(cat "$LOGP" "$LOGB" | grep -cE 'Sanitizer|runtime error')"
+expect "백엔드 A·B SIGTERM → exit 0"                 "0 0" "$RCB $RCB2"
+expect "프록시·백엔드 sanitizer 보고 없음"            0 \
+       "$(cat "$LOGP" "$LOGB" "$LOGB2" | grep -cE 'Sanitizer|runtime error')"
 
 # ---------------------------------------------------------------- fd 누수
 
