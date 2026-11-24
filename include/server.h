@@ -75,23 +75,36 @@ enum read_head_result {
 int server_listen(int port);
 
 /*
- * SIGINT/SIGTERM 핸들러가 1 로 켜는 종료 플래그 (main.c 가 SA_RESTART 없이 등록).
- * accept 가 EINTR 로 돌아오면 server_run 이 이를 보고 반환한다.
+ * 종료 플래그 (main.c 의 SIGINT/SIGTERM 핸들러가 SA_RESTART 없이 켬).
+ * 첫 신호에 1, 두 번째 신호부터 2 (남은 대기를 건너뛰고 강제 종료).
+ * accept 가 EINTR 로 돌아오면 server_run 이 이를 보고 종료 절차를 시작한다.
  */
 extern volatile sig_atomic_t server_stop;
+
+/*
+ * 종료 신호 뒤 처리 중인 연결이 끝나길 기다리는 최대 시간.
+ * 넘기면 연결 소켓을 shutdown 해서 강제로 끊는다 (CGI 실행 중이면 CGI 시간 제한까지 더).
+ */
+#ifndef SHUTDOWN_TIMEOUT_MS
+#define SHUTDOWN_TIMEOUT_MS 10000
+#endif
 
 /*
  * accept 루프 + 워커 스레드 풀 (Phase 2).
  * accept 한 연결을 큐(queue_cap 칸)에 넣고, 워커 workers 개가 꺼내 server_handle 한다.
  * 큐가 가득 차면 기다리지 않고 503 을 보내고 닫는다 (큐에 넣지 않음).
- * server_stop 이 켜지면: accept 를 멈추고, 워커는 들고 있던 연결만 끝내고 종료(join),
- * 큐에 남아 있던 연결은 응답 없이 닫는다. listen_fd 는 닫지 않는다.
- * 반환: 0 정상 종료, -1 큐/워커를 만들지 못함.
+ * server_stop 이 켜지면 (S5):
+ *   listen_fd 를 바로 닫고 (새 연결은 Connection refused), 큐에 남은 연결은 응답 없이 닫고,
+ *   처리 중인 연결은 SHUTDOWN_TIMEOUT_MS 까지 끝나길 기다린다.
+ *   시간이 지나거나 두 번째 신호가 오면 처리 중인 연결을 강제로 끊는다. 그 뒤 워커 join.
+ * listen_fd 는 어느 경우든 server_run 이 닫는다.
+ * 반환: 0 정상 종료, 1 강제로 끊은 연결이 있음, -1 큐/워커를 만들지 못함.
  */
 int server_run(int listen_fd, const char *root, int workers, int queue_cap);
 
 /*
- * 연결 하나 처리: 요청을 읽고 응답하기를 keep-alive 가 끝날 때까지 반복한 뒤 닫는다.
+ * 연결 하나 처리: 요청을 읽고 응답하기를 keep-alive 가 끝날 때까지 반복한다.
+ * conn_fd 는 닫지 않는다 (워커 풀이 처리 중 기록을 지운 뒤 닫음).
  * 유지 조건: HTTP/1.1, Connection 에 close 없음, 응답 경계가 확실한 상태 코드,
  * 읽지 않은 본문 없음, 종료 중 아님, KEEPALIVE_MAX_REQUESTS 미만.
  * 요청 사이 idle(KEEPALIVE_TIMEOUT_MS), EOF, 최대 요청 수, 종료로 닫히면

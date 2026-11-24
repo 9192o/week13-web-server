@@ -7,11 +7,14 @@
 #include <string.h>
 #include <unistd.h>
 
-/* 플래그만 켠다. 두 번째 신호도 같은 동작 (강제 종료는 phase 2) */
+/* 종료 코드: 정상 0, 시작 실패 1 (EXIT_FAILURE), 강제 종료 2 */
+#define EXIT_FORCED 2
+
+/* 플래그만 켠다: 첫 신호 1 (정상 종료), 두 번째부터 2 (바로 강제 종료) */
 static void on_stop_signal(int sig)
 {
     (void)sig;
-    server_stop = 1;
+    server_stop = server_stop ? 2 : 1;
 }
 
 int main(int argc, char **argv)
@@ -19,7 +22,7 @@ int main(int argc, char **argv)
     struct server_config cfg;
     struct sigaction sa;
     char err[512];
-    int listen_fd;
+    int listen_fd, r;
 
     if (config_parse(argc, argv, &cfg, err, sizeof err) < 0) {
         fprintf(stderr, "%s: %s\n", argv[0], err);
@@ -49,11 +52,9 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
 
     fprintf(stderr, "listening on 0.0.0.0:%d, root=%s\n", cfg.port, cfg.root);
-    if (server_run(listen_fd, cfg.root, cfg.workers, cfg.queue_cap) < 0) {
-        close(listen_fd);
+    r = server_run(listen_fd, cfg.root, cfg.workers, cfg.queue_cap);  /* listen_fd 도 닫음 */
+    if (r < 0)
         return EXIT_FAILURE;
-    }
-    fprintf(stderr, "shutting down\n");
-    close(listen_fd);
-    return EXIT_SUCCESS;
+    fprintf(stderr, "shutting down%s\n", r > 0 ? " (forced)" : "");
+    return r > 0 ? EXIT_FORCED : EXIT_SUCCESS;
 }

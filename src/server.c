@@ -206,9 +206,10 @@ static const char *send_fail_note(int r)
 
 /*
  * 에러 응답 뒤 RST 로 응답이 날아가지 않도록: 쓰기 방향만 닫고(FIN),
- * 클라이언트가 아직 보내는 데이터를 한도(바이트/시간)까지 읽어 버린 뒤 close.
+ * 클라이언트가 아직 보내는 데이터를 한도(바이트/시간)까지 읽어 버린다.
+ * close 는 하지 않는다: 연결 fd 는 워커 풀이 기록을 지운 뒤 닫는다 (pool.c).
  */
-static void lingering_close(int fd)
+static void lingering_drain(int fd)
 {
     long long deadline = now_ms() + LINGER_TIMEOUT_MS;
     char junk[4096];
@@ -224,7 +225,6 @@ static void lingering_close(int fd)
             total += (size_t)n;
         }
     }
-    close(fd);
 }
 
 /*
@@ -321,9 +321,10 @@ static int status_keepable(int status)
 }
 
 /*
- * 에러(또는 301) 응답을 보낸다. status <= 0 이면 응답 없이 close (로그에 note).
- * c->keep 이고 status 가 유지 가능하면 연결을 열어 둔 채 1.
- * 아니면 Connection: close 로 응답하고 닫은 뒤 0 (400 이상이면 lingering close).
+ * 에러(또는 301) 응답을 보낸다. status <= 0 이면 응답 없이 끝 (로그에 note).
+ * c->keep 이고 status 가 유지 가능하면 1 (연결 유지).
+ * 아니면 Connection: close 로 응답하고 0 (400 이상이면 lingering drain).
+ * 어느 경우든 fd 는 닫지 않는다 (워커 풀이 닫음).
  */
 static int finish_error(struct req_ctx *c, int status, const char *extra,
                         const char *note)
@@ -332,7 +333,6 @@ static int finish_error(struct req_ctx *c, int status, const char *extra,
 
     if (status <= 0) {
         access_log(c->peer, c->reqline, 0, 0, note);
-        close(c->fd);
         return 0;
     }
     status = http_normalize_status(status);
@@ -340,7 +340,6 @@ static int finish_error(struct req_ctx *c, int status, const char *extra,
     body_len = send_error(c->fd, status, extra, keep);
     if (body_len < 0) {
         access_log(c->peer, c->reqline, 0, 0, send_fail_note(body_len));
-        close(c->fd);
         return 0;
     }
     access_log(c->peer, c->reqline, status, body_len, note);
@@ -349,9 +348,7 @@ static int finish_error(struct req_ctx *c, int status, const char *extra,
     if (keep)
         return 1;
     if (status >= 400)
-        lingering_close(c->fd);
-    else
-        close(c->fd);
+        lingering_drain(c->fd);
     return 0;
 }
 
@@ -492,7 +489,7 @@ static void cgi_fail_note(const struct cgi_result *res, char *out, size_t cap)
  * CGI 출력은 다 모은 뒤 Content-Length 를 붙여 보내므로 응답 경계가 확실하다:
  * 성공하면 c->keep 에 따라 연결 유지 (CGI 가 4xx/5xx Status 를 줘도 같음).
  * *consumed: POST 면 헤더 + buf 안의 본문 바이트 (호출자가 미리 head_len 으로 채움).
- * 반환: 1 연결 유지 (fd 열림), 0 닫음.
+ * 반환: 1 연결 유지, 0 닫아야 함 (fd 는 워커 풀이 닫음).
  */
 static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
                      const struct http_request *req, const char *root,
@@ -559,7 +556,6 @@ static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
     if (sr != SEND_OK) {
         access_log(c->peer, c->reqline, 0, 0, send_fail_note(sr));
         cgi_result_free(&res);
-        close(fd);
         return 0;
     }
     access_log(c->peer, c->reqline, res.status, (long long)out_len, NULL);
@@ -568,9 +564,7 @@ static int serve_cgi(struct req_ctx *c, const char *buf, size_t len,
     if (c->keep)
         return 1;
     if (res.status >= 400)
-        lingering_close(fd);
-    else
-        close(fd);
+        lingering_drain(fd);
     return 0;
 }
 
@@ -618,10 +612,8 @@ static enum req_outcome handle_request(int conn_fd, const char *peer,
 
     /* keep-alive 요청 사이에 클라이언트가 닫음: 요청 로그 대신 호출자가 닫힘 로그 */
     if (nreq > 1 && len == 0 &&
-        (rr == READ_HEAD_CLOSED || rr == READ_HEAD_ERROR)) {
-        close(conn_fd);
+        (rr == READ_HEAD_CLOSED || rr == READ_HEAD_ERROR))
         return REQ_GONE;
-    }
 
     switch (rr) {
     case READ_HEAD_OK: {
@@ -683,8 +675,6 @@ static enum req_outcome handle_request(int conn_fd, const char *peer,
             if (r == 0)
                 c.sent_ok = 1;
             kept = r == 0 && c.keep;
-            if (!kept)
-                close(conn_fd);
             goto done;
         }
         status = r;            /* 아직 아무것도 안 보냄: 에러 응답으로 */
@@ -763,7 +753,6 @@ void server_handle(int conn_fd, const char *peer, const char *root)
             int w = wait_next_request(conn_fd);
 
             if (w != 1) {
-                close(conn_fd);
                 keepalive_log(peer, w == 0 ? "idle" : w == -2 ? "shutdown" : "eof",
                               nreq - 1, start);
                 return;
@@ -827,7 +816,7 @@ static void reject_busy(int fd, const char *peer)
     close(fd);
 }
 
-/* 워커 스레드에서 연결 하나 처리 */
+/* 워커 스레드에서 연결 하나 처리 (close 는 워커 풀이 함) */
 static void handle_item(const struct conn_item *item, void *root)
 {
     server_handle(item->fd, item->peer, root);
@@ -837,14 +826,16 @@ int server_run(int listen_fd, const char *root, int workers, int queue_cap)
 {
     struct conn_queue q;
     struct worker_pool pool;
-    int dropped;
+    int dropped, active, forced;
 
     if (queue_init(&q, queue_cap) < 0) {
         fprintf(stderr, "queue_init(%d): failed\n", queue_cap);
+        close(listen_fd);
         return -1;
     }
     if (pool_start(&pool, workers, &q, handle_item, (void *)root) < 0) {
         queue_destroy(&q);
+        close(listen_fd);
         return -1;
     }
     fprintf(stderr, "workers=%d queue=%d\n", workers, queue_cap);
@@ -882,10 +873,22 @@ int server_run(int listen_fd, const char *root, int workers, int queue_cap)
             close(conn_fd);
     }
 
-    pool_stop(&pool);              /* 큐를 닫고, 처리 중인 연결이 끝나길 기다림 */
+    /* 새 연결은 바로 Connection refused 가 되게 (S5). backlog 에 남은 연결은 RST */
+    close(listen_fd);
+
+    /* 큐에서 기다리던 연결은 처리하지 않고 바로 닫음 */
+    queue_close(&q);
     dropped = queue_drain(&q);
     if (dropped > 0)
         fprintf(stderr, "closed %d queued connection(s) without response\n", dropped);
+
+    active = pool_active(&pool);
+    if (active > 0)
+        fprintf(stderr, "shutting down: waiting for %d connection(s) (up to %ds)\n",
+                active, SHUTDOWN_TIMEOUT_MS / 1000);
+    forced = pool_stop(&pool, SHUTDOWN_TIMEOUT_MS, &server_stop);
+    if (forced > 0)
+        fprintf(stderr, "forced close of %d connection(s)\n", forced);
     queue_destroy(&q);
-    return 0;
+    return forced > 0 ? 1 : 0;
 }
