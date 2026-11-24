@@ -621,6 +621,46 @@ void server_handle(int conn_fd, const char *peer, const char *root)
 
 volatile sig_atomic_t server_stop = 0;
 
+/*
+ * 큐가 가득 찼을 때 accept 스레드에서 503 을 보내고 닫는다.
+ * accept 스레드가 막히면 안 되므로 어느 단계도 기다리지 않는다:
+ * 503 을 MSG_DONTWAIT 로 한 번 send (수백 바이트라 새 소켓 버퍼에 다 들어감) →
+ * 쓰기 방향 닫기(FIN) → 이미 도착한 요청 바이트만 비우기 (안 읽은 데이터가 남은 채
+ * close 하면 RST 가 나가 클라이언트가 503 을 못 볼 수 있음) → close.
+ */
+static void reject_busy(int fd, const char *peer)
+{
+    char resp[1024], junk[4096];
+    int hl, bl;
+    ssize_t n;
+
+    bl = http_format_error_body(resp + 512, 512, 503);
+    hl = bl < 0 ? -1 : http_format_head(resp, 512, 503, "text/html; charset=utf-8",
+                                        bl, NULL, time(NULL));
+    if (hl < 0) {
+        access_log(peer, "-", 0, 0, "(queue full, format failed)");
+        close(fd);
+        return;
+    }
+    memmove(resp + hl, resp + 512, (size_t)bl);   /* 헤더 바로 뒤로 본문을 붙임 */
+
+    do {
+        n = send(fd, resp, (size_t)(hl + bl), MSG_DONTWAIT | MSG_NOSIGNAL);
+    } while (n < 0 && errno == EINTR);
+    if (n != hl + bl) {
+        access_log(peer, "-", 0, 0, "(queue full, send failed)");
+        close(fd);
+        return;
+    }
+    access_log(peer, "-", 503, bl, "(queue full)");
+
+    shutdown(fd, SHUT_WR);
+    while ((n = recv(fd, junk, sizeof junk, MSG_DONTWAIT)) > 0 ||
+           (n < 0 && errno == EINTR))
+        ;
+    close(fd);
+}
+
 /* 워커 스레드에서 연결 하나 처리 */
 static void handle_item(const struct conn_item *item, void *root)
 {
@@ -668,12 +708,12 @@ int server_run(int listen_fd, const char *root, int workers, int queue_cap)
         item.fd = conn_fd;
         snprintf(item.peer, sizeof item.peer, "%s:%u", ip, ntohs(peer.sin_port));
 
-        /* 가득 차 있으면 자리가 날 때까지. 기다리는 동안에도 종료 신호를 확인 */
-        do {
-            qr = queue_push(&q, &item, QUEUE_PUSH_RETRY_MS);
-        } while (qr == QUEUE_TIMEOUT && !server_stop);
-        if (qr != QUEUE_OK)
-            close(conn_fd);        /* 종료 중: 넣지 못한 연결은 응답 없이 닫음 */
+        /* 워커도 큐도 가득: 기다리지 않고 바로 503 (S3) */
+        qr = queue_push(&q, &item, 0);
+        if (qr == QUEUE_TIMEOUT)
+            reject_busy(conn_fd, item.peer);
+        else if (qr != QUEUE_OK)
+            close(conn_fd);
     }
 
     pool_stop(&pool);              /* 큐를 닫고, 처리 중인 연결이 끝나길 기다림 */
