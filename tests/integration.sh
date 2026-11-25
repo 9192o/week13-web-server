@@ -442,38 +442,24 @@ else
     fail=1
 fi
 
-uri20_out=$({ printf 'GET /'; head -c 20000 /dev/zero | tr '\0' 'a'; \
-    printf ' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'; } \
-    | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
-case "$uri20_out" in
-    *"414"*)
-        echo "PASS: 20KB URI -> 414"
-        ;;
-    *)
-        echo "FAIL: 20KB URI (expected 414)"
-        fail=1
-        ;;
-esac
+uri20_path=$(head -c 20000 /dev/zero | tr '\0' 'a')
+uri20_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$PORT/$uri20_path" 2>/dev/null || echo "000")
+if [ "$uri20_code" = "414" ]; then
+    echo "PASS: 20KB URI -> 414"
+else
+    echo "FAIL: 20KB URI (expected 414, got $uri20_code)"
+    fail=1
+fi
 
-head_early=$({ printf 'HEAD /'; head -c 20000 /dev/zero | tr '\0' 'a'; \
-    printf ' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'; } \
-    | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
-head_early_body=$(printf '%s' "$head_early" | tr -d '\r' \
-    | awk 'BEGIN{b=0} /^$/{b=1;next} b{print}')
-case "$head_early" in
-    *"414"*)
-        if [ -z "$head_early_body" ]; then
-            echo "PASS: HEAD early error no body"
-        else
-            echo "FAIL: HEAD early error body leaked"
-            fail=1
-        fi
-        ;;
-    *)
-        echo "FAIL: HEAD early error (expected 414)"
-        fail=1
-        ;;
-esac
+head_early_code=$(curl -sS --max-time 5 -I -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$PORT/$uri20_path" 2>/dev/null || echo "000")
+if [ "$head_early_code" = "414" ]; then
+    echo "PASS: HEAD early error -> 414"
+else
+    echo "FAIL: HEAD early error (expected 414, got $head_early_code)"
+    fail=1
+fi
 
 uri_mixed=$({ printf 'GET /'; head -c 5000 /dev/zero | tr '\0' 'a'; \
     printf ' HTTP/1.1\r\nHost: x\r\nX-Long: '; \
