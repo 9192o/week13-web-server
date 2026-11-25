@@ -99,7 +99,7 @@ void conn_common_accept_new(int listenfd, ev_loop_t *loop, conn_t **head,
             break;
         }
 
-        if (*count >= cfg->max_conns) {
+        if (*count + conn_common_extra_connections() >= cfg->max_conns) {
             conn_common_reject_overloaded(fd, &peer);
             continue;
         }

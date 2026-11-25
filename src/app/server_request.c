@@ -2,7 +2,9 @@
 
 #include "conn_common.h"
 #include "http.h"
+#ifndef BACKEND_ONLY
 #include "proxy.h"
+#endif
 #include "static_file.h"
 #include "util.h"
 
@@ -134,6 +136,7 @@ int process_buffer(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
     int is_cgi = cfg->cgi_dir[0] != '\0' &&
                  strncmp(c->req.path, "/cgi-bin/", 9) == 0;
 
+#ifndef BACKEND_ONLY
     if (!is_cgi) {
         route_spec_t *route = config_find_route((config_t *)cfg, c->req.path);
         if (route != NULL && route->type == ROUTE_PROXY) {
@@ -167,6 +170,9 @@ int process_buffer(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
             return 1;
         }
     }
+#else
+    (void)buffered;
+#endif
 
     if (c->req.chunked) {
         if (conn_common_build_error(c, HTTP_NOT_IMPLEMENTED, 1, head, 0,

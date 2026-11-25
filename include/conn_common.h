@@ -14,9 +14,11 @@ typedef int (*conn_process_fn)(conn_t *c, ev_loop_t *loop, void *ctx,
 typedef struct {
     void (*detach)(conn_t *c);
     int (*next_timeout_ms)(void);
+    int (*extra_connections)(void);
 } conn_common_hooks_t;
 
 void conn_common_set_hooks(const conn_common_hooks_t *hooks);
+int conn_common_extra_connections(void);
 
 int conn_common_set_nonblocking(int fd);
 int conn_common_set_cloexec(int fd);

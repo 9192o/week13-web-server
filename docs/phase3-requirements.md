@@ -231,8 +231,8 @@
 - [x] gzip 응답을 그대로 중계하는 정책 문서화
 - [x] `Content-Encoding`/`Content-Length`/`Vary` 보존
 
-> 구현 상태 (2026-11-25): 기본 배포는 `client → reverse-proxy → server --backend`. `tests/integration_p3.sh` **42 PASS** (라우팅/Round-Robin/502/504/헤더/chunked/gzip/keep-alive/pool/static, **upstream EOF/Connection: close/close-delimited, 1xx+final, body idle, 205, HEAD/204/304, HTTP/1.0, backend failover, client abort, pool idle timeout, strip_prefix, max_upstreams, slow request body 408** 포함). `tests/backend.c` C 테스트 backend 추가. `make test` **358 assertions**, 전체 integration **182 PASS**, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS, backend 2개).
-> 남은 것: active `/health`, 캐싱, gzip 변환, Forward/CONNECT, 설정 파일 IPv6 literal, max_conns와 upstream fd 정책.
+> 구현 상태 (2026-11-25): 기본 배포는 `client → reverse-proxy → backend-server`. `tests/integration_p3.sh` **42 PASS** (라우팅/Round-Robin/502/504/헤더/chunked/gzip/keep-alive/pool/static, **upstream EOF/Connection: close/close-delimited, 1xx+final, body idle, 205, HEAD/204/304, HTTP/1.0, backend failover, client abort, pool idle timeout, strip_prefix, max_upstreams, slow request body 408** 포함). `tests/backend.c` C 테스트 backend 추가. `make test` **358 assertions**, 전체 integration **182 PASS**, proxy 테스트 포함 **208 PASS**, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS, backend 2개).
+> 남은 것: active `/health`, 캐싱, gzip 변환, Forward/CONNECT, 설정 파일 IPv6 literal, TLS/호스트 라우팅.
 
 ## 5. 범위 제외
 

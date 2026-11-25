@@ -3,6 +3,7 @@
 *.dSYM/
 server
 server_ev
+backend-server
 reverse-proxy
 run_tests
 tests/backend

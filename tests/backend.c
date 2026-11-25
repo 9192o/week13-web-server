@@ -473,6 +473,19 @@ static int handle_one(int fd) {
     if (strcmp(path, "/chunked") == 0)
         return send_chunked(fd, keep_alive);
 
+    if (strcmp(path, "/trailer") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Trailer: X-Sum\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "5\r\nhello\r\n"
+            "0\r\nX-Sum: 42\r\n\r\n";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
     if (strcmp(path, "/gzip") == 0) {
         return send_response(fd, 200, "text/plain",
                              (const char *)gzip_body, sizeof gzip_body,

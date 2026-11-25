@@ -27,6 +27,12 @@ int conn_common_hook_next_timeout_ms(void) {
     return g_hooks->next_timeout_ms();
 }
 
+int conn_common_extra_connections(void) {
+    if (g_hooks == NULL || g_hooks->extra_connections == NULL)
+        return 0;
+    return g_hooks->extra_connections();
+}
+
 conn_t *conn_common_new(int fd, const struct sockaddr_in *peer,
                         const config_t *cfg, ev_loop_t *loop) {
     conn_t *c = calloc(1, sizeof *c);

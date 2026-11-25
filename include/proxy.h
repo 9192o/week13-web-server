@@ -9,6 +9,7 @@
 typedef struct proxy_conn proxy_conn_t;
 
 int proxy_init(const config_t *cfg);
+int proxy_upstream_connections(void);
 void proxy_cleanup(void);
 void proxy_sweep(void);
 int proxy_next_timeout_ms(void);

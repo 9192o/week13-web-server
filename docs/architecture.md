@@ -5,11 +5,11 @@
 ## 0. 기본 배포 구조
 
 ```text
-클라이언트 → reverse-proxy:8080 → server --backend:8001
+클라이언트 → reverse-proxy:8080 → backend-server:8001
 ```
 
 - `reverse-proxy`가 프론트 진입점이다. docroot/CGI가 없고, route에 맞는 요청만 backend로 중계한다.
-- `server --backend`는 정적 파일/CGI만 처리하는 백엔드 모드다. proxy route가 있으면 시작 시 거부한다.
+- `backend-server`는 정적 파일/CGI만 처리하는 별도 백엔드 바이너리다. proxy route가 있으면 시작 시 거부한다.
 - `server` 단독 실행(full mode)은 정적/CGI/proxy를 한 프로세스에서 처리하는 비교용 통합 모드다.
 - 예제 설정/실행은 `examples/proxy-first/`에 있다.
 
@@ -17,7 +17,7 @@
 
 - 연결마다 스레드를 만들지 않고 **단일 이벤트 루프**에서 non-blocking I/O로 처리한다.
 - CGI처럼 block될 수 있는 작업만 **worker thread pool**로 분리한다.
-- 기본 배포에서는 프록시(`reverse-proxy`)와 백엔드(`server --backend`)를 분리한다. 통합 모드(`server`)에서는 정적/CGI/프록시를 한 프로세스에서 처리한다.
+- 기본 배포에서는 프록시(`reverse-proxy`)와 백엔드(`backend-server`)를 분리한다. 통합 모드(`server`)에서는 정적/CGI/프록시를 한 프로세스에서 처리한다.
 - 프록시 backend 연결은 **keep-alive pool**로 재사용한다.
 - 잘못된 설정은 시작 시 **fail-fast**로 거부한다.
 
@@ -38,7 +38,7 @@ main thread
 
         │ HTTP
 
-[server --backend 프로세스]
+[backend-server 프로세스]
 main thread
   - epoll / kqueue / poll
   - client conn_t 상태 머신
@@ -81,6 +81,7 @@ main_proxy ────→ proxy_server ──┘     │
 | --- | --- |
 | `app/main_ev.c` | 백엔드/통합 진입점, `server_ev_run()` |
 | `app/main_proxy.c` | 프론트 진입점, `proxy_server_run()` |
+| `app/main_backend.c` | 백엔드 진입점, `server_ev_run()` |
 | `app/proxy_server.c` | 프록시 앱 콜백, proxy init/cleanup |
 | `common/config.c` / `common/config_file.c` | CLI/INI 설정, 검증, route 매칭 |
 | `conn/conn_loop.c` | listener/signal/event dispatch, timeout, drain |
@@ -321,7 +322,7 @@ config_init
 - 설정 파일은 `key value`, `[route]`, `[global]` 형식이다.
 - route 중복, backend 없는 proxy route, static route의 backend, IPv6 literal backend, 잘못된 숫자를 시작 시 거부한다.
 - backend hostname은 시작 시 1회 resolve한다. 설정 hot reload는 없다.
-- `max_conns`는 client 연결 수, `max_upstreams`는 활성 프록시 연결 수를 제한한다.
+- `max_conns`는 client 연결 + proxy upstream fd(활성/idle pool) 합계를, `max_upstreams`는 활성 프록시 연결 수를 제한한다.
 
 ## 10. 종료와 자원
 

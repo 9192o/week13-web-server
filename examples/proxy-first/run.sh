@@ -4,7 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$ROOT"
 
-make server reverse-proxy cgi >/dev/null
+make backend-server reverse-proxy cgi >/dev/null
 
 TMP="${TMPDIR:-/tmp}/web_server_proxy_first.$$"
 mkdir -p "$TMP"
@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-./server --backend --config examples/proxy-first/backend.conf >"$TMP/backend.log" 2>&1 &
+./backend-server --config examples/proxy-first/backend.conf >"$TMP/backend.log" 2>&1 &
 BACKEND_PID=$!
 
 ./reverse-proxy --config examples/proxy-first/proxy.conf >"$TMP/proxy.log" 2>&1 &

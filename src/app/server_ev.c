@@ -2,7 +2,9 @@
 
 #include "conn_common.h"
 #include "conn_loop.h"
+#ifndef BACKEND_ONLY
 #include "proxy.h"
+#endif
 #include "server_internal.h"
 #include "task_pool.h"
 
@@ -70,29 +72,39 @@ static void server_extra_event(void *ctx, ev_loop_t *loop, conn_t *head,
 }
 
 static void server_tick(void *ctx) {
+#ifndef BACKEND_ONLY
     server_app_ctx *app = ctx;
     if (app->cfg->mode == SERVER_MODE_BACKEND)
         return;
     proxy_sweep();
     proxy_reap();
+#else
+    (void)ctx;
+#endif
 }
 
+#ifndef BACKEND_ONLY
 static void server_upstream_event(void *p, uint32_t events) {
     proxy_handle_upstream_event((proxy_conn_t *)p, events);
 }
+#endif
 
 static int server_start(void *ctx, ev_loop_t *loop) {
     (void)loop;
     server_app_ctx *app = ctx;
+#ifndef BACKEND_ONLY
     if (app->cfg->mode != SERVER_MODE_BACKEND && proxy_init(app->cfg) < 0) {
         proxy_cleanup();
         return -2;
     }
+#endif
     app->pool = task_pool_create(app->cfg->task_workers,
                                  app->cfg->task_queue_size);
     if (app->pool == NULL) {
+#ifndef BACKEND_ONLY
         if (app->cfg->mode != SERVER_MODE_BACKEND)
             proxy_cleanup();
+#endif
         return -2;
     }
     return task_pool_completion_fd(app->pool);
@@ -106,28 +118,42 @@ static void server_stop(void *ctx) {
         task_pool_destroy(app->pool);
         app->pool = NULL;
     }
+#ifndef BACKEND_ONLY
     if (app->cfg->mode != SERVER_MODE_BACKEND) {
         proxy_shutdown_all();
         proxy_cleanup();
     }
+#endif
 }
 
 int server_ev_run(const config_t *cfg) {
+#ifndef BACKEND_ONLY
     static const conn_common_hooks_t hooks = {
-        proxy_detach, proxy_next_timeout_ms
+        proxy_detach, proxy_next_timeout_ms, proxy_upstream_connections
     };
+#define SERVER_HOOKS &hooks
+#define SERVER_CLIENT_EVENT proxy_handle_client_event
+#define SERVER_UPSTREAM_EVENT server_upstream_event
+#else
+#define SERVER_HOOKS NULL
+#define SERVER_CLIENT_EVENT NULL
+#define SERVER_UPSTREAM_EVENT NULL
+#endif
     server_app_ctx app = {.cfg = cfg, .pool = NULL};
     const conn_loop_app_t loop_app = {
-        .name = "server",
-        .hooks = &hooks,
+        .name = cfg->mode == SERVER_MODE_BACKEND ? "backend-server" : "server",
+        .hooks = SERVER_HOOKS,
         .start = server_start,
         .stop = server_stop,
         .extra_event = server_extra_event,
         .tick = server_tick,
         .readable = server_readable,
         .writable = server_writable,
-        .client_event = proxy_handle_client_event,
-        .upstream_event = server_upstream_event,
+        .client_event = SERVER_CLIENT_EVENT,
+        .upstream_event = SERVER_UPSTREAM_EVENT,
     };
     return conn_loop_run(cfg, &loop_app, &app);
+#undef SERVER_HOOKS
+#undef SERVER_CLIENT_EVENT
+#undef SERVER_UPSTREAM_EVENT
 }

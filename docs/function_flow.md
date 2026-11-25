@@ -10,8 +10,8 @@
 
 ## 0. 실행 모드
 
-- **기본(프록시 우선)**: `main_proxy` → `proxy_server` → `conn_loop` → backend `server --backend`
-- **백엔드**: `main_ev` → `server_ev` → `conn_loop`; 정적/CGI만 처리하고 proxy route는 거부
+- **기본(프록시 우선)**: `main_proxy` → `proxy_server` → `conn_loop` → backend `backend-server`
+- **백엔드**: `main_backend` → `server_ev` → `conn_loop`; 정적/CGI만 처리하고 proxy route는 거부
 - **통합(비교용)**: `main_ev` → `server_ev`; 정적/CGI/proxy를 한 프로세스에서 처리
 
 아래 흐름은 통합 서버와 백엔드에 공통인 `conn_loop`/`conn_*`를 기준으로 설명하고, 프록시 요청은 별도로 표시한다.
@@ -43,7 +43,7 @@ main_proxy                   src/app/main_proxy.c
 백엔드:
 
 ```text
-main_ev                      src/app/main_ev.c
+main_backend                 src/app/main_backend.c
 ├─ config_init
 ├─ config_parse_cli
 ├─ config_validate
@@ -70,7 +70,7 @@ main_ev                      src/app/main_ev.c
    │        └─ proxy_relay → backend
    │
    ▼
-server --backend conn_loop
+backend-server conn_loop
    ├─ server_readable → conn_common_read_headers
    │  └─ process_buffer (src/app/server_request.c)
    │     ├─ /cgi-bin/ → submit_cgi
@@ -194,7 +194,7 @@ return conn_loop_run(cfg, &app, &ctx);
 `src/conn/conn_net.c`
 
 - `accept()`를 non-blocking으로 반복한다.
-- `*count >= cfg->max_conns`이면 `conn_common_reject_overloaded()`로 `503 + Retry-After: 1`을 보내고 닫는다.
+- `*count + proxy_upstream_connections() >= cfg->max_conns`이면 `conn_common_reject_overloaded()`로 `503 + Retry-After: 1`을 보내고 닫는다. (`client + active/idle upstream` 합계)
 - `conn_common_set_nonblocking()`, `conn_common_set_cloexec()` 후 `conn_common_new()`.
 - `ev_add(fd, EV_READ, c)`로 등록하고 연결 리스트에 넣는다.
 
@@ -603,7 +603,7 @@ proxy_shutdown_all()
    - 프록시는 chunk를 재인코딩하지 않고 원문 byte를 그대로 전달한다.
    - 정적/CGI route는 chunked 요청을 `501`로 거절한다.
 
-5. **`max_conns`는 client만 센다**
+5. **`max_conns`는 client+upstream 합계를 센다**
    - 프록시 연결은 upstream fd가 추가로 필요하다.
    - 동시 프록시 연결은 `max_upstreams`로 별도 제한한다.
 

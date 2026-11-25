@@ -43,7 +43,7 @@ Phase 3는 Phase 1의 HTTP 파서/응답 빌더와 Phase 2의 이벤트 루프/�
 
 ## 3. 전체 구조
 
-기본 배포는 **클라이언트 → `reverse-proxy` → `server --backend`**다.
+기본 배포는 **클라이언트 → `reverse-proxy` → `backend-server`**다.
 
 ```text
 클라이언트
@@ -58,14 +58,14 @@ reverse-proxy
    │
    │ HTTP + keep-alive pool
    ▼
-server --backend
+backend-server
    main_ev → server_ev → conn_loop
    ├─ static_file
    └─ server_cgi → cgi_task → task_pool
 ```
 
 - `reverse-proxy`가 프론트 진입점이고, backend 연결을 pool로 재사용한다.
-- `server --backend`는 정적 파일/CGI만 처리하며 proxy route를 시작 시 거부한다.
+- `backend-server`는 정적 파일/CGI만 처리하며 proxy route를 시작 시 거부한다.
 - `server` 단독 실행(full mode)은 정적/CGI/proxy를 한 프로세스에서 처리하는 비교용 통합 모드다.
 - 소켓 I/O는 두 프로세스 모두 각자의 이벤트 루프가 담당한다. CGI만 backend의 task pool로 분리한다.
 
@@ -82,6 +82,7 @@ server --backend
 | `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_PROXY`, event source kind |
 | `tests/backend.c`, `tests/integration_p3.sh` | 테스트용 C backend와 Phase 3 통합 테스트 |
 | `src/app/main_proxy.c`, `src/app/proxy_server.c` | 프론트 진입점, 프록시 앱 콜백/proxy 초기화 |
+| `src/app/main_backend.c` | 백엔드 전용 진입점 |
 | `src/app/server_ev.c` | 백엔드/통합 앱 어댑터, `conn_loop` 콜백, proxy 이벤트 dispatch |
 | `src/app/server_request.c` | client 상태 `ST_PROXY` route 분기, 정적 응답 |
 | `src/conn/conn_loop.c`, `src/conn/conn_io.c` | 이벤트 dispatch, header read, read/write 상태 머신 |
@@ -692,11 +693,11 @@ Phase 2 drain을 확장한다.
   - connect/response/body timeout, 502/504. client request body timeout은 408.
   - client keep-alive, 1MB body, backpressure.
   - `strip_prefix 1` route, `max_upstreams` 상한(503 + `Retry-After`), upstream reason phrase/Trailer 보존.
-- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/integration_p3.sh` 42개 PASS. `make test` **358 assertions**, 전체 integration **182 PASS**, `make proxy-bin-test` 12 PASS, `make proxy-front-test` 6 PASS, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/integration_p3.sh` 42개 PASS. `make test` **358 assertions**, 전체 integration **182 PASS**, `make proxy-bin-test` 12 PASS, `make proxy-front-test` 14 PASS (총 **208 PASS**), `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
 - **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205/HEAD/204/304 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용, slow request body 408, upstream 상한 503.
 - **알려진 한계**:
   - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.
-  - `max_conns`는 client만 세므로 proxy 연결에서는 upstream fd가 2배 필요하다.
+  - `max_conns`는 client+proxy upstream fd 합계를 제한한다. 별도로 `max_upstreams`가 활성 프록시 연결을 제한한다.
   - 설정 파일의 IPv6 literal(`[::1]:8001`)은 아직 지원하지 않는다.
   - `test_proxy_route.c`/`test_proxy_pool.c` 단위 테스트 대신 integration으로 검증한다.
   - active `/health`, 캐싱, gzip 변환, Forward proxy, CONNECT는 범위 밖.

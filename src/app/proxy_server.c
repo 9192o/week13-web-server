@@ -129,7 +129,7 @@ static void proxy_app_stop(void *ctx) {
 
 int proxy_server_run(const config_t *cfg) {
     static const conn_common_hooks_t hooks = {
-        proxy_detach, proxy_next_timeout_ms
+        proxy_detach, proxy_next_timeout_ms, proxy_upstream_connections
     };
     proxy_app_ctx app = {.cfg = cfg};
     const conn_loop_app_t loop_app = {

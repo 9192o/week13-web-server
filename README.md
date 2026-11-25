@@ -37,14 +37,14 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
         │ HTTP (backend keep-alive pool)
         ▼
 ┌──────────────────────────────────────────────┐
-│ server --backend (백엔드 프로세스)           │
+│ backend-server (백엔드 프로세스)            │
 │ main_ev → server_ev → conn_loop              │
 │ static_file / task_pool → cgi                │
 └──────────────────────────────────────────────┘
 ```
 
 - `reverse-proxy`가 클라이언트 요청을 먼저 받고, route에 따라 backend로 중계합니다.
-- `server --backend`는 정적 파일과 CGI만 처리합니다. proxy route는 시작 시 거부합니다.
+- `backend-server`는 정적 파일과 CGI만 처리합니다. proxy route는 시작 시 거부합니다.
 - 프록시와 백엔드는 각자 이벤트 루프를 가진 별도 프로세스입니다.
 - **CGI만** 백엔드에서 task pool로 분리합니다. access log/logger도 각 프로세스에서 처리합니다.
 
@@ -86,7 +86,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 1. `reverse-proxy`의 `conn_loop`가 클라이언트 연결을 accept하고 HTTP 요청을 파싱합니다.
 2. `proxy_route`가 longest-prefix로 backend를 고릅니다.
 3. `proxy_connection`이 backend 연결을 얻고 요청을 보냅니다. keep-alive pool에 idle 연결이 있으면 재사용합니다.
-4. `proxy_relay`가 요청/응답 body를 중계합니다. backend는 `server --backend`이고, 여기서 정적 파일/CGI를 처리합니다.
+4. `proxy_relay`가 요청/응답 body를 중계합니다. backend는 `backend-server`이고, 여기서 정적 파일/CGI를 처리합니다.
 5. backend 응답을 클라이언트에 전달합니다. 프록시와 백엔드는 각자 keep-alive/timeout을 관리합니다.
 
 ### 통합 모드
@@ -248,6 +248,8 @@ Linux 또는 macOS에서:
 make
 ```
 
+`make`는 `server`, `server_ev`, `reverse-proxy`, `backend-server`를 빌드합니다.
+
 ### 기본: 프록시 우선
 
 기본 배포 구조는 **클라이언트 → `reverse-proxy` → `server` 백엔드**입니다.
@@ -265,11 +267,11 @@ make demo-proxy
 또는 직접:
 
 ```sh
-./server --backend --config examples/proxy-first/backend.conf &
+./backend-server --config examples/proxy-first/backend.conf &
 ./reverse-proxy --config examples/proxy-first/proxy.conf &
 ```
 
-- `server --backend`: 정적 파일/CGI만 처리하고 proxy route는 거부합니다.
+- `backend-server`: 정적 파일/CGI만 처리하고 proxy route는 거부합니다. proxy 코드가 링크되지 않습니다.
 - `reverse-proxy`: docroot 없이 모든 요청을 backend로 중계합니다.
 - `http://127.0.0.1:8080/`
 - `http://127.0.0.1:8080/demo/`
@@ -393,7 +395,7 @@ make proxy-bin-test    # standalone reverse-proxy 테스트
 make proxy-front-test  # client -> proxy -> backend 통합 테스트
 ```
 
-현재 로컬 기준 `make test`는 **358 assertions**, 전체 integration은 proxy 테스트를 포함해 **194 PASS**입니다.
+현재 로컬 기준 `make test`는 **358 assertions**, 전체 integration은 proxy 테스트를 포함해 **208 PASS**입니다.
 
 - Linux CI: 빌드, 전체 integration, sanitize, load, proxy-load, proxy-front-test를 실행
 - proxy `ab -k -n 10000 -c 100`: `failed=0`, 로컬 약 10k rps
@@ -405,8 +407,8 @@ make proxy-front-test  # client -> proxy -> backend 통합 테스트
 - 캐싱, gzip 변환, active health check는 범위 밖입니다. gzip은 pass-through만 합니다.
 - backend hostname은 시작 시 한 번 resolve합니다. DNS 변경은 재시작해야 반영됩니다.
 - 설정 파일의 IPv6 literal backend(`[::1]:8001`)는 지원하지 않습니다.
-- `max_conns`는 client 연결만 세므로 프록시 사용 시 upstream fd가 추가로 필요합니다.
-- `server --backend`는 런타임 모드이며, 바이너리에는 full 모드용 프록시 코드가 함께 링크됩니다.
+- `max_conns`는 client 연결과 proxy upstream fd(활성+idle pool)의 합계를 제한합니다. `max_upstreams`는 활성 프록시 연결만 제한합니다.
+- `backend-server`는 proxy 코드를 링크하지 않는 별도 백엔드 바이너리입니다. `server --backend`는 호환용 런타임 모드입니다.
 - `pool max_idle` 기본값이 8이라 동시 연결이 많으면 backend 연결이 여러 개 생길 수 있습니다.
 
 ## 문서

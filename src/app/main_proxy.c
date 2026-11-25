@@ -11,10 +11,13 @@ int main(int argc, char **argv) {
 
     int has_config = 0;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--config") == 0) {
-            has_config = 1;
-            break;
+        if (strcmp(argv[i], "--backend") == 0) {
+            fprintf(stderr, "%s: --backend is for server, not reverse-proxy\n",
+                    argv[0]);
+            return 1;
         }
+        if (strcmp(argv[i], "--config") == 0)
+            has_config = 1;
     }
     if (!has_config) {
         fprintf(stderr,

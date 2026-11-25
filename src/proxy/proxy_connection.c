@@ -19,6 +19,16 @@ static proxy_conn_t *g_active;
 static proxy_conn_t *g_dead;
 static int g_active_upstreams;
 
+int proxy_upstream_connections(void) {
+    int total = g_active_upstreams;
+    for (int i = 0; i < proxy_route_count(); i++) {
+        proxy_route_t *r = proxy_route_at(i);
+        for (int j = 0; j < r->backend_count; j++)
+            total += r->backends[j].idle_count;
+    }
+    return total;
+}
+
 int proxy_init(const config_t *cfg) {
     g_active = NULL;
     g_dead = NULL;
