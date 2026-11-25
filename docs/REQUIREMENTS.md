@@ -7,8 +7,8 @@
 | 과제 항목 | 현재 상태 |
 | --- | --- |
 | TCP 서버, 요청 파싱, HTTP 응답, 정적 파일과 기본 MIME | 구현됨. [Phase 1 계약](PHASE_1_REQUIREMENTS.md) 및 [라우팅 실습](ROUTING_DEMO.md) 참고 |
-| 동적 요청 | `POST /echo`가 받아 온 본문으로 응답을 생성한다. 리버스 프록시 경로에서는 설정된 백엔드로 요청을 전달한다. CGI는 범위 밖이다. |
-| 동시 처리, 정상 종료, 연결 재사용 | Linux LT `epoll`과 `signalfd`로 구현. 단일 프로세스·스레드이며 macOS 네이티브 지원은 검증하지 않았다. |
+| 동적 요청 | `POST /echo`, 설정된 백엔드 전달, `--cgi-root`를 지정한 웹서버의 CGI 실행을 지원한다. |
+| 동시 처리, 정상 종료, 연결 재사용 | Linux LT `epoll`과 `signalfd`로 구현. 프로그램당 네트워크 루프 1개, CGI 사용 시 전용 워커 추가. macOS 네이티브 지원은 검증하지 않았다. |
 | 기능·동시 접속·메모리 검증 | [Phase 1–3 통합 검증](PHASE_3_TESTING.md). 기존 부하 측정은 [Phase 2 검증 기록](PHASE_2_TESTING.md)에 별도로 남긴다. |
 | Forward 또는 Reverse Proxy 중 하나 이상 | Reverse Proxy를 선택했다. 라우팅·HTTP·실패 정책은 [Phase 3 설계](PHASE_3_ARCHITECTURE.md)를 따른다. |
 
@@ -196,11 +196,11 @@ C10K 달성이나 특정 RPS 수치는 원문에 정해진 합격 기준이 아�
 | --- | --- | --- |
 | 프록시 방식 | Forward / Reverse / 둘 다 | Phase 3에서 Reverse Proxy 선택 |
 | 동시성 모델 | fork / pthread / 이벤트 루프, 선택 이유와 제약 | Phase 1은 블로킹 순차, Phase 2부터 단일 스레드 LT `epoll`과 `signalfd` |
-| 동적 처리 | CGI / 백엔드 전달 / 기타 직접 구현 방식 | 로컬 POST `/echo`와 설정 경로의 HTTP 백엔드 전달. CGI는 범위 밖 |
+| 동적 처리 | CGI / 백엔드 전달 / 기타 직접 구현 방식 | 로컬 POST `/echo`, 설정 경로의 HTTP 백엔드 전달, 명시적으로 활성화한 CGI |
 | 실행 설정 | CLI / 설정 파일, 포트·루트·라우팅 문법 | `webserver`: `--port`/`--root`. 별도 `reverse-proxy`: `--port`와 `--route /prefix/=IPv4:PORT` |
 | 지원 환경 | Linux Docker 컨테이너. 호스트 OS의 네이티브 실행·검증은 필수 범위에서 제외 | 사용자 확정. Linux/amd64·Debian 13·C17 개발환경 구성 작성, 검증 상태는 D-07 원장. 최소 커널·서버 실행 세부는 미정 |
 | HTTP 범위 | 버전, 본문 프레이밍, 미지원 입력 처리 | Phase 1은 HTTP/1.1·CL·chunked·GET/HEAD/POST. 버전 차이·trailer 등은 D-03·D-04에서 결정 |
-| 연결 정책 | keep-alive 지원 여부, 연결 종료·시간 제한 | Phase 2의 로컬 요청은 재사용 가능. Phase 3 프록시 교환은 응답 뒤 연결 종료 |
+| 연결 정책 | keep-alive 지원 여부, 연결 종료·시간 제한 | 로컬 요청은 재사용 가능. 프록시 양쪽 연결은 고정 길이 응답 등 조건을 만족하면 독립적으로 재사용 |
 | 정적 파일 정책 | 기본 문서, 디렉터리·심볼릭 링크·루트 이탈·기본 MIME | Phase 1은 index.html·목록 금지·루트 내부 링크 허용. MIME·URL 세부와 안전한 열기는 D-01·D-02 |
 | 프록시 정책 | 대상 포트, 경로·Host·연결별 헤더, 응답 프레이밍 | 숫자 IPv4 설정으로 접속, `Host` 재작성, 연결별 헤더 제거, 응답 프레이밍 재구성 |
 | 라우팅 정책 | Reverse 선택 시 규칙 매칭·우선순위·미일치·경로 변경 | 최장 경로 접두사 우선, 같은 접두사 내 라운드 로빈, 미일치 `404`, 전달 경로·쿼리 보존 |

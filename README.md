@@ -2,50 +2,49 @@
 
 ## 🧭 개요
 
-크래프톤 정글 13주차 학습 프로젝트. TCP 연결을 받는 순간부터 HTTP 응답을 쓰기까지 직접 구현했다.
-`webserver`는 정적 파일과 `/echo`를 제공하고, `reverse-proxy`는 앞단에서 요청을 받아
-설정된 HTTP 백엔드로 중계한다. 두 프로그램은 공통 HTTP 파서와 이벤트 루프를 쓰지만 서로의 실행 파일 없이 빌드·기동할 수 있다.
+> 크래프톤 정글 13주차 학습 프로젝트입니다.
+
+- 서버가 TCP 연결을 받는 순간부터 HTTP 응답을 쓰기까지 직접 구현했습니다.
+- `webserver`는 **정적 파일, 바이너리 `/echo`, 선택적 CGI**를 제공하고, `reverse-proxy`는 **경로별 백엔드 선택·연결 재시도·양쪽 연결 재사용**을 담당합니다. 두 실행 파일은 HTTP 파서와 이벤트 루프를 공유하지만 독립적으로 실행합니다.
+
+```text
+클라이언트 ── HTTP ── reverse-proxy ── HTTP ── webserver A/B
+                                                ├─ 정적 파일
+                                                ├─ POST /echo
+                                                └─ /cgi-bin/이름 → CGI 작업 큐 → 자식 프로세스
+```
+
+프록시 없이 `webserver`에 직접 접속할 수도 있습니다. 양쪽 HTTP 연결의 재사용 여부는 각각 결정합니다.
 
 ### 📋 요구 사항
 
-| 단계 | 요구 사항과 구현 |
-| --- | --- |
+| 단계      | 요구 사항과 구현                                                          |
+| ------- | ------------------------------------------------------------------ |
 | Phase 1 | TCP 리스너, HTTP/1.1 요청 파싱과 응답 생성, 정적 `GET`/`HEAD`, 바이너리 `POST /echo` |
-| Phase 2 | 논블로킹 I/O로 여러 연결 처리, 연결 재사용, 순차 파이프라이닝, `SIGINT`/`SIGTERM` 정상 종료 |
-| Phase 3 | 과제의 Forward/Reverse Proxy 선택 항목 중 **Reverse Proxy** 구현: 경로 기반 중계, 백엔드 풀, 실패·타임아웃 처리 |
-
-세부 항목은 [전체 과제 요구사항](docs/REQUIREMENTS.md)을 참고한다.
-
-### 🧰 기술 스택/제한
-
-- **C17 · GCC · Make**: 서버 프레임워크나 외부 이벤트 루프 라이브러리 없이 Linux 소켓과 `epoll`을 사용한다.
-- **HTTP/1.1 · IPv4/TCP**: 두 프로그램은 `127.0.0.1`에서 수신한다. 정적 파일 열기에는 Linux `openat2`를 사용한다.
-- **범위 밖**: TLS, HTTP/2, Forward Proxy, `CONNECT`, 업그레이드, 백엔드 DNS·캐싱·자동 장애 조치.
+| Phase 2 | 논블로킹 I/O로 여러 연결 처리, 연결 재사용, 순차 파이프라이닝, `SIGINT`/`SIGTERM` 정상 종료    |
+| Phase 3 | **Reverse Proxy** 구현: 경로 기반 중계, 백엔드 풀, 실패/타임아웃 처리                  |
 
 ### 🐳 개발 환경
 
-기준 환경은 **Linux/amd64 Docker**다. 호스트에는 Docker CLI, Linux 컨테이너 데몬, POSIX 셸이 필요하다.
-개발 이미지에는 GCC, Make, Python 3, curl, Valgrind가 들어 있다. WSL에서는 `dev.sh`가 `docker.exe`를 사용한다.
+- **Linux/amd64 Docker** 환경에서 개발했습니다.
+- 개발 이미지에는 GCC, Make, Python 3, curl, Valgrind가 들어있습니다.
+- WSL에서는 `dev.sh`가 `docker.exe`를 사용하여 작동합니다.
 
 ```sh
 sh dev.sh build
 sh dev.sh shell
 ```
 
-개발 셸에서 `make`로 두 실행 파일을 빌드하거나, `make webserver`와
-`make reverse-proxy`로 각각 빌드한다. 두 대상은 공통 소스를 사용하지만 서로의
-실행 파일을 필요로 하지 않는다.
-
-`webserver` 단독 실행에는 `--port`와 `--root`가 필요하다. 저장소 전체가 아니라 공개용 `public/`을 루트로 사용한다.
+- 개발 셸에서 `make`로 두 실행 파일을 빌드하거나, `make webserver`와 `make reverse-proxy`로 각각 빌드합니다.
+- `webserver` 단독 실행에는 `--port`와 `--root`가 필요합니다. **공개용 `public/`을 루트로 사용합니다**.
 
 ```sh
 make webserver
 ./webserver --port 8080 --root public
 ```
 
-개발 컨테이너는 호스트에 포트를 공개하지 않는다. 호스트에서 `docker ps`로 컨테이너를 찾고
-`docker exec -it <컨테이너-ID> bash`로 같은 컨테이너에 추가 셸을 연다
-(WSL에서는 `docker.exe`). `sh dev.sh shell`을 다시 호출하면 다른 컨테이너가 시작된다.
+- 호스트에서 `docker ps`로 컨테이너를 찾고 `docker exec -it <컨테이너-ID> bash`로 같은 컨테이너에 추가 셸을 엽니다(WSL에서는 `docker.exe`).
+- `sh dev.sh shell`을 다시 호출할 시 다른 컨테이너가 시작됩니다.
 
 ```sh
 curl -i http://127.0.0.1:8080/
@@ -56,19 +55,33 @@ printf 'hello' | curl -i --data-binary @- http://127.0.0.1:8080/echo
 
 #### 1. TCP 소켓 서버
 
-[`create_listener()`](src/server/webserver.c)가 논블로킹 TCP 소켓을 만들고 `SO_REUSEADDR`를 설정한 뒤,
-루프백 주소에 `bind()`하고 `listen()`한다. 리스너가 읽기 가능해지면
-[`accept_ready_clients()`](src/server/epoll_loop.c)가 연결을 받아 각 소켓에 세션을 만든다.
-리스너와 클라이언트 소켓 모두 논블로킹이고, `CLOEXEC`로 다른 프로그램 실행 시 FD가 넘어가지 않게 한다.
-
+**서버 시작 요약**
 ```c
-/* 리스너 생성 — src/server/webserver.c */
-int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+1. socket(..., SOCK_STREAM | SOCK_NONBLOCK, ...) ->
+2. setsockopt(..., SO_REUSEADDR, ...) ->
+3. bind() ->
+4. listen(fd, SOMAXCONN) ->
+```
+- 서버 시작 시
+	1. `IPv4 TCP`, 논블로킹 소켓을 생성합니다.
+	2. `SO_REUSEADDR` 설정으로, 서버 재시작 시 같은 주소와 포트에 다시 바인딩하기 쉽게 설정합니다.
+	3. 소켓에 `127.0.0.1:8080`을 바인딩합니다.
+	4. 소켓을 연결 수락용으로 전환합니다.
+- 이후 커널이 수락 대기중인 연결을 관리하고, 서버는 `accept4()`로 하나씩 꺼냅니다.
 
-/* 연결 수락 — src/server/epoll_loop.c의 별도 함수 */
-int fd = accept4(loop->listener_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+**연결 수락 요약**
+```c
+1. epoll_wait() -> EPOLLIN ->
+2. accept4(..., SOCK_NONBLOCK | SOCK_CLOEXEC) ->
+3. client_session 생성 → epoll에 연결 FD 등록
 ```
 
+- 클라이언트가 연결하면
+	1. `epoll_wait()`가 리스너의 `EPOLLIN` 이벤트를 반환합니다. 이 이벤트는 HTTP 요청이 도착했다는 뜻이 아니라, **수락할 연결이 준비됐다는 뜻**입니다.
+	2. `accept4()`로 대기 중인 연결을 꺼내고, 연결 전용 클라이언트 FD를 얻습니다.
+	3. 클라이언트 FD마다 `client_session`을 만들어 요청 버퍼와 송수신 상태를 관리합니다.
+	4. 클라이언트 FD를 `epoll`에 등록해 읽기 이벤트를 기다립니다. 이후 `recv()`와 `send()`는 이 FD에서 수행합니다.
+- 리스너 FD는 그대로 유지해 다음 연결을 받습니다. 한 번에 최대 32개를 수락하며, `accept4()`가`EAGAIN`을 반환하면 이번 수락을 마칩니다.
 #### 2. HTTP 요청 파싱
 
 TCP에서 한 번 읽은 데이터가 HTTP 요청 한 건과 일치하지는 않는다.
@@ -128,6 +141,21 @@ static const struct route routes[] = {
 };
 ```
 
+CGI는 기본 비활성이며, 운영자가 신뢰하는 실행 파일 디렉터리를 `--cgi-root`로 지정할 때만
+`/cgi-bin/이름`에서 실행한다. [CGI 실행기](src/app/cgi.c)는 워커 2개와 대기열 8칸을 둔다.
+워커는 자식 프로세스에서 CGI를 실행하고, 이벤트 루프가 완료 알림을 받은 뒤 HTTP 응답을 쓴다.
+대기열이 가득 차면 `503`, 실행 한도 5초를 넘으면 자식을 정리하고 `504`로 응답한다.
+출력은 1 MiB로 제한한다. CGI는 격리 샌드박스가 아니다. **업로드 경로나 공개 정적 루트를
+CGI 루트로 지정하지 말고 신뢰하는 프로그램만 두어야 한다.**
+
+```sh
+demo_cgi=$(mktemp -d)
+cc -std=c17 examples/cgi/echo.c -o "$demo_cgi/echo"
+./webserver --port 8003 --root public --cgi-root "$demo_cgi"
+# 별도 셸:
+printf 'hello' | curl -i --data-binary @- http://127.0.0.1:8003/cgi-bin/echo
+```
+
 #### 6. 동시 요청 처리
 
 [`epoll_loop_run()`](src/server/epoll_loop.c)은 단일 스레드에서 LT(Level-Triggered) `epoll`로
@@ -161,14 +189,19 @@ bool alive = endpoint->upstream
    응답 헤더 읽기 → 본문 전달을 처리한다. 클라이언트에 보낼 데이터가 밀리면 백엔드 읽기를 잠시 멈춘다.
    고정 길이 응답은 길이를 유지하고, chunked·EOF 구분 응답은 클라이언트 쪽에서 chunked로 보낸다.
 4. **실패 처리** — 응답을 시작하기 전 접속 실패·잘못된 백엔드 응답에는 `502`, 기한 초과에는 `504`를 보낸다.
-   이미 응답을 시작한 뒤 실패하면 두 번째 응답을 쓰지 않고 연결을 닫는다. 실패 요청을 다른 백엔드로 재시도하지 않는다.
+   아직 요청을 쓰기 전 TCP 접속이 실패하면 같은 접두사의 다음 백엔드를 시도한다. 접속 예산 2초는 시도 전체가 공유한다.
+   쓰기 단계에 들어간 요청은 다시 보내지 않는다. 클라이언트에 응답을 이미 쓰기 시작했다면 중계 실패 시 연결을 닫는다.
+5. **연결 재사용** — 정상 고정 길이 응답을 끝까지 전송하면 클라이언트 세션은 다음 요청을 받을 수 있다.
+   백엔드 쪽은 HTTP/1.1 고정 길이 응답을 모두 읽었고 종료 신호나 남은 데이터가 없을 때만
+   라우트의 백엔드 항목별 유휴 소켓을 1개, 5초까지 보관한다. chunked·EOF 응답은
+   여전히 중계하지만 재사용하지 않는다.
 
 ```c
 /* 프록시 finish(): 요청 본문 처리 후 백엔드를 선택하고 교환을 생성 */
 const struct proxy_route *route = proxy_route_select(proxy->routes, &request->target);
 /* 일치하지 않는 경우의 처리 생략 */
 struct session_stream *stream =
-    proxy_exchange_create(&route->address, route->host, request, head);
+    proxy_exchange_create(proxy->routes, route - proxy->routes->entries, request, head);
 ```
 
 **실행 예시.** 개발 컨테이너에서 `make`로 두 실행 파일을 빌드한 뒤, 아래 명령을 서로 다른 셸에서 실행한다.
@@ -190,6 +223,16 @@ printf 'hello' | curl -i --data-binary @- http://127.0.0.1:8080/echo
 8001 → 8002 → 8001 순서로 선택한다. 이 프로젝트의 `webserver`가 아닌 별도 평문 HTTP 서버도
 숫자 IPv4 주소로 연결할 수 있다. 자세한 정책은 [Phase 3 설계](docs/PHASE_3_ARCHITECTURE.md)에 있다.
 
+**A/B 발표 데모:** 아래 세 줄을 별도 셸에서 실행하고 `curl -s http://127.0.0.1:8080/`을
+반복한다. `Backend A → Backend B → Backend A` 순으로 보인다. A를 종료하면 이후 요청은 살아 있는
+B로 전달된다. 이미 실행 중인 8001·8080 예제는 먼저 종료한다.
+
+```sh
+./webserver --port 8001 --root examples/round-robin/a
+./webserver --port 8002 --root examples/round-robin/b
+./reverse-proxy --port 8080 --route /=127.0.0.1:8001 --route /=127.0.0.1:8002
+```
+
 ### 🧪 품질
 
 #### 단위 테스트
@@ -204,17 +247,30 @@ Phase 1 `353 / 74 / 4`, Phase 2 `86 / 88 / 6`, Phase 3 `221 / 71 / 2`였다.
 #### 기능 테스트
 
 ```sh
-make -B test test-shutdown test-epoll test-keepalive test-proxy
+make -B test test-shutdown test-epoll test-keepalive test-proxy test-cgi
 ```
 
-WSL2/GCC 15에서 두 실행 파일의 독립 빌드와 위 기능 스위트의 통과를 확인했다.
 실제 소켓으로 정적 GET/HEAD, 바이너리 echo, 타임아웃, 정상 종료, 동시 연결, 재사용·파이프라인을 검사한다.
-프록시는 별도 프로세스로 띄워 백엔드 미기동·중단 시 `502`, 백엔드 재기동 후 프록시 재시작 없이
-정상 응답으로 돌아오는지 확인한다.
+프록시는 별도 프로세스로 띄워 양쪽 연결의 독립적 재사용, 접속 장애 시 대체 경로,
+전송한 POST의 미재시도를 확인한다. CGI는 바이너리 요청과 느린 자식 처리 중 정적 응답, 마감과 자식 회수를 확인한다.
 
 #### 부하 테스트
 
-직접 요청과 프록시 경유를 WSL2 루프백에서 Python 벤치마크로 비교했다. GCC `-O2`, 요청마다 새 연결,
+`feat/final` 공통 측정은 Linux/amd64 Docker, GCC 14.2.0 `-O2`, CPU 2개,
+1 GiB, 클라이언트 요청마다 새 연결에서 실행했다. 1 KiB 응답을 대상으로 동시성
+1·8·32마다 워밍업 100건 뒤 2,000건씩 3회 측정한 중앙값이다. 직접·프록시 합계
+36,000건과 기준 백엔드 직접 18,000건 모두 성공했다.
+
+| 경로 | 동시성 1 req/s · p95 | 동시성 8 req/s · p95 | 동시성 32 req/s · p95 |
+| --- | ---: | ---: | ---: |
+| 직접 정적 GET | 2,443 · 0.66 ms | 1,436 · 10.43 ms | 1,287 · 42.22 ms |
+| 프록시 경유 GET | 1,703 · 0.88 ms | 809 · 17.13 ms | 737 · 92.82 ms |
+| 기준 백엔드 직접 GET | 903 · 1.78 ms | 639 · 16.18 ms | 652 · 56.77 ms |
+
+공용 Python 백엔드와 부하 생성기를 같은 컨테이너에서 실행한 결과다.
+운영 처리 한도나 클라이언트 쪽 keep-alive의 성능 개선 폭으로 해석하지 않는다.
+
+아래는 **통합 전 Phase 3 브랜치의 참고 기록**이다. 직접 요청과 프록시 경유를 WSL2 루프백에서 Python 벤치마크로 비교했다. GCC `-O2`, 요청마다 새 연결,
 동시 클라이언트 32개 조건에서 4회 반복한 **처리량과 회차별 p95의 중앙값**이다.
 
 | 요청 | 직접 req/s | 직접 p95 | 프록시 경유 req/s | 프록시 경유 p95 |
@@ -238,10 +294,16 @@ sh dev.sh check
 sh tests/verify_phase3.sh
 ```
 
-[기존 Docker 기록](docs/PHASE_3_TESTING.md)에서는 sanitizer 기능 스위트가 통과했고
-Valgrind 단위 실행 파일 8개 모두 오류 0건이었다. 이후 WSL2 보조 검증에서는
-`docker.exe: Exec format error`로 공식 Docker 스크립트가 검사 시작 전에 차단됐다.
-위 WSL2 기능·부하 결과는 제출 환경의 Docker 재검증을 대체하지 않는다.
+Phase 3 CI도 동일한 검증 스크립트를 실행한다. [공통 판정 기준](docs/TEAM_COMMON_TEST_PLAN.md)과
+[재실행 가이드](docs/TEAM_COMMON_TEST_RUNBOOK.md)에서 실행 조건과 결과 기록 방법을 확인할 수 있다.
+
+최종 변경본은 위 스크립트의 일반·ASan/UBSan/LSan 회귀와 Valgrind 단위 8개를
+로컬 Linux/amd64 Docker에서 통과했다(종료 0). 별도 공통 실행에서 직접 서버·프록시
+프로세스의 Valgrind 오류는 0건이었다. FD는 직접 서버 8개로 유지됐고 프록시는
+7개에서 풀에 유휴 연결이 생긴 뒤 8개로 유지됐다. CGI 실행·마감·자식 회수는
+일반·sanitizer 회귀에서 확인했다. CGI를 켠 웹서버도 별도 Valgrind 실행에서
+오류 0건, 종료 시 표준 FD 3개만 남았다. 외부 CGI 실행 파일 자체는 계측 범위 밖이다.
+GitHub 호스팅 CI는 이 로컬 결과와 별개다.
 
 #### 고려한 엣지 케이스
 
@@ -254,14 +316,3 @@ Valgrind 단위 실행 파일 8개 모두 오류 0건이었다. 이후 WSL2 보�
 | `HEAD` 요청 또는 디렉터리 URL에 끝 슬래시 없음 | `HEAD`는 본문 생략, 제공 가능한 인덱스가 있을 때 슬래시 경로로 `308` |
 | 백엔드가 느리거나 연결이 끊김 | 응답 시작 전에는 `502`/`504`, 시작 후에는 불완전한 응답을 새 상태 줄 없이 종료 |
 | 종료 신호 수신 또는 연결 한도 도달 | 새 연결 수락을 제어하고 종료 유예 이후 남은 연결과 FD를 정리 |
-
-## 📚 관련 문서
-
-- [HTTP 서버 코드 읽기](public/http-server-guide.html): 파일을 바로 열거나 실습 서버의 `/http-server-guide.html`로 접근
-- [브라우저 라우팅·MIME 실습](docs/ROUTING_DEMO.md)
-- [전체 과제 요구사항](docs/REQUIREMENTS.md)
-- Phase 1: [요구사항](docs/PHASE_1_REQUIREMENTS.md) · [설계](docs/PHASE_1_ARCHITECTURE.md) · [검증](docs/PHASE_1_TESTING.md)
-- Phase 2: [요구사항](docs/PHASE_2_REQUIREMENTS.md) · [검증](docs/PHASE_2_TESTING.md)
-- Phase 3: [설계·구현 계약](docs/PHASE_3_ARCHITECTURE.md) · [Phase 1–3 통합 검증](docs/PHASE_3_TESTING.md) · [착수 초안](docs/PHASE_3_KICKOFF.md)
-- [Phase별 검증 증빙과 벤치마크 자료](artifacts/README.md)
-- [과거 진행 원장과 구현 계획](docs/archive/README.md)

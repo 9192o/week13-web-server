@@ -22,10 +22,10 @@ tar -cf "$snapshot" Makefile src tests examples public index.html
     tar -xf -
     uname -rsmo
     gcc -dumpfullversion
-    make -B test test-shutdown test-epoll test-keepalive test-proxy
+    make -B test test-shutdown test-epoll test-keepalive test-proxy test-cgi
     echo PHASE3_FUNCTIONAL_PASS
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 \
-        make -B test test-shutdown test-epoll test-keepalive test-proxy \
+        make -B test test-shutdown test-epoll test-keepalive test-proxy test-cgi \
         CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie"
     make valgrind
     make test-proxy-unit CFLAGS="-std=c17 -Wall -Wextra -Wpedantic -Werror -g" \
