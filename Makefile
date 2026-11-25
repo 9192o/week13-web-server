@@ -75,7 +75,7 @@ integration-s1: $(EV_SERVER_BIN) cgi
 integration-s2: $(EV_SERVER_BIN) cgi
 	sh tests/integration_s2.sh
 
-integration-p3: $(EV_SERVER_BIN) backend
+integration-p3: $(SERVER_BIN) backend
 	sh tests/integration_p3.sh
 
 shutdown-test: $(SERVER_BIN) cgi

@@ -186,10 +186,15 @@ route_spec_t *config_find_route(config_t *cfg, const char *path) {
     for (int i = 0; i < cfg->route_count; i++) {
         route_spec_t *r = &cfg->routes[i];
         size_t len = strlen(r->prefix);
-        if (len >= best_len && strncmp(path, r->prefix, len) == 0) {
-            best = r;
-            best_len = len;
-        }
+        if (len == 0 || len < best_len)
+            continue;
+        if (strncmp(path, r->prefix, len) != 0)
+            continue;
+        if (r->prefix[len - 1] != '/' &&
+            path[len] != '\0' && path[len] != '/')
+            continue;
+        best = r;
+        best_len = len;
     }
     return best;
 }

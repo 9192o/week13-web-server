@@ -74,6 +74,10 @@ size_t chunk_parser_feed(chunk_parser_t *p, const char *buf, size_t len) {
             }
             p->line[p->line_len++] = c;
             if (c == '\n') {
+                if (p->line_len < 2 || p->line[p->line_len - 2] != '\r') {
+                    parser_error(p);
+                    return used;
+                }
                 if (parse_size_line(p) < 0) {
                     parser_error(p);
                     return used;
@@ -90,6 +94,7 @@ size_t chunk_parser_feed(chunk_parser_t *p, const char *buf, size_t len) {
             size_t take = avail < p->remaining ? avail : p->remaining;
             used += take;
             p->remaining -= take;
+            p->data_bytes += take;
             if (p->remaining == 0)
                 p->state = CHUNK_DATA_CRLF;
             continue;

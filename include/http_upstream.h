@@ -24,6 +24,7 @@ typedef struct {
     size_t content_length;
     int chunked;
     int connection_close;
+    int connection_keep_alive;
 } upstream_response_t;
 
 void upstream_response_init(upstream_response_t *res);

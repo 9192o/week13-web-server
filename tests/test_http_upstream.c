@@ -84,3 +84,40 @@ void test_upstream_bad_status(void) {
     http_status_t st = parse_resp("HTTP/1.1 XX OK\r\n\r\n", &res);
     TEST_ASSERT_EQ_INT(st, HTTP_BAD_GATEWAY);
 }
+
+void test_upstream_connection_tokens(void) {
+    upstream_response_t res;
+    http_status_t st = parse_resp(
+        "HTTP/1.1 200 OK\r\n"
+        "Connection: keep-alive, x-close\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        &res);
+    TEST_ASSERT_EQ_INT(st, HTTP_OK);
+    TEST_ASSERT_EQ_INT(res.connection_close, 0);
+    TEST_ASSERT_EQ_INT(res.connection_keep_alive, 1);
+}
+
+void test_upstream_http10_keepalive(void) {
+    upstream_response_t res;
+    http_status_t st = parse_resp(
+        "HTTP/1.0 200 OK\r\n"
+        "Connection: keep-alive\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        &res);
+    TEST_ASSERT_EQ_INT(st, HTTP_OK);
+    TEST_ASSERT_EQ_INT(res.version_minor, 0);
+    TEST_ASSERT_EQ_INT(res.connection_keep_alive, 1);
+}
+
+void test_upstream_header_htab(void) {
+    upstream_response_t res;
+    http_status_t st = parse_resp(
+        "HTTP/1.1 200 OK\r\n"
+        "X-Test: a\tb\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        &res);
+    TEST_ASSERT_EQ_INT(st, HTTP_OK);
+}

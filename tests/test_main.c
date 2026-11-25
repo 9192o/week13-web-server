@@ -79,6 +79,9 @@ void test_upstream_incomplete(void);
 void test_upstream_cl_te_conflict(void);
 void test_upstream_duplicate_cl(void);
 void test_upstream_bad_status(void);
+void test_upstream_connection_tokens(void);
+void test_upstream_http10_keepalive(void);
+void test_upstream_header_htab(void);
 
 int g_tests_run = 0;
 int g_tests_failed = 0;
@@ -160,6 +163,9 @@ int main(void) {
     RUN_TEST(test_upstream_cl_te_conflict);
     RUN_TEST(test_upstream_duplicate_cl);
     RUN_TEST(test_upstream_bad_status);
+    RUN_TEST(test_upstream_connection_tokens);
+    RUN_TEST(test_upstream_http10_keepalive);
+    RUN_TEST(test_upstream_header_htab);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

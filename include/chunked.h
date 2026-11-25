@@ -20,6 +20,7 @@ typedef struct {
     int crlf_state;
     int trailer_line_len;
     int trailer_prev_cr;
+    size_t data_bytes;
 } chunk_parser_t;
 
 void chunk_parser_init(chunk_parser_t *p);

@@ -63,9 +63,17 @@
   ```text
   listen 8080
   docroot ./www
-  route /api/ backend 127.0.0.1:8001
-  route /api/ backend 127.0.0.1:8002
-  route /static/ static
+  [route /api/]
+  type proxy
+  backend 127.0.0.1:8001
+  backend 127.0.0.1:8002
+
+  [route /static/]
+  type static
+
+  [route /]
+  type static
+
   timeout connect 2
   timeout read 10
   ```
@@ -213,8 +221,8 @@
 - [x] gzip 응답을 그대로 중계하는 정책 문서화
 - [x] `Content-Encoding`/`Content-Length`/`Vary` 보존
 
-> 구현 상태 (2026-11-25): `tests/integration_p3.sh` PASS (라우팅/Round-Robin/502/504/헤더/chunked/gzip/keep-alive/pool/static). `tests/backend.c` C 테스트 backend 추가. `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS, backend 2개).
-> 남은 것: path prefix strip 옵션, active `/health`, 캐싱, gzip 변환, Forward/CONNECT, Linux epoll CI 확인.
+> 구현 상태 (2026-11-25): `tests/integration_p3.sh` **37 PASS** (라우팅/Round-Robin/502/504/헤더/chunked/gzip/keep-alive/pool/static, **upstream EOF/Connection: close/close-delimited, 1xx+final, body idle, 205, HEAD/204/304, HTTP/1.0, backend failover, client abort** 포함). `tests/backend.c` C 테스트 backend 추가. `make test` 328 assertions, 전체 integration 177 PASS, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS, backend 2개).
+> 남은 것: path prefix strip 옵션, active `/health`, 캐싱, gzip 변환, Forward/CONNECT, reason phrase/Trailer 세부, max_conns와 upstream fd 정책, Linux epoll CI 확인.
 
 ## 5. 범위 제외
 

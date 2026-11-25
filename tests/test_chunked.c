@@ -20,6 +20,7 @@ void test_chunked_basic(void) {
     feed_text(&p, "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
     TEST_ASSERT(chunk_parser_done(&p));
     TEST_ASSERT(!chunk_parser_error(&p));
+    TEST_ASSERT_EQ_INT((int)p.data_bytes, 11);
 }
 
 void test_chunked_partial(void) {

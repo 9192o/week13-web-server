@@ -334,6 +334,142 @@ static int handle_one(int fd) {
     if (strcmp(path, "/close") == 0)
         return -1;
 
+    if (strcmp(path, "/close-cl") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 11\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "closed-body";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/close-delimited") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "close-delimited";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/close-chunked") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "5\r\nhello\r\n0\r\n\r\n";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/interim") == 0) {
+        const char *r =
+            "HTTP/1.1 103 Early Hints\r\n"
+            "\r\n"
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 2\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "ok";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/hopresp") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Connection: X-Hop, close\r\n"
+            "X-Hop: secret\r\n"
+            "Content-Length: 2\r\n"
+            "\r\n"
+            "ok";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/drip") == 0) {
+        const char *hdr =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 12\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        if (send_all(fd, hdr, strlen(hdr)) < 0)
+            return -1;
+        for (int i = 0; i < 12; i++) {
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = 400000000L;
+            nanosleep(&ts, NULL);
+            if (send_all(fd, "x", 1) < 0)
+                return -1;
+        }
+        return -1;
+    }
+
+    if (strcmp(path, "/http10") == 0) {
+        const char *r =
+            "HTTP/1.0 200 OK\r\n"
+            "Content-Length: 2\r\n"
+            "\r\n"
+            "ok";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/reset205") == 0) {
+        const char *r =
+            "HTTP/1.1 205 Reset Content\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/head") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 2\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        (void)send_all(fd, r, strlen(r));
+        if (strcmp(method, "HEAD") != 0)
+            (void)send_all(fd, "ok", 2);
+        return -1;
+    }
+
+    if (strcmp(path, "/no-content204") == 0) {
+        const char *r =
+            "HTTP/1.1 204 No Content\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/not-modified304") == 0) {
+        const char *r =
+            "HTTP/1.1 304 Not Modified\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
+    if (strcmp(path, "/empty200") == 0) {
+        const char *r =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Length: 0\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        (void)send_all(fd, r, strlen(r));
+        return -1;
+    }
+
     if (strcmp(path, "/chunked") == 0)
         return send_chunked(fd, keep_alive);
 

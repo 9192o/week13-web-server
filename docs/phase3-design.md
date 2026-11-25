@@ -668,9 +668,12 @@ Phase 2 drain을 확장한다.
   - keep-alive 풀(재사용/만료/stale 감지), passive health(connect 실패 502 + cooldown).
   - connect/response/body timeout, 502/504.
   - client keep-alive, 1MB body, backpressure.
-- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 7개, `tests/integration_p3.sh` 16개 PASS. `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 10개, `tests/integration_p3.sh` 37개 PASS. `make test` 328 assertions, 전체 integration 177 PASS, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용.
 - **알려진 한계**:
   - path prefix strip 옵션은 아직 없다. backend가 `/api/...` 경로를 그대로 받는다.
   - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.
+  - `max_conns`는 client만 세므로 proxy 연결에서는 upstream fd가 2배 필요하다.
+  - reason phrase 보존과 Trailer 세부 처리는 future.
   - active `/health`, 캐싱, gzip 변환, Forward proxy, CONNECT는 범위 밖.
   - Linux epoll은 CI에서 확인한다.

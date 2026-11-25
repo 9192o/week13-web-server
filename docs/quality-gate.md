@@ -166,9 +166,10 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 ### Phase 3 (2026-11-25)
 
 - **Reverse Proxy**: `src/proxy.c`, `src/http_upstream.c`, `src/chunked.c`, `src/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
-- **검증**: `make test` **320 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **156 PASS**, `make sanitize` PASS, `make fdtest` 9→9.
+- **실패 경로 보강**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 응답 동시 도착, 응답 `Connection` named header 제거, backend failover, proxy deferred free, 205 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용.
+- **검증**: `make test` **328 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **177 PASS**, `integration-p3` **37 PASS** (EOF/1xx/205/HEAD/204/304/body idle/failover/pool reuse/client abort 포함), `make sanitize` PASS, `make fdtest` 9→9.
 - **부하**: proxy `ab -k -n 10000 -c 100` failed=0, 약 **8.7k rps** (macOS 로컬, backend 2개, pool max_idle 8).
-- **알려진 한계**: path prefix strip 없음(backend가 `/api/...` 그대로 수신), 100 concurrent에서 upstream 연결 다수 생성(pool max_idle 8), active `/health`/캐싱/gzip 변환/Forward/CONNECT는 future, Linux epoll은 CI 확인.
+- **알려진 한계**: path prefix strip 없음(backend가 `/api/...` 그대로 수신), 100 concurrent에서 upstream 연결 다수 생성(pool max_idle 8), max_conns가 client만 세어 upstream fd가 2배 필요, reason phrase/Trailer 세부, active `/health`/캐싱/gzip 변환/Forward/CONNECT는 future, Linux epoll은 CI 확인.
 
 ## 남은 품질 항목
 

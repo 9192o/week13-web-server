@@ -638,6 +638,8 @@ static int process_buffer(conn_t *c, ev_loop_t *loop, task_pool_t *pool,
                 }
                 if (body_len > 0)
                     memmove(c->in, c->in + c->req.header_len, body_len);
+                if (buffered > body_len)
+                    proxy_mark_close(c);
                 c->in_len = body_len;
             } else {
                 c->in_len = 0;
@@ -1269,6 +1271,7 @@ int server_ev_run(const config_t *cfg) {
         expire_timers(loop, head, cfg);
         proxy_sweep();
         conn_sweep(&head, &count);
+        proxy_reap();
     }
 
     proxy_shutdown_all();

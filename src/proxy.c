@@ -38,7 +38,7 @@ typedef struct {
     int port;
     struct sockaddr_storage addr;
     socklen_t addr_len;
-    int down_until_ms;
+    uint64_t down_until_ms;
     proxy_idle_t *idle_head;
     int idle_count;
 } proxy_backend_t;
@@ -105,17 +105,24 @@ struct proxy_conn {
     int close_client;
     int response_started;
     int upstream_keep_alive;
+    int upstream_eof;
+    int continue_pending;
+    size_t continue_sent;
+    int dead;
     int status;
     size_t body_bytes;
+    uint32_t tried_mask;
 
     uint64_t deadline_ms;
     struct proxy_conn *next;
+    struct proxy_conn *next_dead;
 };
 
 static proxy_route_t g_routes[MAX_ROUTES];
 static int g_route_count;
 static const config_t *g_cfg;
 static proxy_conn_t *g_active;
+static proxy_conn_t *g_dead;
 static int g_timeout_connect_ms;
 static int g_timeout_response_ms;
 static int g_timeout_body_ms;
@@ -190,8 +197,8 @@ static int ci_equal(const char *a, size_t alen, const char *b) {
 static int is_hop_by_hop(const char *name, size_t len) {
     static const char *names[] = {
         "Connection", "Keep-Alive", "Proxy-Authenticate",
-        "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding",
-        "Upgrade"
+        "Proxy-Authorization", "Proxy-Connection", "TE", "Trailer",
+        "Transfer-Encoding", "Upgrade"
     };
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         if (ci_equal(name, len, names[i]))
@@ -236,6 +243,48 @@ static int connection_names(const http_request_t *req,
                 break;
             size_t used = (size_t)(comma - p) + 1;
             p += used;
+            n -= used;
+        }
+    }
+    return 0;
+}
+
+static int response_connection_names(const proxy_conn_t *p,
+                                     const char *name, size_t len) {
+    for (size_t i = 0; i < p->resp.header_count; i++) {
+        const upstream_header_t *h = &p->resp.headers[i];
+        if (!ci_equal(h->name, h->name_len, "Connection"))
+            continue;
+
+        const char *s = h->value;
+        size_t n = h->value_len;
+        while (n > 0) {
+            const char *comma = memchr(s, ',', n);
+            size_t tok_len = comma ? (size_t)(comma - s) : n;
+            const char *tok = s;
+
+            while (tok_len > 0 && (tok[0] == ' ' || tok[0] == '\t')) {
+                tok++;
+                tok_len--;
+            }
+            while (tok_len > 0 && (tok[tok_len - 1] == ' ' ||
+                                   tok[tok_len - 1] == '\t'))
+                tok_len--;
+
+            if (len > 0 && tok_len == len) {
+                size_t j = 0;
+                while (j < len &&
+                       tolower((unsigned char)tok[j]) ==
+                           tolower((unsigned char)name[j]))
+                    j++;
+                if (j == len)
+                    return 1;
+            }
+
+            if (comma == NULL)
+                break;
+            size_t used = (size_t)(comma - s) + 1;
+            s += used;
             n -= used;
         }
     }
@@ -301,21 +350,34 @@ static void proxy_close_upstream(proxy_conn_t *p) {
 }
 
 static void proxy_free_struct(proxy_conn_t *p) {
-    if (p == NULL)
+    if (p == NULL || p->dead)
         return;
     if (p->client != NULL && p->client->proxy == p)
         p->client->proxy = NULL;
     proxy_list_remove(p);
-    free(p->req_out);
-    free(p->resp_out);
-    free(p->resp_hdr);
-    free(p);
+    p->dead = 1;
+    p->next_dead = g_dead;
+    g_dead = p;
+}
+
+void proxy_reap(void) {
+    while (g_dead != NULL) {
+        proxy_conn_t *p = g_dead;
+        g_dead = p->next_dead;
+        free(p->req_out);
+        free(p->resp_out);
+        free(p->resp_hdr);
+        free(p);
+    }
 }
 
 static void proxy_abort(proxy_conn_t *p) {
-    if (p == NULL)
+    if (p == NULL || p->dead)
         return;
     conn_t *c = p->client;
+    if (p->backend != NULL)
+        log_error("proxy: %s:%d aborted (state=%d)",
+                  p->backend->host, p->backend->port, p->state);
     proxy_close_upstream(p);
     proxy_free_struct(p);
     if (c != NULL)
@@ -323,10 +385,13 @@ static void proxy_abort(proxy_conn_t *p) {
 }
 
 static void proxy_fail(proxy_conn_t *p, int status) {
-    if (p == NULL)
+    if (p == NULL || p->dead)
         return;
     conn_t *c = p->client;
     int started = p->response_started;
+    if (p->backend != NULL)
+        log_error("proxy: %s:%d failed with %d (state=%d)",
+                  p->backend->host, p->backend->port, status, p->state);
     proxy_close_upstream(p);
 
     if (!started && c != NULL) {
@@ -344,13 +409,18 @@ static void proxy_fail(proxy_conn_t *p, int status) {
         server_conn_close(c);
 }
 
-static proxy_backend_t *select_backend(proxy_route_t *r) {
+static proxy_backend_t *select_backend(proxy_route_t *r, uint32_t skip_mask,
+                                       int *out_index) {
     uint64_t now = now_ms();
     for (int i = 0; i < r->backend_count; i++) {
         int idx = (r->rr_index + i) % r->backend_count;
+        if (skip_mask & (1u << idx))
+            continue;
         proxy_backend_t *b = &r->backends[idx];
-        if (b->down_until_ms <= (int)now) {
+        if (b->down_until_ms <= now) {
             r->rr_index = (idx + 1) % r->backend_count;
+            if (out_index != NULL)
+                *out_index = idx;
             return b;
         }
     }
@@ -519,6 +589,8 @@ static void proxy_build_response(proxy_conn_t *p) {
         const upstream_header_t *h = &p->resp.headers[i];
         if (is_hop_by_hop(h->name, h->name_len))
             continue;
+        if (response_connection_names(p, h->name, h->name_len))
+            continue;
         if (ci_equal(h->name, h->name_len, "Content-Length") ||
             ci_equal(h->name, h->name_len, "Transfer-Encoding") ||
             ci_equal(h->name, h->name_len, "Trailer") ||
@@ -542,7 +614,10 @@ static void proxy_build_response(proxy_conn_t *p) {
     } else if (p->resp_body == BODY_CHUNKED) {
         if (buf_puts(&b, "Transfer-Encoding: chunked\r\n") < 0)
             goto fail;
-    } else if (p->resp_body == BODY_NONE && p->head_only &&
+    } else if (p->resp_body == BODY_NONE && p->status == 205) {
+        if (buf_puts(&b, "Content-Length: 0\r\n") < 0)
+            goto fail;
+    } else if (p->resp_body == BODY_NONE && p->status != 204 &&
                p->resp.has_content_length) {
         if (buf_printf(&b, "Content-Length: %zu\r\n",
                        p->resp.content_length) < 0)
@@ -578,6 +653,8 @@ static void proxy_flush_upstream(proxy_conn_t *p) {
                           p->req_out_len - p->req_out_sent);
         if (n > 0) {
             p->req_out_sent += (size_t)n;
+            p->deadline_ms = now_ms() +
+                (uint64_t)g_cfg->request_timeout_sec * 1000;
             continue;
         }
         if (n < 0 && errno == EINTR)
@@ -595,6 +672,8 @@ static void proxy_flush_upstream(proxy_conn_t *p) {
                           p->c2u_len - p->c2u_off);
         if (n > 0) {
             p->c2u_off += (size_t)n;
+            p->deadline_ms = now_ms() +
+                (uint64_t)g_cfg->request_timeout_sec * 1000;
             continue;
         }
         if (n < 0 && errno == EINTR)
@@ -711,6 +790,10 @@ static void proxy_read_client_body(proxy_conn_t *p) {
                 proxy_fail(p, 400);
                 return;
             }
+            if (p->req_chunk.data_bytes > g_cfg->max_body) {
+                proxy_fail(p, HTTP_PAYLOAD_TOO_LARGE);
+                return;
+            }
             if (chunk_parser_done(&p->req_chunk)) {
                 p->req_body_done = 1;
                 break;
@@ -737,6 +820,39 @@ static void proxy_read_upstream_headers(proxy_conn_t *p) {
     }
 
     while (1) {
+        if (p->resp_hdr_len > 0) {
+            p->resp_hdr[p->resp_hdr_len] = '\0';
+            upstream_response_init(&p->resp);
+            http_status_t st = upstream_response_parse(
+                p->resp_hdr, p->resp_hdr_len, g_cfg, &p->resp);
+            if (st == HTTP_OK) {
+                if (p->resp.status >= 100 && p->resp.status < 200) {
+                    size_t used = p->resp.header_len;
+                    if (used > p->resp_hdr_len) {
+                        proxy_fail(p, 502);
+                        return;
+                    }
+                    memmove(p->resp_hdr, p->resp_hdr + used,
+                            p->resp_hdr_len - used);
+                    p->resp_hdr_len -= used;
+                    /* Parse the remaining buffer before reading again. */
+                    continue;
+                }
+                break; /* final response headers parsed */
+            }
+            if (st != HTTP_PARSE_INCOMPLETE) {
+                proxy_fail(p, 502);
+                return;
+            }
+            if (p->upstream_eof) {
+                proxy_fail(p, 502);
+                return;
+            }
+        } else if (p->upstream_eof) {
+            proxy_fail(p, 502);
+            return;
+        }
+
         if (p->resp_hdr_len >= p->resp_hdr_cap - 1) {
             proxy_fail(p, 502);
             return;
@@ -746,47 +862,26 @@ static void proxy_read_upstream_headers(proxy_conn_t *p) {
                          p->resp_hdr_cap - 1 - p->resp_hdr_len);
         if (n > 0) {
             p->resp_hdr_len += (size_t)n;
-        } else if (n == 0) {
-            proxy_fail(p, 502);
-            return;
-        } else if (errno == EINTR) {
-            continue;
-        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return;
-        } else {
-            proxy_fail(p, 502);
-            return;
-        }
-
-        p->resp_hdr[p->resp_hdr_len] = '\0';
-        upstream_response_init(&p->resp);
-        http_status_t st = upstream_response_parse(
-            p->resp_hdr, p->resp_hdr_len, g_cfg, &p->resp);
-        if (st == HTTP_PARSE_INCOMPLETE) {
             continue;
         }
-        if (st != HTTP_OK) {
-            proxy_fail(p, 502);
-            return;
-        }
-
-        if (p->resp.status >= 100 && p->resp.status < 200) {
-            size_t used = p->resp.header_len;
-            if (used > p->resp_hdr_len) {
-                proxy_fail(p, 502);
-                return;
-            }
-            memmove(p->resp_hdr, p->resp_hdr + used,
-                    p->resp_hdr_len - used);
-            p->resp_hdr_len -= used;
+        if (n == 0) {
+            p->upstream_eof = 1;
             continue;
         }
+        if (errno == EINTR)
+            continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return;
+        proxy_fail(p, 502);
+        return;
+    }
 
         p->status = p->resp.status;
         p->response_started = 1;
         p->resp_body_done = 0;
 
-        if (p->head_only || p->status == 204 || p->status == 304) {
+        if (p->head_only || p->status == 204 || p->status == 304 ||
+            p->status == 205) {
             p->resp_body = BODY_NONE;
             p->resp_body_done = 1;
         } else if (p->resp.chunked) {
@@ -814,8 +909,11 @@ static void proxy_read_upstream_headers(proxy_conn_t *p) {
                                !server_is_stopping();
         p->close_client = p->close_client || !p->client_keep_alive ||
                           p->resp_body == BODY_CLOSE;
+        int http11 = p->resp.version_major == 1 &&
+                     p->resp.version_minor >= 1;
         p->upstream_keep_alive = !p->resp.connection_close &&
-                                 p->resp_body != BODY_CLOSE;
+                                 p->resp_body != BODY_CLOSE &&
+                                 (http11 || p->resp.connection_keep_alive);
 
         proxy_build_response(p);
         if (p->resp_out == NULL) {
@@ -830,6 +928,7 @@ static void proxy_read_upstream_headers(proxy_conn_t *p) {
                 return;
             }
 
+            size_t decoded_delta = 0;
             if (p->resp_body == BODY_CONTENT_LENGTH) {
                 if (extra > p->resp_remaining) {
                     proxy_fail(p, 502);
@@ -839,29 +938,38 @@ static void proxy_read_upstream_headers(proxy_conn_t *p) {
                 if (p->resp_remaining == 0)
                     p->resp_body_done = 1;
             } else if (p->resp_body == BODY_CHUNKED) {
+                size_t before = p->resp_chunk.data_bytes;
                 size_t consumed = chunk_parser_feed(
                     &p->resp_chunk, p->resp_hdr + p->resp.header_len, extra);
                 if (consumed != extra || chunk_parser_error(&p->resp_chunk)) {
                     proxy_fail(p, 502);
                     return;
                 }
+                decoded_delta = p->resp_chunk.data_bytes - before;
                 if (chunk_parser_done(&p->resp_chunk))
                     p->resp_body_done = 1;
             }
 
             memcpy(p->u2c, p->resp_hdr + p->resp.header_len, extra);
             p->u2c_len = extra;
-            p->body_bytes += extra;
+            p->body_bytes += p->resp_body == BODY_CHUNKED
+                                 ? decoded_delta : extra;
+        }
+
+        if (p->upstream_eof && p->resp_body != BODY_CLOSE &&
+            !p->resp_body_done) {
+            proxy_fail(p, 502);
+            return;
         }
 
         p->state = PROXY_RELAY_BODY;
         p->deadline_ms = now_ms() + (uint64_t)g_timeout_body_ms;
         proxy_update_events(p);
         return;
-    }
 }
 
 static void proxy_flush_client(proxy_conn_t *p);
+static void proxy_flush_continue(proxy_conn_t *p);
 
 static void proxy_read_upstream_body(proxy_conn_t *p) {
     if (p->resp_body_done) {
@@ -887,6 +995,7 @@ static void proxy_read_upstream_body(proxy_conn_t *p) {
             p->u2c_len += (size_t)n;
             p->resp_remaining -= (size_t)n;
             p->body_bytes += (size_t)n;
+            p->deadline_ms = now_ms() + (uint64_t)g_timeout_body_ms;
             if (p->resp_remaining == 0)
                 p->resp_body_done = 1;
         } else if (n == 0) {
@@ -905,11 +1014,13 @@ static void proxy_read_upstream_body(proxy_conn_t *p) {
         size_t want = space < sizeof tmp ? space : sizeof tmp;
         ssize_t n = read(p->upstream_fd, tmp, want);
         if (n > 0) {
+            size_t before = p->resp_chunk.data_bytes;
             size_t consumed = chunk_parser_feed(&p->resp_chunk, tmp, (size_t)n);
             if (consumed > 0) {
                 memcpy(p->u2c + p->u2c_len, tmp, consumed);
                 p->u2c_len += consumed;
-                p->body_bytes += consumed;
+                p->body_bytes += p->resp_chunk.data_bytes - before;
+                p->deadline_ms = now_ms() + (uint64_t)g_timeout_body_ms;
             }
             if (consumed < (size_t)n) {
                 p->upstream_keep_alive = 0;
@@ -937,6 +1048,7 @@ static void proxy_read_upstream_body(proxy_conn_t *p) {
         if (n > 0) {
             p->u2c_len += (size_t)n;
             p->body_bytes += (size_t)n;
+            p->deadline_ms = now_ms() + (uint64_t)g_timeout_body_ms;
         } else if (n == 0) {
             p->resp_body_done = 1;
         } else if (errno == EINTR) {
@@ -952,8 +1064,21 @@ static void proxy_read_upstream_body(proxy_conn_t *p) {
     proxy_flush_client(p);
 }
 
-static void proxy_finish(proxy_conn_t *p) {
-    conn_t *c = p->client;
+static void proxy_drain_eof(proxy_conn_t *p) {
+    while (!p->dead && !p->resp_body_done &&
+           p->u2c_len < sizeof p->u2c) {
+        size_t before = p->body_bytes;
+        proxy_read_upstream_body(p);
+        if (p->dead || p->resp_body_done)
+            return;
+        if (p->u2c_len == sizeof p->u2c)
+            return;
+        if (p->body_bytes == before)
+            return;
+    }
+}
+
+static void proxy_finish(proxy_conn_t *p) {    conn_t *c = p->client;
     int keep = p->client_keep_alive && !p->close_client &&
                !server_is_stopping();
 
@@ -991,14 +1116,46 @@ static void proxy_finish(proxy_conn_t *p) {
     }
 }
 
+static void proxy_flush_continue(proxy_conn_t *p) {
+    static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
+    size_t total = sizeof cont - 1;
+
+    while (p->continue_sent < total) {
+        ssize_t n = write(p->client->fd, cont + p->continue_sent,
+                          total - p->continue_sent);
+        if (n > 0) {
+            p->continue_sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            proxy_update_events(p);
+            return;
+        }
+        proxy_abort(p);
+        return;
+    }
+
+    p->continue_pending = 0;
+    proxy_update_events(p);
+}
+
 static void proxy_flush_client(proxy_conn_t *p) {
     conn_t *c = p->client;
+
+    if (p->continue_pending) {
+        proxy_flush_continue(p);
+        if (p->dead || p->continue_pending)
+            return;
+    }
 
     while (p->resp_out_sent < p->resp_out_len) {
         ssize_t n = write(c->fd, p->resp_out + p->resp_out_sent,
                           p->resp_out_len - p->resp_out_sent);
         if (n > 0) {
             p->resp_out_sent += (size_t)n;
+            p->deadline_ms = now_ms() + (uint64_t)g_timeout_body_ms;
             continue;
         }
         if (n < 0 && errno == EINTR)
@@ -1015,6 +1172,7 @@ static void proxy_flush_client(proxy_conn_t *p) {
         ssize_t n = write(c->fd, p->u2c + p->u2c_off, p->u2c_len - p->u2c_off);
         if (n > 0) {
             p->u2c_off += (size_t)n;
+            p->deadline_ms = now_ms() + (uint64_t)g_timeout_body_ms;
             continue;
         }
         if (n < 0 && errno == EINTR)
@@ -1030,6 +1188,13 @@ static void proxy_flush_client(proxy_conn_t *p) {
     p->u2c_len = 0;
     p->u2c_off = 0;
 
+    if (p->upstream_eof && p->state == PROXY_RELAY_BODY &&
+        !p->resp_body_done) {
+        proxy_drain_eof(p);
+        if (p->dead)
+            return;
+    }
+
     if (p->resp_out_sent == p->resp_out_len && p->u2c_len == 0 &&
         p->resp_body_done) {
         proxy_finish(p);
@@ -1040,7 +1205,7 @@ static void proxy_flush_client(proxy_conn_t *p) {
 }
 
 static void proxy_update_events(proxy_conn_t *p) {
-    if (p == NULL || p->client == NULL || p->client->closed) {
+    if (p == NULL || p->dead || p->client == NULL || p->client->closed) {
         proxy_abort(p);
         return;
     }
@@ -1054,6 +1219,8 @@ static void proxy_update_events(proxy_conn_t *p) {
 
     conn_t *c = p->client;
     uint32_t cev = 0;
+    if (p->continue_pending)
+        cev |= EV_WRITE;
     if (p->state == PROXY_SENDING && !p->req_body_done &&
         p->c2u_len < sizeof p->c2u)
         cev |= EV_READ;
@@ -1100,6 +1267,11 @@ void proxy_kick(conn_t *c) {
     } else {
         proxy_update_events(p);
     }
+}
+
+void proxy_mark_close(conn_t *c) {
+    if (c != NULL && c->proxy != NULL)
+        c->proxy->close_client = 1;
 }
 
 int proxy_init(const config_t *cfg) {
@@ -1160,6 +1332,7 @@ void proxy_cleanup(void) {
     g_route_count = 0;
     g_active = NULL;
     g_cfg = NULL;
+    proxy_reap();
 }
 
 void proxy_sweep(void) {
@@ -1190,7 +1363,7 @@ void proxy_sweep(void) {
         if (p->deadline_ms != 0 && now >= p->deadline_ms) {
             if (p->state == PROXY_CONNECTING && p->backend != NULL) {
                 p->backend->down_until_ms =
-                    (int)now + HEALTH_COOLDOWN_MS;
+                    now + HEALTH_COOLDOWN_MS;
                 pool_close_backend(p->backend);
             }
             proxy_fail(p, HTTP_GATEWAY_TIMEOUT);
@@ -1200,15 +1373,27 @@ void proxy_sweep(void) {
 }
 
 int proxy_next_timeout_ms(void) {
-    if (g_active == NULL)
-        return -1;
-
     uint64_t now = now_ms();
     uint64_t min = UINT64_MAX;
+
     for (proxy_conn_t *p = g_active; p != NULL; p = p->next) {
         if (p->deadline_ms != 0 && p->deadline_ms < min)
             min = p->deadline_ms;
     }
+
+    for (int i = 0; i < g_route_count; i++) {
+        for (int j = 0; j < g_routes[i].backend_count; j++) {
+            proxy_backend_t *b = &g_routes[i].backends[j];
+            for (proxy_idle_t *idle = b->idle_head; idle != NULL;
+                 idle = idle->next) {
+                uint64_t expire = idle->idle_since_ms +
+                                  (uint64_t)g_pool_idle_timeout_ms;
+                if (expire < min)
+                    min = expire;
+            }
+        }
+    }
+
     if (min == UINT64_MAX)
         return -1;
     if (min <= now)
@@ -1217,10 +1402,78 @@ int proxy_next_timeout_ms(void) {
     return d > (uint64_t)0x7fffffff ? 0x7fffffff : (int)d;
 }
 
-int proxy_route_is_proxy(int route_index) {
-    if (route_index < 0 || route_index >= g_route_count)
-        return 0;
-    return g_routes[route_index].type == ROUTE_PROXY;
+static uint64_t proxy_request_deadline(const proxy_conn_t *p) {
+    if (!p->req_body_done)
+        return now_ms() + (uint64_t)g_cfg->request_timeout_sec * 1000;
+    return now_ms() + (uint64_t)g_timeout_response_ms;
+}
+
+static int proxy_connect_backend(proxy_conn_t *p) {
+    proxy_route_t *route = p->route;
+
+    for (;;) {
+        int idx = -1;
+        proxy_backend_t *backend =
+            select_backend(route, p->tried_mask, &idx);
+        if (backend == NULL)
+            return -1;
+
+        p->backend = backend;
+        p->tried_mask |= 1u << idx;
+
+        int fd = pool_acquire(backend);
+        if (fd >= 0) {
+            p->upstream_fd = fd;
+            p->state = PROXY_SENDING;
+            p->deadline_ms = proxy_request_deadline(p);
+            if (ev_add(p->client->loop, fd, EV_WRITE, p) < 0) {
+                close(fd);
+                p->upstream_fd = -1;
+                return -1;
+            }
+            p->upstream_in_loop = 1;
+            return 0;
+        }
+
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
+        if (set_nonblocking(fd) < 0 || set_cloexec(fd) < 0) {
+            close(fd);
+            return -1;
+        }
+
+        int rc = connect(fd, (struct sockaddr *)&backend->addr,
+                         backend->addr_len);
+        if (rc == 0) {
+            p->upstream_fd = fd;
+            p->state = PROXY_SENDING;
+            p->deadline_ms = proxy_request_deadline(p);
+            if (ev_add(p->client->loop, fd, EV_WRITE, p) < 0) {
+                close(fd);
+                p->upstream_fd = -1;
+                return -1;
+            }
+            p->upstream_in_loop = 1;
+            return 0;
+        }
+        if (errno == EINPROGRESS) {
+            p->upstream_fd = fd;
+            p->state = PROXY_CONNECTING;
+            p->deadline_ms = now_ms() + (uint64_t)g_timeout_connect_ms;
+            if (ev_add(p->client->loop, fd, EV_WRITE, p) < 0) {
+                close(fd);
+                p->upstream_fd = -1;
+                return -1;
+            }
+            p->upstream_in_loop = 1;
+            return 0;
+        }
+
+        close(fd);
+        backend->down_until_ms = now_ms() + HEALTH_COOLDOWN_MS;
+        pool_close_backend(backend);
+    }
 }
 
 int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
@@ -1229,8 +1482,7 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
         return -1;
 
     proxy_route_t *route = &g_routes[route_index];
-    proxy_backend_t *backend = select_backend(route);
-    if (backend == NULL) {
+    if (route->backend_count <= 0) {
         if (server_conn_build_error(c, HTTP_BAD_GATEWAY, 1,
                                     req->method == HTTP_HEAD, 0) < 0)
             return -1;
@@ -1247,7 +1499,7 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
     p->client = c;
     p->upstream_fd = -1;
     p->route = route;
-    p->backend = backend;
+    p->backend = &route->backends[0];
     p->head_only = req->method == HTTP_HEAD;
     p->client_keep_alive = req->keep_alive &&
         (c->requests + 1 < g_cfg->keepalive_max_requests) &&
@@ -1268,17 +1520,17 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
     proxy_build_request(c, req, p);
     if (p->req_out == NULL) {
         free(p);
-        return -1;
+        if (server_conn_build_error(c, HTTP_INTERNAL_SERVER_ERROR, 1,
+                                    req->method == HTTP_HEAD, 0) < 0)
+            return -1;
+        if (ev_mod(c->loop, c->fd, EV_WRITE, c) < 0)
+            return -1;
+        return 0;
     }
 
     if (req->expect_continue) {
-        static const char cont[] = "HTTP/1.1 100 Continue\r\n\r\n";
-        ssize_t n = write(c->fd, cont, sizeof cont - 1);
-        if (n != (ssize_t)(sizeof cont - 1)) {
-            free(p->req_out);
-            free(p);
-            return -1;
-        }
+        p->continue_pending = 1;
+        p->continue_sent = 0;
     }
 
     c->proxy = p;
@@ -1286,51 +1538,7 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
     c->requests++;
     proxy_list_add(p);
 
-    int fd = pool_acquire(backend);
-    if (fd >= 0) {
-        p->upstream_fd = fd;
-        p->state = PROXY_SENDING;
-        p->deadline_ms = now_ms() + (uint64_t)g_timeout_response_ms;
-        if (ev_add(c->loop, fd, EV_WRITE, p) < 0) {
-            proxy_abort(p);
-            return -1;
-        }
-        p->upstream_in_loop = 1;
-        proxy_update_events(p);
-        return 1;
-    }
-
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0 || set_nonblocking(fd) < 0 || set_cloexec(fd) < 0) {
-        if (fd >= 0)
-            close(fd);
-        proxy_fail(p, 500);
-        return 0;
-    }
-
-    int rc = connect(fd, (struct sockaddr *)&backend->addr, backend->addr_len);
-    if (rc == 0) {
-        p->upstream_fd = fd;
-        p->state = PROXY_SENDING;
-        p->deadline_ms = now_ms() + (uint64_t)g_timeout_response_ms;
-        if (ev_add(c->loop, fd, EV_WRITE, p) < 0) {
-            proxy_abort(p);
-            return -1;
-        }
-        p->upstream_in_loop = 1;
-    } else if (errno == EINPROGRESS) {
-        p->upstream_fd = fd;
-        p->state = PROXY_CONNECTING;
-        p->deadline_ms = now_ms() + (uint64_t)g_timeout_connect_ms;
-        if (ev_add(c->loop, fd, EV_WRITE, p) < 0) {
-            proxy_abort(p);
-            return -1;
-        }
-        p->upstream_in_loop = 1;
-    } else {
-        close(fd);
-        backend->down_until_ms = (int)now_ms() + HEALTH_COOLDOWN_MS;
-        pool_close_backend(backend);
+    if (proxy_connect_backend(p) < 0) {
         proxy_fail(p, 502);
         return 0;
     }
@@ -1340,36 +1548,28 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
 }
 
 void proxy_handle_upstream_event(proxy_conn_t *p, uint32_t events) {
-    if (p == NULL || p->upstream_fd < 0)
+    if (p == NULL || p->dead || p->upstream_fd < 0)
         return;
-
-    if (events & EV_ERR) {
-        if (p->state == PROXY_CONNECTING && p->backend != NULL) {
-            p->backend->down_until_ms =
-                (int)now_ms() + HEALTH_COOLDOWN_MS;
-            pool_close_backend(p->backend);
-        }
-        if (!p->response_started)
-            proxy_fail(p, 502);
-        else
-            proxy_abort(p);
-        return;
-    }
 
     if (p->state == PROXY_CONNECTING) {
-        if (events & EV_WRITE) {
+        if (events & (EV_WRITE | EV_ERR)) {
             int err = 0;
             socklen_t len = sizeof err;
             if (getsockopt(p->upstream_fd, SOL_SOCKET, SO_ERROR,
                            &err, &len) < 0 || err != 0) {
                 p->backend->down_until_ms =
-                    (int)now_ms() + HEALTH_COOLDOWN_MS;
+                    now_ms() + HEALTH_COOLDOWN_MS;
                 pool_close_backend(p->backend);
-                proxy_fail(p, 502);
+                proxy_close_upstream(p);
+                if (proxy_connect_backend(p) < 0) {
+                    proxy_fail(p, 502);
+                    return;
+                }
+                proxy_update_events(p);
                 return;
             }
             p->state = PROXY_SENDING;
-            p->deadline_ms = now_ms() + (uint64_t)g_timeout_response_ms;
+            p->deadline_ms = proxy_request_deadline(p);
             if (p->client->in_len > 0 && !p->req_body_done)
                 proxy_read_client_body(p);
             else
@@ -1378,29 +1578,51 @@ void proxy_handle_upstream_event(proxy_conn_t *p, uint32_t events) {
         return;
     }
 
-    if (p->state == PROXY_SENDING) {
-        if (events & EV_WRITE)
+    if (events & EV_WRITE) {
+        if (p->state == PROXY_SENDING || p->state == PROXY_RELAY_BODY)
             proxy_flush_upstream(p);
-        return;
+        if (p->dead)
+            return;
     }
 
-    if (p->state == PROXY_READING_HEADERS) {
-        if (events & EV_READ)
+    int got_err = (events & EV_ERR) != 0;
+
+    if ((events & EV_READ) || got_err) {
+        if (p->state == PROXY_READING_HEADERS) {
             proxy_read_upstream_headers(p);
-        return;
+            if (p->dead)
+                return;
+        } else if (p->state == PROXY_RELAY_BODY) {
+            if (got_err)
+                proxy_drain_eof(p);
+            else
+                proxy_read_upstream_body(p);
+            if (p->dead)
+                return;
+        } else if (p->state == PROXY_SENDING && got_err) {
+            proxy_fail(p, 502);
+            return;
+        }
     }
 
-    if (p->state == PROXY_RELAY_BODY) {
-        if (events & EV_WRITE)
-            proxy_flush_upstream(p);
-        if (events & EV_READ)
-            proxy_read_upstream_body(p);
+    if (got_err && !p->dead) {
+        p->upstream_eof = 1;
+        if (p->state == PROXY_READING_HEADERS ||
+            p->state == PROXY_SENDING) {
+            proxy_fail(p, 502);
+        } else if (p->state == PROXY_RELAY_BODY &&
+                   !p->resp_body_done) {
+            if (p->resp_body == BODY_CLOSE)
+                proxy_drain_eof(p);
+            else
+                proxy_fail(p, 502);
+        }
     }
 }
 
 void proxy_handle_client_event(conn_t *c, uint32_t events) {
     proxy_conn_t *p = c->proxy;
-    if (p == NULL)
+    if (p == NULL || p->dead)
         return;
 
     if (events & EV_ERR) {
@@ -1417,8 +1639,12 @@ void proxy_handle_client_event(conn_t *c, uint32_t events) {
         }
     }
 
-    if (c->proxy != NULL && (events & EV_WRITE))
-        proxy_flush_client(p);
+    if (c->proxy != NULL && (events & EV_WRITE)) {
+        if (p->continue_pending)
+            proxy_flush_continue(p);
+        if (!p->dead && !p->continue_pending)
+            proxy_flush_client(p);
+    }
 }
 
 void proxy_detach(conn_t *c) {
@@ -1445,4 +1671,5 @@ void proxy_shutdown_all(void) {
         for (int j = 0; j < g_routes[i].backend_count; j++)
             pool_close_backend(&g_routes[i].backends[j]);
     }
+    proxy_reap();
 }

@@ -33,7 +33,7 @@ listen $PPORT
 docroot ./www
 timeout connect 1
 timeout response 2
-timeout body 3
+timeout body 1
 pool max_idle 4
 pool idle_timeout 5
 
@@ -68,7 +68,7 @@ if [ "$i" -ge 50 ]; then
     exit 1
 fi
 
-./server_ev --config "$CONF" >"$LOG" 2>&1 &
+./server --config "$CONF" >"$LOG" 2>&1 &
 PID=$!
 
 cleanup() {
@@ -160,6 +160,18 @@ case "$post_out" in
         ;;
 esac
 
+expect_out=$(curl -sS --max-time 5 -H 'Expect: 100-continue' \
+    -d 'hello=world' "$BASEURL/api/echo" 2>/dev/null || true)
+case "$expect_out" in
+    *"BODY=hello=world"*)
+        echo "PASS: Expect 100-continue"
+        ;;
+    *)
+        echo "FAIL: Expect 100-continue"
+        fail=1
+        ;;
+esac
+
 hop_out=$(curl -sS --max-time 5 \
     -H 'Connection: X-Hop' -H 'X-Hop: secret' -H 'Keep-Alive: timeout=5' \
     "$BASEURL/api/echo" 2>/dev/null || true)
@@ -197,6 +209,89 @@ case "$chunk_req" in
         ;;
 esac
 
+# Upstream closes the connection after the response.
+check_status "upstream Connection: close" "$BASEURL/api/close-cl" "200"
+check_body_contains "close+CL body" "$BASEURL/api/close-cl" "closed-body"
+check_status "close-delimited response" "$BASEURL/api/close-delimited" "200"
+check_body_contains "close-delimited body" "$BASEURL/api/close-delimited" "close-delimited"
+check_status "chunked response + close" "$BASEURL/api/close-chunked" "200"
+check_body_contains "chunked close body" "$BASEURL/api/close-chunked" "hello"
+
+# 1xx and final response in the same buffer.
+check_status "1xx + 200 same buffer" "$BASEURL/api/interim" "200"
+check_body_contains "1xx final body" "$BASEURL/api/interim" "ok"
+
+# Response-side Connection-nominated header must not leak.
+hopresp_headers=$(curl -sS --max-time 5 -D - -o /dev/null \
+    "$BASEURL/api/hopresp" 2>/dev/null || true)
+if printf '%s\n' "$hopresp_headers" | tr -d '\r' | grep -qi '^X-Hop:'; then
+    echo "FAIL: response Connection-nominated header leaked"
+    fail=1
+else
+    echo "PASS: response Connection-nominated header removed"
+fi
+
+# HTTP/1.0 upstream without keep-alive must not be pooled.
+check_status "HTTP/1.0 upstream" "$BASEURL/api/http10" "200"
+check_body_contains "HTTP/1.0 body" "$BASEURL/api/http10" "ok"
+
+# 205 has no body.
+check_status "205 Reset Content" "$BASEURL/api/reset205" "205"
+body205=$(curl -sS --max-time 5 -o /dev/null -w '%{size_download}' \
+    "$BASEURL/api/reset205" 2>/dev/null || echo "x")
+if [ "$body205" = "0" ]; then
+    echo "PASS: 205 no body"
+else
+    echo "FAIL: 205 body ($body205 bytes)"
+    fail=1
+fi
+
+empty_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+    "$BASEURL/api/empty200" 2>/dev/null || echo "000")
+empty_size=$(curl -sS --max-time 5 -o /dev/null -w '%{size_download}' \
+    "$BASEURL/api/empty200" 2>/dev/null || echo "x")
+if [ "$empty_code" = "200" ] && [ "$empty_size" = "0" ]; then
+    echo "PASS: 200 with Content-Length 0"
+else
+    echo "FAIL: 200 empty (code=$empty_code size=$empty_size)"
+    fail=1
+fi
+
+# HEAD / 204 / 304 have no body.
+head_code=$(curl -sS --max-time 5 -I -o /dev/null -w '%{http_code}' \
+    "$BASEURL/api/head" 2>/dev/null || echo "000")
+if [ "$head_code" = "200" ]; then
+    echo "PASS: HEAD through proxy"
+else
+    echo "FAIL: HEAD through proxy (got $head_code)"
+    fail=1
+fi
+for ep in no-content204 not-modified304; do
+    code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+        "$BASEURL/api/$ep" 2>/dev/null || echo "000")
+    size=$(curl -sS --max-time 5 -o /dev/null -w '%{size_download}' \
+        "$BASEURL/api/$ep" 2>/dev/null || echo "x")
+    if { [ "$ep" = "no-content204" ] && [ "$code" = "204" ] && [ "$size" = "0" ]; } ||
+       { [ "$ep" = "not-modified304" ] && [ "$code" = "304" ] && [ "$size" = "0" ]; }; then
+        echo "PASS: $ep no body"
+    else
+        echo "FAIL: $ep (code=$code size=$size)"
+        fail=1
+    fi
+done
+
+# Body idle timeout: 12 bytes over 4.8s with 1s idle limit.
+drip_body=$(curl -sS --max-time 8 "$BASEURL/api/drip" 2>/dev/null || true)
+if [ "$(printf '%s' "$drip_body" | wc -c | tr -d ' ')" = "12" ]; then
+    echo "PASS: body idle timeout keeps slow response alive"
+else
+    echo "FAIL: body idle timeout cut slow response"
+    fail=1
+fi
+
+# Prefix boundary: /api/ must not match /apix.
+check_status "route prefix boundary /apix" "$BASEURL/apix" "404"
+
 gzip_body=$(curl -sS --max-time 5 --compressed "$BASEURL/api/gzip" 2>/dev/null || true)
 case "$gzip_body" in
     "hello gzip")
@@ -227,23 +322,51 @@ else
     fail=1
 fi
 
+# Client abort stress: exercise deferred proxy free without killing the server.
+abort_pids=""
+for i in $(seq 1 20); do
+    curl -sS --max-time 0.05 -o /dev/null \
+        "$BASEURL/api/slow?ms=1000" 2>/dev/null &
+    abort_pids="$abort_pids $!"
+done
+for p in $abort_pids; do
+    wait "$p" 2>/dev/null || true
+done
+sleep 0.3
+check_status "server alive after client aborts" "$BASEURL/" "200"
+
 b1stats=$(curl -sS --max-time 3 "http://127.0.0.1:$B1PORT/stats" 2>/dev/null || true)
 b2stats=$(curl -sS --max-time 3 "http://127.0.0.1:$B2PORT/stats" 2>/dev/null || true)
-case "$b1stats" in
-    *"connections="*) echo "PASS: backend 1 stats ($b1stats)";;
-    *) echo "FAIL: backend 1 stats"; fail=1;;
-esac
-case "$b2stats" in
-    *"connections="*) echo "PASS: backend 2 stats ($b2stats)";;
-    *) echo "FAIL: backend 2 stats"; fail=1;;
-esac
+b1conn=$(printf '%s' "$b1stats" | sed -n 's/.*connections=\([0-9][0-9]*\).*/\1/p')
+b1req=$(printf '%s' "$b1stats" | sed -n 's/.*requests=\([0-9][0-9]*\).*/\1/p')
+b2conn=$(printf '%s' "$b2stats" | sed -n 's/.*connections=\([0-9][0-9]*\).*/\1/p')
+b2req=$(printf '%s' "$b2stats" | sed -n 's/.*requests=\([0-9][0-9]*\).*/\1/p')
+if [ -n "$b1conn" ] && [ -n "$b1req" ] && [ "$b1conn" -lt "$b1req" ] &&
+   [ -n "$b2conn" ] && [ -n "$b2req" ] && [ "$b2conn" -lt "$b2req" ]; then
+    echo "PASS: pool reuse (b1 $b1conn/$b1req, b2 $b2conn/$b2req)"
+else
+    echo "FAIL: pool reuse (b1 $b1conn/$b1req, b2 $b2conn/$b2req)"
+    fail=1
+fi
+
+# Failover: one backend down, the other must serve the request.
+kill -TERM "$BPID1" 2>/dev/null || true
+wait "$BPID1" 2>/dev/null || true
+sleep 0.2
+failover_out=$(curl -sS --max-time 4 -o /dev/null -w '%{http_code}' \
+    "$BASEURL/api/id" 2>/dev/null || echo "000")
+if [ "$failover_out" = "200" ]; then
+    echo "PASS: failover to healthy backend"
+else
+    echo "FAIL: failover to healthy backend (got $failover_out)"
+    fail=1
+fi
 
 # 504: backend is slow, proxy response timeout is 2s.
 check_status "backend timeout -> 504" "$BASEURL/api/slow?ms=3000" "504"
 
-# 502: stop both backends.
-kill -TERM "$BPID1" "$BPID2" 2>/dev/null || true
-wait "$BPID1" 2>/dev/null || true
+# 502: stop the remaining backend.
+kill -TERM "$BPID2" 2>/dev/null || true
 wait "$BPID2" 2>/dev/null || true
 sleep 0.2
 check_status "backend down -> 502" "$BASEURL/api/id" "502"
@@ -258,7 +381,7 @@ type proxy
 [route /]
 type static
 EOF
-if ./server_ev --config "$BADCONF" >"$TMP/bad.log" 2>&1; then
+if ./server --config "$BADCONF" >"$TMP/bad.log" 2>&1; then
     echo "FAIL: invalid config accepted"
     fail=1
 else

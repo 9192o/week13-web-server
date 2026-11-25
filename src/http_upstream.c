@@ -51,24 +51,38 @@ static void trim_ows(const char **s, size_t *len) {
 static int has_ctl(const char *s, size_t len) {
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)s[i];
-        if (c < 0x20 || c == 0x7f)
+        if ((c < 0x20 && c != '\t') || c == 0x7f)
             return 1;
     }
     return 0;
 }
 
-static int ci_contains(const char *s, size_t len, const char *needle) {
-    size_t nlen = strlen(needle);
-    if (nlen == 0 || len < nlen)
-        return 0;
-    for (size_t i = 0; i + nlen <= len; i++) {
-        size_t j = 0;
-        while (j < nlen &&
-               tolower((unsigned char)s[i + j]) ==
-                   tolower((unsigned char)needle[j]))
-            j++;
-        if (j == nlen)
-            return 1;
+static int connection_has_token(const char *s, size_t len, const char *token) {
+    size_t tlen = strlen(token);
+    while (len > 0) {
+        const char *comma = memchr(s, ',', len);
+        size_t tok_len = comma ? (size_t)(comma - s) : len;
+        while (tok_len > 0 && (s[0] == ' ' || s[0] == '\t')) {
+            s++;
+            tok_len--;
+        }
+        while (tok_len > 0 && (s[tok_len - 1] == ' ' ||
+                               s[tok_len - 1] == '\t'))
+            tok_len--;
+        if (tok_len == tlen) {
+            size_t i = 0;
+            while (i < tlen &&
+                   tolower((unsigned char)s[i]) ==
+                       tolower((unsigned char)token[i]))
+                i++;
+            if (i == tlen)
+                return 1;
+        }
+        if (comma == NULL)
+            break;
+        size_t used = (size_t)(comma - s) + 1;
+        s += used;
+        len -= used;
     }
     return 0;
 }
@@ -193,8 +207,10 @@ http_status_t upstream_response_parse(const char *buf, size_t len,
                 return HTTP_BAD_GATEWAY;
             res->chunked = 1;
         } else if (ci_equal(name, name_len, "Connection")) {
-            if (ci_contains(value, value_len, "close"))
+            if (connection_has_token(value, value_len, "close"))
                 res->connection_close = 1;
+            if (connection_has_token(value, value_len, "keep-alive"))
+                res->connection_keep_alive = 1;
         }
 
         p = he + 2;

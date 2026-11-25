@@ -158,6 +158,12 @@ int config_parse_file(config_t *cfg, const char *path) {
         if (route_index >= 0) {
             route_spec_t *r = &cfg->routes[route_index];
             if (strcmp(key, "type") == 0) {
+                if (arg2 != NULL) {
+                    fprintf(stderr, "%s:%d: type takes one value\n",
+                            path, line_no);
+                    rc = -1;
+                    break;
+                }
                 if (strcmp(arg1, "static") == 0)
                     r->type = ROUTE_STATIC;
                 else if (strcmp(arg1, "proxy") == 0)
@@ -169,6 +175,12 @@ int config_parse_file(config_t *cfg, const char *path) {
                     break;
                 }
             } else if (strcmp(key, "backend") == 0) {
+                if (arg2 != NULL) {
+                    fprintf(stderr, "%s:%d: backend takes one value\n",
+                            path, line_no);
+                    rc = -1;
+                    break;
+                }
                 if (r->backend_count >= MAX_BACKENDS) {
                     fprintf(stderr, "%s:%d: too many backends\n",
                             path, line_no);
@@ -276,18 +288,24 @@ int config_parse_file(config_t *cfg, const char *path) {
             int v = 0;
             if (strcmp(arg1, "connect") == 0) {
                 if (parse_int_value(arg2, 1, 3600, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid value\n",
+                            path, line_no);
                     rc = -1;
                     break;
                 }
                 cfg->timeout_connect_sec = v;
             } else if (strcmp(arg1, "response") == 0) {
                 if (parse_int_value(arg2, 1, 3600, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid value\n",
+                            path, line_no);
                     rc = -1;
                     break;
                 }
                 cfg->timeout_response_sec = v;
             } else if (strcmp(arg1, "body") == 0) {
                 if (parse_int_value(arg2, 1, 3600, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid value\n",
+                            path, line_no);
                     rc = -1;
                     break;
                 }
@@ -307,12 +325,16 @@ int config_parse_file(config_t *cfg, const char *path) {
             int v = 0;
             if (strcmp(arg1, "max_idle") == 0) {
                 if (parse_int_value(arg2, 0, 1024, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid value\n",
+                            path, line_no);
                     rc = -1;
                     break;
                 }
                 cfg->pool_max_idle = v;
             } else if (strcmp(arg1, "idle_timeout") == 0) {
                 if (parse_int_value(arg2, 1, 3600, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid value\n",
+                            path, line_no);
                     rc = -1;
                     break;
                 }
