@@ -113,9 +113,9 @@ conn_loop_app_t app = {
 return conn_loop_run(cfg, &app, &ctx);
 ```
 
-- `server_start()`가 `proxy_init()`과 `task_pool_create()`를 호출하고 completion fd를 반환한다.
-- `server_stop()`이 task pool과 proxy pool을 정리한다.
-- `server_tick()`이 `proxy_sweep()`/`proxy_reap()`을 호출한다.
+- `server_start()`가 `task_pool_create()`를 호출하고 completion fd를 반환한다. full mode에서는 `proxy_init()`도 호출한다.
+- `server_stop()`이 task pool을 정리하고, full mode에서는 proxy pool도 정리한다.
+- `server_tick()`은 full mode에서 `proxy_sweep()`/`proxy_reap()`을 호출한다. `--backend` 모드에서는 proxy를 초기화하지 않는다.
 
 `server`와 `server_ev`는 같은 `EV_SERVER_OBJS`를 링크한다. 즉 둘은 동일한 실행 코드다.
 
