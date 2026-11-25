@@ -1,6 +1,6 @@
 # 함수 레퍼런스 — Phase 1
 
-> **Phase 3 기준:** 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 실행 흐름은 [function_flow.md](function_flow.md), 구조는 [README](../README.md), 프록시는 [phase3-design.md](phase3-design.md)를 본다.
+> **Phase 3 기준:** 최종 `server`는 `src/app/main_ev.c` + `src/app/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 실행 흐름은 [function_flow.md](function_flow.md), 구조는 [README](../README.md), 프록시는 [phase3-design.md](phase3-design.md)를 본다.
 
 `function_flow.md`가 **서버가 어떻게 돌아가는지 읽는 가이드**라면, 이 문서는 **함수 하나하나를 찾아보는 사전**이다.
 각 항목은 `파일:라인 · 반환형 · 호출자`로 시작하고, 무엇을 하는지와 왜 그렇게 했는지를 불릿으로 적었다.
@@ -23,7 +23,7 @@
 
 ## 1. 요청 파싱 흐름 — `http_request_parse_buffer()`
 
-`src/http_request.c:358` · `http_status_t` · ← `handle_connection()`
+`src/http/http_request.c:358` · `http_status_t` · ← `handle_connection()`
 
 - **요청 라인의 `\r\n`을 찾는다.** 없으면 `HTTP_PARSE_INCOMPLETE`.
 - **요청 라인 길이가 `max_header_bytes`를 넘으면 `431`.**
@@ -38,14 +38,14 @@
 
 ### `find_crlf()`
 
-`src/http_request.c:12` · `static const char *` · ← `http_request_parse_buffer`, `parse_headers`
+`src/http/http_request.c:12` · `static const char *` · ← `http_request_parse_buffer`, `parse_headers`
 
 - **`\r\n` 두 바이트를 선형 탐색한다.** 헤더 한 줄의 끝을 찾는 기본 연산이다.
 - 끝을 못 찾으면 `NULL`. "아직 데이터가 덜 왔다"와 "형식이 깨졌다"는 호출자가 구분한다.
 
 ### `parse_request_line()`
 
-`src/http_request.c:74` · `static http_status_t` · ← `http_request_parse_buffer`
+`src/http/http_request.c:74` · `static http_status_t` · ← `http_request_parse_buffer`
 
 - **첫 번째 공백과 두 번째 공백으로 `method`, `target`, `version`을 자른다.** 공백이 2개 미만이면 `400`.
 - **메서드 길이가 0이거나 `HTTP_MAX_METHOD` 이상이면 `400`.**
@@ -56,14 +56,14 @@
 
 ### `parse_method()`
 
-`src/http_request.c:46` · `static http_method_t` · ← `parse_request_line`
+`src/http/http_request.c:46` · `static http_method_t` · ← `parse_request_line`
 
 - **`GET`/`POST`/`HEAD`/`OPTIONS`만 정확히 일치하면 인정한다.** 대소문자를 구분한다 (HTTP 메서드는 대소문자 구분).
 - 나머지는 `HTTP_UNKNOWN` → 호출자가 `501`로 변환.
 
 ### `parse_version()`
 
-`src/http_request.c:58` · `static http_status_t` · ← `parse_request_line`
+`src/http/http_request.c:58` · `static http_status_t` · ← `parse_request_line`
 
 - **정확히 8자 `HTTP/d.d` 형식만 받는다.** `HTTP/1.1 `처럼 뒤에 공백이 붙으면 `400`.
 - **주 버전이 1이 아니거나 부 버전이 0/1이 아니면 `505`.** `HTTP/2.0`은 "형식은 맞지만 지원 안 함"이다.
@@ -71,14 +71,14 @@
 
 ### `hexval()`
 
-`src/http_request.c:113` · `static int` · ← `decode_uri`
+`src/http/http_request.c:113` · `static int` · ← `decode_uri`
 
 - **`0-9`, `a-f`, `A-F`를 0~15로 바꾼다.** 그 외는 `-1`.
 - 퍼센트 디코딩의 최소 단위다.
 
 ### `decode_uri()`
 
-`src/http_request.c:123` · `static int` · ← `parse_uri`
+`src/http/http_request.c:123` · `static int` · ← `parse_uri`
 
 - **`%XX`를 원래 바이트로 되돌린다.** `%2e%2e` → `..` 같은 우회를 정규화 전에 펼치기 위해서다.
 - **`%` 뒤에 2바이트가 없거나 16진수가 아니면 `-1`.** 잘린 인코딩을 통과시키지 않는다.
@@ -87,7 +87,7 @@
 
 ### `normalize_path()`
 
-`src/http_request.c:152` · `static int` · ← `parse_uri`
+`src/http/http_request.c:152` · `static int` · ← `parse_uri`
 
 - **`strtok_r`로 `/` 기준 세그먼트를 돈다.** `strtok`이 아닌 이유는 재진입 안전성이다.
 - **`.` 세그먼트는 버린다.**
@@ -98,7 +98,7 @@
 
 ### `parse_uri()`
 
-`src/http_request.c:205` · `static http_status_t` · ← `http_request_parse_buffer`
+`src/http/http_request.c:205` · `static http_status_t` · ← `http_request_parse_buffer`
 
 - **타깃 길이를 `cfg->max_uri`와 비교해 `414`를 낸다.** `HTTP_MAX_URI`도 상한으로 함께 건다.
 - **`/`로 시작하지 않으면 `400`.** origin-form만 지원한다. `http://host/path` 같은 absolute-form은 프록시(Phase 3)에서 다룰 문제다.
@@ -109,7 +109,7 @@
 
 ### `parse_content_length()`
 
-`src/http_request.c:239` · `static http_status_t` · ← `parse_headers`
+`src/http/http_request.c:239` · `static http_status_t` · ← `parse_headers`
 
 - **값을 32바이트 임시 버퍼에 복사해 NUL-terminate한다.** 헤더 값은 zero-copy 포인터라 끝이 보장되지 않는다.
 - **`strtoull`로 파싱하고 `end == tmp`, `*end != '\0'`, `errno`를 모두 검사한다.** `"5x"`, `"-1"`, 오버플로를 전부 거른다.
@@ -118,28 +118,28 @@
 
 ### `trim_ows()`
 
-`src/http_request.c:21` · `static void` · ← `parse_headers`
+`src/http/http_request.c:21` · `static void` · ← `parse_headers`
 
 - **앞뒤의 SP/HTAB만 제거한다.** HTTP의 OWS(optional whitespace) 정의를 따른다.
 - **CR/LF는 여기서 다루지 않는다.** 그건 `find_crlf`가 이미 잘라냈다.
 
 ### `ci_equal()`
 
-`src/http_request.c:30` · `static int` · ← `parse_headers`
+`src/http/http_request.c:30` · `static int` · ← `parse_headers`
 
 - **길이가 같고 대소문자 무시 비교로 같으면 1.** 헤더 이름은 대소문자를 구분하지 않는다.
 - **`strncasecmp`만 쓰면 접두사 일치를 허용하게 되므로 길이 검사를 먼저 한다.** `Content-Length-Extra`가 `Content-Length`로 오인되면 안 된다.
 
 ### `ci_contains()`
 
-`src/http_request.c:35` · `static int` · ← `parse_headers`
+`src/http/http_request.c:35` · `static int` · ← `parse_headers`
 
 - **대소문자 무시 부분 문자열 검색.** `Connection: keep-alive, Upgrade` 같은 목록에서 토큰을 찾을 때 쓴다.
 - **정식 토큰 파서가 아니라 substring 검색이라는 한계가 있다.** `"enclose"`에 `close`가 들어 있어도 매칭된다. 현재 입력 범위에서는 실용적으로 충분하지만, 엄밀히 하려면 쉼표로 나눠 토큰 단위로 비교해야 한다.
 
 ### `parse_headers()`
 
-`src/http_request.c:266` · `static http_status_t` · ← `http_request_parse_buffer`
+`src/http/http_request.c:266` · `static http_status_t` · ← `http_request_parse_buffer`
 
 - **빈 줄(`\r\n`)을 만날 때까지 한 줄씩 돈다.** 그 위치를 `headers_end_out`으로 돌려준다.
 - **`p + 1 >= buf_end`면 `HTTP_PARSE_INCOMPLETE`.** 아직 데이터가 덜 왔다.
@@ -154,28 +154,28 @@
 
 ### `http_request_init()`
 
-`src/http_request.c:342` · `void` · ← `handle_connection`
+`src/http/http_request.c:342` · `void` · ← `handle_connection`
 
 - **구조체를 0으로 밀고 `method`를 `HTTP_UNKNOWN`으로 둔다.** 0이 `HTTP_GET`이라 그냥 두면 초기화 안 된 요청이 GET으로 보인다.
 - 본문 포인터가 `NULL`이 되므로 `http_request_free`가 안전하게 동작한다.
 
 ### `http_request_free()`
 
-`src/http_request.c:347` · `void` · ← `handle_connection`
+`src/http/http_request.c:347` · `void` · ← `handle_connection`
 
 - **`body`만 해제한다.** 헤더는 `buf`를 가리키는 포인터라 해제하면 안 된다.
 - **해제 후 `NULL`, `body_len = 0`으로 이중 해제를 막는다.**
 
 ### `http_request_reset()`
 
-`src/http_request.c:353` · `void` · 현재 미사용
+`src/http/http_request.c:353` · `void` · 현재 미사용
 
 - **`free` + `init`을 합친 함수.** 연결 루프에서 구조체를 재사용할 때 쓸 수 있게 열어뒀다.
 - 지금은 요청마다 `http_request_init`을 새로 부르므로 호출되지 않는다.
 
 ### `http_request_read_body()`
 
-`src/http_request.c:472` · `http_status_t` · ← `handle_connection`
+`src/http/http_request.c:472` · `http_status_t` · ← `handle_connection`
 
 - **이전 본문을 먼저 해제한다.** 재사용 시나리오에서 누수를 막는다.
 - **`Content-Length`가 없거나 0이면 즉시 `HTTP_OK`.** GET 대부분이 여기서 끝난다.
@@ -190,7 +190,7 @@
 
 ### `http_request_get_header()`
 
-`src/http_request.c:543` · `const char *` · ← `static_file_prepare`, `build_cgi_env`
+`src/http/http_request.c:543` · `const char *` · ← `static_file_prepare`, `build_cgi_env`
 
 - **헤더 배열을 선형 탐색하며 대소문자 무시 비교한다.** 헤더가 100개 이하라 선형으로 충분하다.
 - **값 포인터와 길이를 함께 돌려준다.** zero-copy라 NUL-terminate가 없어서 길이가 필수다.
@@ -202,7 +202,7 @@
 
 ### `http_status_reason()`
 
-`src/http_response.c:7` · `const char *` · ← `http_response_send_headers`, `http_response_send_error`
+`src/http/http_response.c:7` · `const char *` · ← `http_response_send_headers`, `http_response_send_error`
 
 - **상태 코드를 reason phrase로 바꾼다.** `200` → `OK`, `404` → `Not Found`.
 - **모르는 코드는 `"Unknown"`.** 새 상태를 추가할 때 여기도 같이 넣어야 한다.
@@ -210,20 +210,20 @@
 
 ### `http_response_init()`
 
-`src/http_response.c:31` · `void` · ← 모든 응답 함수
+`src/http/http_response.c:31` · `void` · ← 모든 응답 함수
 
 - **응답 구조체를 0으로 초기화한다.** `headers_len`이 0이라 헤더 누적이 처음부터 시작된다.
 
 ### `http_response_set_status()`
 
-`src/http_response.c:35` · `int` · 현재 미사용
+`src/http/http_response.c:35` · `int` · 현재 미사용
 
 - **상태만 바꾸는 얇은 래퍼.** 지금은 각 함수가 `res.status`를 직접 대입한다.
 - API 대칭성을 위해 남겨둔 형태다.
 
 ### `http_response_add_header()`
 
-`src/http_response.c:40` · `int` · ← 모든 응답 함수
+`src/http/http_response.c:40` · `int` · ← 모든 응답 함수
 
 - **`Name: Value\r\n` 형식으로 4096바이트 버퍼에 이어 붙인다.** 헤더마다 개별 할당을 하지 않는다.
 - **남은 공간을 `snprintf`에 넘기고, 잘리면 `-1`.** 조용히 잘린 헤더를 보내면 클라이언트가 응답을 오해한다.
@@ -231,7 +231,7 @@
 
 ### `http_response_send_headers()`
 
-`src/http_response.c:58` · `int` · ← 모든 응답 함수
+`src/http/http_response.c:58` · `int` · ← 모든 응답 함수
 
 - **상태 라인을 만든다.** 항상 `HTTP/1.1`로 보낸다. HTTP/1.0 요청에도 1.1로 응답하는 단순화가 있다 (일반 클라이언트는 허용).
 - **누적된 헤더를 그대로 쓴다.**
@@ -240,7 +240,7 @@
 
 ### `http_response_send_redirect()`
 
-`src/http_response.c:80` · `int` · ← `static_file_handle`
+`src/http/http_response.c:80` · `int` · ← `static_file_handle`
 
 - **301 + `Location` + `Content-Length: 0`.** 본문 없는 리다이렉트다.
 - **`Connection`을 `close_connection`에 맞춘다.**
@@ -248,21 +248,21 @@
 
 ### `http_response_send_options()`
 
-`src/http_response.c:101` · `int` · ← `handle_connection`
+`src/http/http_response.c:101` · `int` · ← `handle_connection`
 
 - **200 + `Allow: GET, POST, HEAD, OPTIONS` + `Content-Length: 0`.**
 - **리소스 존재 여부와 무관하게 같은 응답을 준다.** "서버가 어떤 메서드를 아는가"를 알려주는 용도다.
 
 ### `http_response_send_memory()`
 
-`src/http_response.c:119` · `int` · ← 테스트
+`src/http/http_response.c:119` · `int` · ← 테스트
 
 - **메모리에 있는 본문을 상태/타입과 함께 보낸다.** 단위 테스트에서 소켓 쌍으로 응답을 검증할 때 쓴다.
 - **`Connection: close`가 하드코딩되어 있다.** 범용 함수라 keep-alive 제어가 빠져 있다. 실제 서빙 경로에서는 쓰지 않는다.
 
 ### `http_response_send_error()`
 
-`src/http_response.c:220` · `int` · ← 모든 핸들러
+`src/http/http_response.c:220` · `int` · ← 모든 핸들러
 
 - **HTML 에러 본문을 만든다.** `<h1>404 Not Found</h1>` 형태.
 - **`Content-Type: text/html; charset=utf-8`, `Content-Length`, `Connection`을 붙인다.**
@@ -273,7 +273,7 @@
 
 ## 3. 정적 파일 흐름 — `static_file_prepare()`
 
-`src/static_file.c:207` · `handler_result_t` · ← `static_file_handle`, `server_ev`
+`src/static/static_file.c:207` · `handler_result_t` · ← `static_file_handle`, `server_ev`
 
 > Phase 2 S1에서 `static_file_handle`이 `static_file_prepare` + 전송 wrapper로 분리됐다. 아래 line number는 이동했으니 함수 이름으로 찾는 걸 권장한다.
 
@@ -298,7 +298,7 @@
 
 ### `static_file_handle()`
 
-`src/static_file.c:426` · `handler_result_t` · ← `handle_connection`
+`src/static/static_file.c:426` · `handler_result_t` · ← `handle_connection`
 
 - **`static_file_prepare` 결과를 소켓에 쓴다.** 헤더 → 에러 body 또는 파일 본문.
 - **GET이면 `send_file`로 본문을 보내고, HEAD면 헤더만 보낸다.**
@@ -306,7 +306,7 @@
 
 ### `send_file()`
 
-`src/static_file.c:18` · `int` · ← `static_file_handle`
+`src/static/static_file.c:18` · `int` · ← `static_file_handle`
 
 - **64KB 청크로 읽어서 `write_body`로 보낸다.** 파일 전체를 메모리에 올리지 않는다. 2MB 파일도 64KB씩 나간다.
 - **`EINTR`은 재시도.** 시그널로 깬 읽기는 실패가 아니다.
@@ -315,14 +315,14 @@
 
 ### `has_dotfile_segment()`
 
-`src/static_file.c:37` · `static int` · ← `static_file_handle`
+`src/static/static_file.c:37` · `static int` · ← `static_file_handle`
 
 - **`/`로 나눈 각 세그먼트가 `.`으로 시작하면 1.** `.`과 `..`도 여기서 걸린다 (이미 정규화됐지만 이중 방어).
 - **요청 경로와 symlink 해석 후 경로 둘 다에 적용한다.** 한쪽만 검사하면 symlink로 우회할 수 있다.
 
 ### `path_within_root()`
 
-`src/static_file.c:55` · `static int` · ← `static_file_handle`
+`src/static/static_file.c:55` · `static int` · ← `static_file_handle`
 
 - **문자열 prefix 비교로 root 안인지 본다.**
 - **prefix 다음 문자가 `/` 또는 `\0`인지 확인한다.** 이게 없으면 `/www`가 `/www2`도 통과시킨다.
@@ -330,14 +330,14 @@
 
 ### `status_from_errno()`
 
-`src/static_file.c:78` · `static int` · ← `prepare_error_errno`, `static_file_prepare`
+`src/static/static_file.c:78` · `static int` · ← `prepare_error_errno`, `static_file_prepare`
 
 - **`ENOENT`/`ENOTDIR` → `404`, `EACCES` → `403`, 나머지 → `500`.**
 - **"없음"과 "권한 없음"을 구분한다.** 권한 없는 파일은 존재를 알려주는 셈이지만, 403이 404보다 디버깅에 유용하다는 판단이다.
 
 ### `prepare_error_errno()`
 
-`src/static_file.c:95` · `static handler_result_t` · ← `static_file_prepare`
+`src/static/static_file.c:95` · `static handler_result_t` · ← `static_file_prepare`
 
 - **`status_from_errno` + `http_response_build_error`를 합친다.** `errno`를 보존한 채로 응답을 메모리에 준비한다.
 - **항상 `close_connection = 1`.** 파일 시스템 에러 후에는 연결 상태를 신뢰하지 않는다.
@@ -345,14 +345,14 @@
 
 ### `parse_size_value()`
 
-`src/static_file.c:81` · `static int` · ← `parse_range_header`
+`src/static/static_file.c:81` · `static int` · ← `parse_range_header`
 
 - **Range의 숫자 하나를 파싱한다.** 32바이트 제한, `strtoull`, 엄격한 종료 검사.
 - **`parse_size_arg`와 비슷하지만 상한이 없다.** 파일 크기보다 큰 값은 호출자가 clamp한다.
 
 ### `parse_range_header()`
 
-`src/static_file.c:99` · `static int` · ← `static_file_handle`
+`src/static/static_file.c:99` · `static int` · ← `static_file_handle`
 
 - **`bytes=`로 시작해야 한다.** 아니면 `-1` → `416`.
 - **쉼표가 있으면 `-1`.** multipart range는 지원하지 않는다.
@@ -367,7 +367,7 @@
 
 ### `prepare_range_error()`
 
-`src/static_file.c:175` · `static handler_result_t` · ← `static_file_prepare`
+`src/static/static_file.c:175` · `static handler_result_t` · ← `static_file_prepare`
 
 - **`416` + `Content-Range: bytes */<size>` + `Accept-Ranges: bytes` + `Content-Length: 0`을 `out->res`에 채운다.**
 - **`bytes */size` 형식이 포인트다.** "전체 크기는 이만큼인데 네가 요청한 범위는 만족 불가"라는 뜻이다.
@@ -377,7 +377,7 @@
 
 ## 4. CGI 흐름 — `cgi_handle()`
 
-`src/cgi.c:254` · `handler_result_t` · ← `handle_connection`
+`src/cgi/cgi.c:254` · `handler_result_t` · ← `handle_connection`
 
 - **반환값은 `HANDLER_OK`/`HANDLER_CLOSE`/`HANDLER_ERROR`.** CGI 에러(404/500/504 등)는 `HANDLER_CLOSE`라서 연결을 재사용하지 않는다.
 - **`/cgi-bin/` 접두사 확인.** 아니면 `404`. 라우팅에서 이미 걸러지지만 이중 방어다.
@@ -412,7 +412,7 @@
 
 ### `path_within_root()` (cgi)
 
-`src/cgi.c:22` · `static int` · ← `cgi_handle()`
+`src/cgi/cgi.c:22` · `static int` · ← `cgi_handle()`
 
 - **`static_file.c`와 같은 prefix + 경계 검사를 복제했다.** 두 모듈이 서로를 의존하지 않게 하려는 선택이다.
 - **`/cgi-bin`과 `/cgi-bin2`를 구분한다.** prefix 다음 문자가 `/` 또는 `\0`인지 확인한다.
@@ -420,7 +420,7 @@
 
 ### `build_cgi_env()`
 
-`src/cgi.c` · `static char **` · ← `cgi_handle()` (fork 전)
+`src/cgi/cgi.c` · `static char **` · ← `cgi_handle()` (fork 전)
 
 - **`GATEWAY_INTERFACE=CGI/1.1`**: 이 프로세스가 CGI 규약으로 불렸다는 표시.
 - **`REQUEST_METHOD`**: `GET`/`POST` 등.
@@ -436,7 +436,7 @@
 
 ### `send_cgi_response()`
 
-`src/cgi.c:39` · `static int` · ← `cgi_handle`
+`src/cgi/cgi.c:39` · `static int` · ← `cgi_handle`
 
 - **`\r\n\r\n` 또는 `\n\n`으로 헤더/본문을 가른다.** CGI 프로그램이 CRLF를 안 쓰는 경우도 받아준다.
 - **구분자가 없으면 `500`.** CGI 출력의 최소 형식이다.
@@ -454,7 +454,7 @@
 
 ### `readn_stop()`
 
-`src/util.c:114` · `ssize_t` · ← `readn()`
+`src/common/util.c:114` · `ssize_t` · ← `readn()`
 
 - **`n`바이트를 채울 때까지 `read`를 반복한다.** `read` 한 번이 요청한 만큼 다 읽는다는 보장이 없다.
 - **`stop`이 `NULL`이 아니고 세워져 있으면 중단한다.** `EINTR`로 깼을 때 `stop`을 확인하고 `errno = EINTR`로 `-1`을 반환한다.
@@ -464,7 +464,7 @@
 
 ### `readn_deadline()`
 
-`src/util.c` · `ssize_t` · ← `http_request_read_body`
+`src/common/util.c` · `ssize_t` · ← `http_request_read_body`
 
 - **절대 deadline까지 `poll`로 기다린 뒤 `read`한다.** 매 read마다 timeout을 새로 주지 않는다.
 - **`EAGAIN`/`EWOULDBLOCK`이면 deadline 만료다.**
@@ -473,21 +473,21 @@
 
 ### `write_body()`
 
-`src/util.c:84` · `ssize_t` · ← 응답 body 전송
+`src/common/util.c:84` · `ssize_t` · ← 응답 body 전송
 
 - **`writen`으로 body를 보내고, 성공한 바이트를 access log에 누적한다.**
 - **헤더 전송은 `writen`을 써서 access log의 body 바이트에 포함하지 않는다.**
 
 ### `readn()`
 
-`src/util.c:139` · `ssize_t` · 현재 미사용 (호환용)
+`src/common/util.c:139` · `ssize_t` · 현재 미사용 (호환용)
 
 - **`readn_stop(fd, buf, n, NULL)`을 부르는 얇은 래퍼다.** 종료 플래그가 필요 없는 곳에서 쓴다.
 - 동작은 `readn_stop`과 같다.
 
 ### `writen()`
 
-`src/util.c:143` · `ssize_t` · ← 모든 응답 전송
+`src/common/util.c:143` · `ssize_t` · ← 모든 응답 전송
 
 - **`write`가 부분 쓰기를 해도 남은 만큼 계속 쓴다.** 소켓은 요청한 크기만큼 한 번에 쓰지 않을 수 있다.
 - **`EINTR` 재시도, `0`이면 중단.**
@@ -495,7 +495,7 @@
 
 ### `log_error()`
 
-`src/util.c:60` · `void` · ← 서버 전반
+`src/common/util.c:60` · `void` · ← 서버 전반
 
 - **`va_list`로 printf 형식을 받아 stderr에 쓰고 개행을 붙인다.**
 - **로그 레벨/타임스탬프는 없다.** Phase 1은 최소 로깅만 한다.
@@ -503,7 +503,7 @@
 
 ### `mime_type()`
 
-`src/util.c:68` · `const char *` · ← `static_file_prepare`
+`src/common/util.c:68` · `const char *` · ← `static_file_prepare`
 
 - **마지막 `.` 이후 확장자로 MIME을 정한다.** 대소문자 무시.
 - **텍스트 계열은 `charset=utf-8`을 붙인다.** 브라우저의 인코딩 추측을 막는다.
@@ -512,7 +512,7 @@
 
 ### `days_from_civil()`
 
-`src/util.c:99` · `static int64_t` · ← `timegm_utc`
+`src/common/util.c:99` · `static int64_t` · ← `timegm_utc`
 
 - **그레고리력 날짜를 1970-01-01 기준 일수로 바꾼다.** Howard Hinnant의 알고리즘이다.
 - **`timegm`을 쓰지 않는 이유**: 플랫폼별 제공 여부가 갈리고, `TZ` 환경변수 영향을 받지 않는 구현이 필요했다.
@@ -520,21 +520,21 @@
 
 ### `timegm_utc()`
 
-`src/util.c:109` · `static time_t` · ← `http_date_parse`
+`src/common/util.c:109` · `static time_t` · ← `http_date_parse`
 
 - **일수 × 86400 + 시/분/초로 epoch 초를 만든다.**
 - **로컬 타임존을 전혀 거치지 않는다.** HTTP 날짜는 항상 GMT다.
 
 ### `month_index()`
 
-`src/util.c:115` · `static int` · ← `http_date_parse`
+`src/common/util.c:115` · `static int` · ← `http_date_parse`
 
 - **`Jan`~`Dec`을 1~12로 바꾼다.** 대소문자 무시.
 - **모르는 이름은 `-1`.**
 
 ### `http_date_format()`
 
-`src/util.c:128` · `int` · ← `static_file_prepare`
+`src/common/util.c:128` · `int` · ← `static_file_prepare`
 
 - **`gmtime_r`로 UTC를 구하고 IMF-fixdate로 포맷한다.** `Fri, 20 Nov 2026 10:47:19 GMT`.
 - **`gmtime_r`을 쓰는 이유**: `gmtime`은 정적 버퍼를 돌려줘 스레드 안전하지 않다. Phase 2에서 스레드를 붙일 때를 대비한 선택이다.
@@ -542,7 +542,7 @@
 
 ### `http_date_parse()`
 
-`src/util.c:149` · `int` · ← `static_file_prepare`
+`src/common/util.c:149` · `int` · ← `static_file_prepare`
 
 - **`sscanf`로 `Wdy, DD Mon YYYY HH:MM:SS GMT` 형식만 받는다.** `%n`으로 문자열 끝까지 소비됐는지 확인해 뒤에 쓰레기가 붙은 입력을 거절한다.
 - **요일(`%*3s`)은 검증하지 않는다.** 날짜 계산에 필요 없기 때문이다.
@@ -558,12 +558,12 @@
 | 함수 | 위치 | 한 줄 역할 |
 |---|---|---|
 | `main` | `src/main.c:6` | 설정 → 검증 → 구동 |
-| `config_init` | `src/config.c:10` | 설정 구조체 기본값 |
-| `copy_path` | `src/config.c:25` | 경로 복사 + 절단 검사 |
-| `parse_int_arg` | `src/config.c:30` | 엄격한 정수 파싱 |
-| `parse_size_arg` | `src/config.c:40` | 엄격한 크기 파싱 |
-| `config_parse_cli` | `src/config.c:50` | `argv` 해석 |
-| `config_validate` | `src/config.c:110` | docroot/cgi_dir 검증 |
+| `config_init` | `src/common/config.c:10` | 설정 구조체 기본값 |
+| `copy_path` | `src/common/config.c:25` | 경로 복사 + 절단 검사 |
+| `parse_int_arg` | `src/common/config.c:30` | 엄격한 정수 파싱 |
+| `parse_size_arg` | `src/common/config.c:40` | 엄격한 크기 파싱 |
+| `config_parse_cli` | `src/common/config.c:50` | `argv` 해석 |
+| `config_validate` | `src/common/config.c:110` | docroot/cgi_dir 검증 |
 | `handle_signal` | `src/server.c:21` | 첫 시그널 `g_stop`, 두 번째 `_exit` |
 | `setup_signals` | `src/server.c:28` | SIGPIPE/SIGINT/SIGTERM 등록 |
 | `create_listen_socket` | `src/server.c:45` | socket/bind/listen |
@@ -572,60 +572,60 @@
 | `handle_connection` | `src/server.c` | 연결별 요청 루프 |
 | `server_run` | `src/server.c` | accept 루프 |
 | `server_request_stop` | `src/server.c` | 외부 종료 API (미사용) |
-| `now_ms` | `src/util.c` | monotonic 밀리초 |
-| `readn_deadline` | `src/util.c` | deadline 기반 n바이트 읽기 |
-| `readn_stop` | `src/util.c` | 종료 플래그 지원 n바이트 읽기 |
-| `readn` | `src/util.c:139` | `readn_stop(..., NULL)` 래퍼 |
-| `writen` | `src/util.c:143` | n바이트 쓰기 |
-| `log_error` | `src/util.c:60` | stderr 로그 |
-| `mime_type` | `src/util.c:68` | 확장자 → MIME |
-| `days_from_civil` | `src/util.c:99` | 날짜 → epoch 일수 |
-| `timegm_utc` | `src/util.c:109` | UTC epoch 초 |
-| `month_index` | `src/util.c:115` | 월 이름 → 숫자 |
-| `http_date_format` | `src/util.c:128` | IMF-fixdate 포맷 |
-| `http_date_parse` | `src/util.c:149` | IMF-fixdate 파싱 |
-| `find_crlf` | `src/http_request.c:12` | CRLF 탐색 |
-| `trim_ows` | `src/http_request.c:21` | 앞뒤 공백 제거 |
-| `ci_equal` | `src/http_request.c:30` | 대소문자 무시 비교 |
-| `ci_contains` | `src/http_request.c:35` | 대소문자 무시 부분 검색 |
-| `parse_method` | `src/http_request.c:46` | 메서드 판별 |
-| `parse_version` | `src/http_request.c:58` | 버전 검증 |
-| `parse_request_line` | `src/http_request.c:74` | 요청 라인 분해 |
-| `hexval` | `src/http_request.c:113` | 16진수 변환 |
-| `decode_uri` | `src/http_request.c:123` | 퍼센트 디코딩 |
-| `normalize_path` | `src/http_request.c:152` | `.`/`..` 정규화 |
-| `parse_uri` | `src/http_request.c:205` | path/query 분리 |
-| `parse_content_length` | `src/http_request.c:239` | CL 검증 |
-| `parse_headers` | `src/http_request.c:266` | 헤더 루프 |
-| `http_request_init` | `src/http_request.c:342` | 요청 초기화 |
-| `http_request_free` | `src/http_request.c:347` | 본문 해제 |
-| `http_request_reset` | `src/http_request.c:353` | 재사용 초기화 (미사용) |
-| `http_request_parse_buffer` | `src/http_request.c:358` | 헤더 파싱 진입점 |
-| `http_request_read_body` | `src/http_request.c:472` | 본문 읽기 |
-| `http_request_get_header` | `src/http_request.c:543` | 헤더 조회 |
-| `http_status_reason` | `src/http_response.c:7` | 상태 → reason |
-| `http_response_init` | `src/http_response.c:31` | 응답 초기화 |
-| `http_response_set_status` | `src/http_response.c:35` | 상태 설정 (미사용) |
-| `http_response_add_header` | `src/http_response.c:40` | 헤더 누적 |
-| `http_response_send_headers` | `src/http_response.c:58` | 상태 라인 + 헤더 전송 |
-| `http_response_send_redirect` | `src/http_response.c:80` | 301 |
-| `http_response_send_options` | `src/http_response.c:101` | 200 + Allow |
-| `http_response_send_memory` | `src/http_response.c:119` | 메모리 본문 응답 |
-| `http_response_send_error` | `src/http_response.c:220` | HTML 에러 |
-| `send_file` | `src/static_file.c:18` | 64KB 스트리밍 |
-| `has_dotfile_segment` | `src/static_file.c:39` | dotfile 검사 |
-| `path_within_root` | `src/static_file.c:69` | root 포함 검사 |
-| `status_from_errno` | `src/static_file.c:78` | errno → 상태 |
-| `prepare_error_errno` | `src/static_file.c:95` | errno 기반 에러 준비 |
-| `parse_size_value` | `src/static_file.c:105` | Range 숫자 파싱 |
-| `parse_range_header` | `src/static_file.c:123` | Range 해석 |
-| `prepare_range_error` | `src/static_file.c:175` | 416 준비 |
-| `static_file_prepare` | `src/static_file.c:207` | 정적 응답 준비 |
-| `static_file_handle` | `src/static_file.c:426` | 정적 파일 서빙 |
-| `path_within_root` (cgi) | `src/cgi.c:22` | cgi_dir 포함 검사 |
-| `send_cgi_response` | `src/cgi.c:39` | CGI 출력 → HTTP |
-| `build_cgi_env` | `src/cgi.c:189` | CGI 환경변수 |
-| `cgi_handle` | `src/cgi.c:252` | CGI 실행 |
+| `now_ms` | `src/common/util.c` | monotonic 밀리초 |
+| `readn_deadline` | `src/common/util.c` | deadline 기반 n바이트 읽기 |
+| `readn_stop` | `src/common/util.c` | 종료 플래그 지원 n바이트 읽기 |
+| `readn` | `src/common/util.c:139` | `readn_stop(..., NULL)` 래퍼 |
+| `writen` | `src/common/util.c:143` | n바이트 쓰기 |
+| `log_error` | `src/common/util.c:60` | stderr 로그 |
+| `mime_type` | `src/common/util.c:68` | 확장자 → MIME |
+| `days_from_civil` | `src/common/util.c:99` | 날짜 → epoch 일수 |
+| `timegm_utc` | `src/common/util.c:109` | UTC epoch 초 |
+| `month_index` | `src/common/util.c:115` | 월 이름 → 숫자 |
+| `http_date_format` | `src/common/util.c:128` | IMF-fixdate 포맷 |
+| `http_date_parse` | `src/common/util.c:149` | IMF-fixdate 파싱 |
+| `find_crlf` | `src/http/http_request.c:12` | CRLF 탐색 |
+| `trim_ows` | `src/http/http_request.c:21` | 앞뒤 공백 제거 |
+| `ci_equal` | `src/http/http_request.c:30` | 대소문자 무시 비교 |
+| `ci_contains` | `src/http/http_request.c:35` | 대소문자 무시 부분 검색 |
+| `parse_method` | `src/http/http_request.c:46` | 메서드 판별 |
+| `parse_version` | `src/http/http_request.c:58` | 버전 검증 |
+| `parse_request_line` | `src/http/http_request.c:74` | 요청 라인 분해 |
+| `hexval` | `src/http/http_request.c:113` | 16진수 변환 |
+| `decode_uri` | `src/http/http_request.c:123` | 퍼센트 디코딩 |
+| `normalize_path` | `src/http/http_request.c:152` | `.`/`..` 정규화 |
+| `parse_uri` | `src/http/http_request.c:205` | path/query 분리 |
+| `parse_content_length` | `src/http/http_request.c:239` | CL 검증 |
+| `parse_headers` | `src/http/http_request.c:266` | 헤더 루프 |
+| `http_request_init` | `src/http/http_request.c:342` | 요청 초기화 |
+| `http_request_free` | `src/http/http_request.c:347` | 본문 해제 |
+| `http_request_reset` | `src/http/http_request.c:353` | 재사용 초기화 (미사용) |
+| `http_request_parse_buffer` | `src/http/http_request.c:358` | 헤더 파싱 진입점 |
+| `http_request_read_body` | `src/http/http_request.c:472` | 본문 읽기 |
+| `http_request_get_header` | `src/http/http_request.c:543` | 헤더 조회 |
+| `http_status_reason` | `src/http/http_response.c:7` | 상태 → reason |
+| `http_response_init` | `src/http/http_response.c:31` | 응답 초기화 |
+| `http_response_set_status` | `src/http/http_response.c:35` | 상태 설정 (미사용) |
+| `http_response_add_header` | `src/http/http_response.c:40` | 헤더 누적 |
+| `http_response_send_headers` | `src/http/http_response.c:58` | 상태 라인 + 헤더 전송 |
+| `http_response_send_redirect` | `src/http/http_response.c:80` | 301 |
+| `http_response_send_options` | `src/http/http_response.c:101` | 200 + Allow |
+| `http_response_send_memory` | `src/http/http_response.c:119` | 메모리 본문 응답 |
+| `http_response_send_error` | `src/http/http_response.c:220` | HTML 에러 |
+| `send_file` | `src/static/static_file.c:18` | 64KB 스트리밍 |
+| `has_dotfile_segment` | `src/static/static_file.c:39` | dotfile 검사 |
+| `path_within_root` | `src/static/static_file.c:69` | root 포함 검사 |
+| `status_from_errno` | `src/static/static_file.c:78` | errno → 상태 |
+| `prepare_error_errno` | `src/static/static_file.c:95` | errno 기반 에러 준비 |
+| `parse_size_value` | `src/static/static_file.c:105` | Range 숫자 파싱 |
+| `parse_range_header` | `src/static/static_file.c:123` | Range 해석 |
+| `prepare_range_error` | `src/static/static_file.c:175` | 416 준비 |
+| `static_file_prepare` | `src/static/static_file.c:207` | 정적 응답 준비 |
+| `static_file_handle` | `src/static/static_file.c:426` | 정적 파일 서빙 |
+| `path_within_root` (cgi) | `src/cgi/cgi.c:22` | cgi_dir 포함 검사 |
+| `send_cgi_response` | `src/cgi/cgi.c:39` | CGI 출력 → HTTP |
+| `build_cgi_env` | `src/cgi/cgi.c:189` | CGI 환경변수 |
+| `cgi_handle` | `src/cgi/cgi.c:252` | CGI 실행 |
 
 ---
 

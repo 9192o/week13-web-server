@@ -16,19 +16,19 @@
 
 - 새 실행 파일: `reverse-proxy`
 - 새 파일:
-  - `src/main_proxy.c` — `--config`만 받는 프록시 전용 진입점
-  - `src/proxy_server.c` — 프록시 전용 앱 어댑터 (147줄)
-  - `src/conn.c` — conn 생성/해제/로그/에러 응답
-  - `src/conn_io.c` — header read, read/write 상태 머신
-  - `src/conn_net.c` — listener, accept, 503 거절
-  - `src/conn_signal.c` — SIGINT/SIGTERM, stop flag
-  - `src/conn_timer.c` — timeout, drain, watchdog
-  - `src/conn_loop.c` — 두 서버가 공유하는 이벤트 루프 (223줄)
-  - `src/server_ev.c` — 서버 앱 어댑터 (128줄)
-  - `src/server_request.c` — 정적/CGI/proxy 라우팅 (301줄)
-  - `src/server_cgi.c` — CGI task 제출/완료 (133줄)
-  - `include/conn_common.h`, `include/conn_loop.h`, `src/conn_internal.h`,
-    `src/server_internal.h`
+  - `src/app/main_proxy.c` — `--config`만 받는 프록시 전용 진입점
+  - `src/app/proxy_server.c` — 프록시 전용 앱 어댑터 (147줄)
+  - `src/conn/conn.c` — conn 생성/해제/로그/에러 응답
+  - `src/conn/conn_io.c` — header read, read/write 상태 머신
+  - `src/conn/conn_net.c` — listener, accept, 503 거절
+  - `src/conn/conn_signal.c` — SIGINT/SIGTERM, stop flag
+  - `src/conn/conn_timer.c` — timeout, drain, watchdog
+  - `src/conn/conn_loop.c` — 두 서버가 공유하는 이벤트 루프 (223줄)
+  - `src/app/server_ev.c` — 서버 앱 어댑터 (128줄)
+  - `src/app/server_request.c` — 정적/CGI/proxy 라우팅 (301줄)
+  - `src/app/server_cgi.c` — CGI task 제출/완료 (133줄)
+  - `include/conn_common.h`, `include/conn_loop.h`, `src/conn/conn_internal.h`,
+    `src/app/server_internal.h`
   - `include/proxy_server.h`
   - `tests/integration_proxy_bin.sh` — 프록시 전용 통합 테스트
 - 공유하는 것:
@@ -38,13 +38,13 @@
   - timeout, drain, signal 처리, access log
   - 이벤트 루프 dispatch, listener/signal 관리, task-pool completion fd 연결
 - 재사용:
-  - `src/proxy.c`, `src/proxy_wire.c`, `src/proxy_pool.c`
-  - `src/http_request.c`, `src/http_response.c`, `src/http_upstream.c`,
-    `src/chunked.c`
-  - `src/config.c`, `src/config_file.c`
-  - `src/event_*.c`, `src/logger.c`, `src/access_log.c`, `src/util.c`
+  - `src/proxy/proxy.c`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`
+  - `src/http/http_request.c`, `src/http/http_response.c`, `src/http/http_upstream.c`,
+    `src/http/chunked.c`
+  - `src/common/config.c`, `src/common/config_file.c`
+  - `src/event/event_*.c`, `src/common/logger.c`, `src/common/access_log.c`, `src/common/util.c`
 - 제외:
-  - `src/static_file.c`, `src/cgi.c`, `src/cgi_task.c`, `src/task_pool.c`
+  - `src/static/static_file.c`, `src/cgi/cgi.c`, `src/cgi/cgi_task.c`, `src/cgi/task_pool.c`
 
 `reverse-proxy` 바이너리에는 `static_file_prepare`, `submit_cgi`,
 `task_pool_create` 심볼이 없습니다. 크기는 macOS 빌드 기준
@@ -54,12 +54,12 @@
 
 | 파일 | 이전 | 이후 |
 | --- | ---: | ---: |
-| `src/server_ev.c` | 1320줄 | 128줄 |
-| `src/server_request.c` | 없음 | 301줄 |
-| `src/server_cgi.c` | 없음 | 133줄 |
-| `src/proxy_server.c` | 826줄 (복사본) | 147줄 |
-| `src/conn*.c` (5개로 분리) | `conn_common.c` 662줄 | 698줄 |
-| `src/conn_loop.c` | 없음 | 223줄 |
+| `src/app/server_ev.c` | 1320줄 | 128줄 |
+| `src/app/server_request.c` | 없음 | 301줄 |
+| `src/app/server_cgi.c` | 없음 | 133줄 |
+| `src/app/proxy_server.c` | 826줄 (복사본) | 147줄 |
+| `src/conn/*.c` (5개로 분리) | `conn_common.c` 662줄 | 698줄 |
+| `src/conn/conn_loop.c` | 없음 | 223줄 |
 
 `server_ev.c`는 이제 앱 어댑터만 남았고, 정적/CGI 라우팅과 CGI 처리는
 `server_request.c` / `server_cgi.c`로 나뉘었습니다. 연결 수명주기도

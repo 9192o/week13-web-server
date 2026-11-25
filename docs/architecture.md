@@ -1,6 +1,6 @@
 # 아키텍처 — Phase 3
 
-> 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다. 이 문서는 현재 코드의 구조, 모듈 경계, 데이터 소유권을 설명한다. 함수 호출 순서는 [function_flow.md](function_flow.md), 프록시 상세 설계는 [phase3-design.md](phase3-design.md)를 본다.
+> 최종 `server`는 `src/app/main_ev.c` + `src/app/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다. 이 문서는 현재 코드의 구조, 모듈 경계, 데이터 소유권을 설명한다. 함수 호출 순서는 [function_flow.md](function_flow.md), 프록시 상세 설계는 [phase3-design.md](phase3-design.md)를 본다.
 
 ## 1. 설계 목표
 
@@ -200,7 +200,7 @@ completion fd
 
 ### 8.2 `proxy_conn_t` 소유권
 
-내부 타입 정의는 `src/proxy_conn.h`에 있고, 요청/응답 헤더 직렬화는 `src/proxy_wire.c`가 담당한다.
+내부 타입 정의는 `src/proxy/proxy_conn.h`에 있고, 요청/응답 헤더 직렬화는 `src/proxy/proxy_wire.c`가 담당한다.
 
 ```text
 proxy_conn_t

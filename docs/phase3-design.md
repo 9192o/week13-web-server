@@ -69,16 +69,16 @@ client fd ← proxy_conn_t ← upstream fd
 
 | 파일 | 역할 |
 |---|---|
-| `include/proxy.h`, `src/proxy.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
-| `src/proxy_conn.h`, `src/proxy_wire.c` | 내부 proxy 타입, 요청/응답 헤더 재작성 |
-| `src/proxy_pool.c`, `src/proxy_internal.h` | backend keep-alive pool (idle fd, stale 검사, sweep) |
-| `include/http_upstream.h`, `src/http_upstream.c` | upstream 응답(status line + headers) 파서 |
-| `include/chunked.h`, `src/chunked.c` | chunked stream-through 파서 |
-| `src/config_file.c` | INI 유사 설정 파일 파서 |
+| `include/proxy.h`, `src/proxy/proxy.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
+| `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c` | 내부 proxy 타입, 요청/응답 헤더 재작성 |
+| `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h` | backend keep-alive pool (idle fd, stale 검사, sweep) |
+| `include/http_upstream.h`, `src/http/http_upstream.c` | upstream 응답(status line + headers) 파서 |
+| `include/chunked.h`, `src/http/chunked.c` | chunked stream-through 파서 |
+| `src/common/config_file.c` | INI 유사 설정 파일 파서 |
 | `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_PROXY`, event source kind |
 | `tests/backend.c`, `tests/integration_p3.sh` | 테스트용 C backend와 Phase 3 통합 테스트 |
-| `src/server_ev.c` | client 상태에 `ST_PROXY` 추가, route 분기, proxy 이벤트 dispatch |
-| `include/config.h`, `src/config.c` | route/backend/timeout/pool 설정 필드 추가 |
+| `src/app/server_ev.c` | client 상태에 `ST_PROXY` 추가, route 분기, proxy 이벤트 dispatch |
+| `include/config.h`, `src/common/config.c` | route/backend/timeout/pool 설정 필드 추가 |
 | `Makefile` | proxy 모듈/테스트 backend/`integration-p3` 타깃 추가 |
 
 ## 5. 데이터 구조
@@ -673,7 +673,7 @@ Phase 2 drain을 확장한다.
 
 ## 21. 구현 상태 (2026-11-25)
 
-- **구현 완료**: `src/proxy.c`, `src/proxy_conn.h`, `src/proxy_wire.c`, `src/proxy_pool.c`, `src/proxy_internal.h`, `src/http_upstream.c`, `src/chunked.c`, `src/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
+- **구현 완료**: `src/proxy/proxy.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
 - **통합**: `server`/`server_ev`가 최종 이벤트 루프 서버로 빌드되고, `--config`로 Phase 3 설정을 읽는다.
 - **동작 확인**:
   - `/api/*` → Round-Robin backend, 그 외 → 정적 서빙.

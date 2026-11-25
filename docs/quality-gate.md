@@ -125,13 +125,13 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 
 ### Phase 2 S2a (2026-11-24)
 
-- **task pool**: `src/task_pool.c` — bounded job queue, 4 workers 기본, completion pipe, result queue.
+- **task pool**: `src/cgi/task_pool.c` — bounded job queue, 4 workers 기본, completion pipe, result queue.
 - **검증**: `tests/test_task_pool.c` (basic/queue-full/timeout/empty/invalid) PASS. 전체 **273 assertions**, sanitize PASS.
 - **다음(S2b)**: CGI job + `posix_spawn` + 응답 버퍼를 task pool에 연결.
 
 ### Phase 2 S2b (2026-11-24)
 
-- **CGI task 연결**: `cgi_job_t`/`cgi_result_t`, `src/cgi_task.c`. GET/POST/crash/10 concurrent/keep-alive PASS.
+- **CGI task 연결**: `cgi_job_t`/`cgi_result_t`, `src/cgi/cgi_task.c`. GET/POST/crash/10 concurrent/keep-alive PASS.
 - **타임아웃**: `--timeout 1`에서 `sleep`과 SIGTERM 무시 CGI 모두 **504**, 이후 서버 생존.
 - **종료**: SIGINT self-pipe로 idle 서버가 즉시 종료. macOS는 signal mask가 프로세스 공유라 워커 fork가 SIGINT를 블록한 채 남길 수 있어, fork 뮤텍스 + `ev_wait` 전 shutdown signal unblock으로 고정.
 - **검증**: `make test` 273 assertions, `make integration` PASS, `make integration-s1` PASS, `make sanitize` PASS, `make fdtest` PASS.
@@ -147,25 +147,25 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 
 ### Phase 2 S2c-2 (2026-11-24)
 
-- **logger**: `src/logger.c` — 단일 스레드, bounded 큐 1024, drop 카운터, shutdown join/flush. `log_error`도 로거가 켜져 있으면 큐로.
+- **logger**: `src/common/logger.c` — 단일 스레드, bounded 큐 1024, drop 카운터, shutdown join/flush. `log_error`도 로거가 켜져 있으면 큐로.
 - **access log**: `server_ev` 연결별 `access_log_t`. 정적/CGI/404/500/동시 요청 로그 PASS. 형식은 `ip "METHOD path" status body_bytes`.
 - **검증**: `tests/test_logger.c` 기본/drop PASS, 전체 **283 assertions**. `make integration-s1` access log PASS, `make sanitize` PASS.
 - **다음(S2c-3)**: `posix_spawn`, 단계별 drain/watchdog, `server_ev` → `server` 통합.
 
 ### Phase 2 S2c-3a (2026-11-24)
 
-- **posix_spawn**: `src/cgi.c`가 `posix_spawn` + `posix_spawn_file_actions`로 CGI를 실행. stdin(POST 본문/`/dev/null`), stdout 파이프, 불필요 fd close.
+- **posix_spawn**: `src/cgi/cgi.c`가 `posix_spawn` + `posix_spawn_file_actions`로 CGI를 실행. stdin(POST 본문/`/dev/null`), stdout 파이프, 불필요 fd close.
 - **검증**: Phase 1 `make integration` CGI 계약/`partial`/`crash`/`term`, `make integration-s1` CGI/타임아웃/동시성 PASS. `make sanitize` PASS.
 
 ### Phase 2 S2c-3b (2026-11-24)
 
 - **drain/watchdog**: SIGINT/SIGTERM 시 listen 중단 → idle/read 연결 close → ST_WRITE/ST_WAIT_TASK 응답 완료 → 5초 deadline → watchdog `_exit`. 두 번째 시그널은 `_exit(1)`.
-- **통합**: `server`가 `src/main_ev.c` + `src/server_ev.c` 기반 최종 서버로 교체됨. `server_ev`는 같은 소스의 호환 바이너리.
+- **통합**: `server`가 `src/app/main_ev.c` + `src/app/server_ev.c` 기반 최종 서버로 교체됨. `server_ev`는 같은 소스의 호환 바이너리.
 - **검증**: `make integration`, `make integration-s1`, `make integration-s2`, `make shutdown-test`(SIGINT 중 CGI 응답 완료 포함), `make fdtest`(9→9), `make load`(close/keep-alive failed=0), `make sanitize` 모두 PASS. 단위 **283 assertions**. 추가로 `ab -n 10000 -c 100` close-only **3629 rps**, keep-alive **3671 rps**, failed=0.
 
 ### Phase 3 (2026-11-25)
 
-- **Reverse Proxy**: `src/proxy.c`, `src/http_upstream.c`, `src/chunked.c`, `src/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
+- **Reverse Proxy**: `src/proxy/proxy.c`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
 - **실패 경로 보강**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 응답 동시 도착, 응답 `Connection` named header 제거, backend failover, proxy deferred free, 205 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용.
 - **기능 보강**: `[global]` 전역 섹션, `route strip_prefix`, `max_upstreams`(503 + `Retry-After`), `timeout request` → 408, upstream reason phrase/Trailer 보존, static route backend 검증, config 파일 테스트.
 - **검증**: `make test` **358 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **182 PASS**, `integration-p3` **42 PASS** (EOF/1xx/205/HEAD/204/304/body idle/failover/pool reuse/pool idle timeout/client abort/strip_prefix/max_upstreams/408 포함), `make sanitize` PASS, `make fdtest` 9→9.

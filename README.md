@@ -10,11 +10,11 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 | 문제 | 선택 | 구현 위치 |
 | --- | --- | --- |
-| 연결 동시성 | 연결당 스레드 대신 **단일 이벤트 루프 + non-blocking I/O** | `src/server_ev.c`, `src/event_*.c` |
-| CGI가 이벤트 루프를 막는 문제 | **task pool + `posix_spawn`** | `src/task_pool.c`, `src/cgi.c`, `src/cgi_task.c` |
-| 프록시 backend 연결 비용 | **backend별 keep-alive pool** | `src/proxy.c`, `src/proxy_pool.c` |
-| 큰 chunked 응답 | **디코딩/재인코딩 없이 stream-through** | `src/proxy.c`, `src/chunked.c` |
-| 잘못된 설정 | 시작 시 **fail-fast 검증** | `src/config.c`, `src/config_file.c` |
+| 연결 동시성 | 연결당 스레드 대신 **단일 이벤트 루프 + non-blocking I/O** | `src/conn/conn_loop.c`, `src/app/server_ev.c`, `src/event/event_*.c` |
+| CGI가 이벤트 루프를 막는 문제 | **task pool + `posix_spawn`** | `src/cgi/task_pool.c`, `src/cgi/cgi.c`, `src/cgi/cgi_task.c` |
+| 프록시 backend 연결 비용 | **backend별 keep-alive pool** | `src/proxy/proxy.c`, `src/proxy/proxy_pool.c` |
+| 큰 chunked 응답 | **디코딩/재인코딩 없이 stream-through** | `src/proxy/proxy.c`, `src/http/chunked.c` |
+| 잘못된 설정 | 시작 시 **fail-fast 검증** | `src/common/config.c`, `src/common/config_file.c` |
 | Phase 3 검증 | unit + integration + sanitize + fd + load | `tests/` |
 
 발표에서 크게 잡을 포인트는 **“이벤트 루프로 연결을 처리하고, CGI만 task pool로 분리했으며, 프록시는 backend 연결을 재사용한다”**입니다.
@@ -67,14 +67,14 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 ### HTTP 파싱
 
-- `src/http_request.c`에서 요청 라인, 헤더, `Content-Length`, chunked 여부를 직접 파싱합니다.
+- `src/http/http_request.c`에서 요청 라인, 헤더, `Content-Length`, chunked 여부를 직접 파싱합니다.
 - `Host` 중복, `Content-Length` 중복/충돌, `Content-Length` + `Transfer-Encoding` 동시 사용, control character, 비정상 메서드/버전을 거부합니다.
-- `src/http_response.c`가 상태 줄, 헤더, 에러 HTML을 만듭니다.
+- `src/http/http_response.c`가 상태 줄, 헤더, 에러 HTML을 만듭니다.
 - 정적/CGI 경로는 chunked 요청을 지원하지 않고 `501`로 거절합니다. 프록시 경로만 chunked 요청을 stream-through 합니다.
 
 ### 정적 파일
 
-- `src/static_file.c`
+- `src/static/static_file.c`
 - `realpath` 기준으로 docroot 밖으로 나가는 경로와 symlink escape를 차단합니다.
 - `Range`, `If-Modified-Since`, `Last-Modified`, `Accept-Ranges`, 디렉터리 `301` redirect를 처리합니다.
 - 파일은 fd에서 읽어 응답 버퍼로 streaming 합니다.
@@ -83,31 +83,31 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 ### 이벤트 루프
 
-- `src/event_backend.c`가 플랫폼에 따라 backend를 고릅니다.
+- `src/event/event_backend.c`가 플랫폼에 따라 backend를 고릅니다.
   - Linux: `epoll`
   - macOS/BSD: `kqueue`
   - fallback: `poll`
-- `src/server_ev.c`가 accept, read/write, timeout, connection sweep, shutdown을 담당합니다.
+- `src/conn/conn_loop.c`가 accept, read/write, timeout, connection sweep, shutdown을 담당하고, `src/app/server_ev.c`는 정적/CGI/proxy 앱 콜백을 제공합니다.
 - 응답을 다 보내지 못하면 `EV_WRITE`로 전환하고, 입력이 밀리면 `EV_READ`를 조절하는 방식으로 backpressure를 겁니다.
 - keep-alive는 `keepalive_idle`, `keepalive_max`로 제한합니다.
 
 ### CGI
 
-- `src/cgi.c`: `posix_spawn`으로 CGI를 실행하고 stdin/stdout pipe를 연결합니다.
-- `src/cgi_task.c`: CGI job을 실행하고 결과를 응답으로 변환합니다.
-- `src/task_pool.c`: worker thread와 queue를 관리합니다. 큐가 가득 차면 `503` + `Retry-After`를 반환합니다.
+- `src/cgi/cgi.c`: `posix_spawn`으로 CGI를 실행하고 stdin/stdout pipe를 연결합니다.
+- `src/cgi/cgi_task.c`: CGI job을 실행하고 결과를 응답으로 변환합니다.
+- `src/cgi/task_pool.c`: worker thread와 queue를 관리합니다. 큐가 가득 차면 `503` + `Retry-After`를 반환합니다.
 - CGI 출력의 `Status`, `Content-Type`, 중복 헤더, 204/304/205 body 규칙을 검증합니다.
 
 ### 종료와 로그
 
 - `SIGINT`/`SIGTERM`을 받으면 새 연결 수락을 멈추고 진행 중인 연결을 유예 시간 동안 기다립니다.
 - 두 번째 신호가 오면 강제 종료합니다.
-- `src/logger.c`는 로그를 큐에 넣고 별도 스레드에서 출력합니다.
-- `src/access_log.c`는 요청 라인, 상태 코드, 바이트 수, 프록시 비고를 기록합니다.
+- `src/common/logger.c`는 로그를 큐에 넣고 별도 스레드에서 출력합니다.
+- `src/common/access_log.c`는 요청 라인, 상태 코드, 바이트 수, 프록시 비고를 기록합니다.
 
 ## Phase 3: 리버스 프록시
 
-프록시는 `src/proxy.c`의 상태 머신이 중심이고, backend keep-alive pool은 `src/proxy_pool.c`, 요청/응답 헤더 재작성은 `src/proxy_wire.c`에 분리되어 있습니다.
+프록시는 `src/proxy/proxy.c`의 상태 머신이 중심이고, backend keep-alive pool은 `src/proxy/proxy_pool.c`, 요청/응답 헤더 재작성은 `src/proxy/proxy_wire.c`에 분리되어 있습니다.
 
 ```text
 요청 헤더 파싱
@@ -177,14 +177,14 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 | 영역 | 핵심 파일 | 방식 |
 | --- | --- | --- |
-| 진입점 | `src/main_ev.c` | 설정 파싱 후 이벤트 서버 실행 |
-| 설정 | `src/config.c`, `src/config_file.c` | CLI + INI, 시작 시 검증 |
-| 이벤트 루프 | `src/server_ev.c`, `src/event_*.c` | non-blocking, 상태 머신 |
-| HTTP | `src/http_request.c`, `src/http_response.c` | 직접 파서, 응답 빌더 |
-| 정적 파일 | `src/static_file.c` | docroot confinement, Range, IMS |
-| CGI | `src/cgi.c`, `src/cgi_task.c`, `src/task_pool.c` | `posix_spawn`, pipe, worker pool |
-| 프록시 | `src/proxy.c`, `src/proxy_pool.c`, `src/proxy_wire.c`, `src/http_upstream.c`, `src/chunked.c` | route, pool, header rewrite, relay, parser |
-| 로그/종료 | `src/access_log.c`, `src/logger.c`, `src/server_ev.c` | logger thread, graceful shutdown |
+| 진입점 | `src/app/main_ev.c` | 설정 파싱 후 이벤트 서버 실행 |
+| 설정 | `src/common/config.c`, `src/common/config_file.c` | CLI + INI, 시작 시 검증 |
+| 이벤트 루프 | `src/conn/conn_loop.c`, `src/app/server_ev.c`, `src/event/event_*.c` | non-blocking, 상태 머신 |
+| HTTP | `src/http/http_request.c`, `src/http/http_response.c` | 직접 파서, 응답 빌더 |
+| 정적 파일 | `src/static/static_file.c` | docroot confinement, Range, IMS |
+| CGI | `src/cgi/cgi.c`, `src/cgi/cgi_task.c`, `src/cgi/task_pool.c` | `posix_spawn`, pipe, worker pool |
+| 프록시 | `src/proxy/proxy.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_wire.c`, `src/http/http_upstream.c`, `src/http/chunked.c` | route, pool, header rewrite, relay, parser |
+| 로그/종료 | `src/common/access_log.c`, `src/common/logger.c`, `src/conn/conn_loop.c` | logger thread, graceful shutdown |
 
 ## 빌드와 실행
 

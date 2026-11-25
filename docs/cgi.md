@@ -252,9 +252,9 @@ CGI는 라이브러리도 언어도 아니다. **서버와 프로그램 사이�
 | 파일 | 역할 |
 |---|---|
 | `src/server.c` | `/cgi-bin/` 라우팅, `cgi_dir` 기능 스위치 |
-| `src/cgi.c` `cgi_handle` | 경로 검증, `pipe`/`tmpfile`/`fork`/`execve`, `poll` 타임아웃 |
-| `src/cgi.c` `build_cgi_env` | 환경변수 배열을 부모에서 구성 |
-| `src/cgi.c` `send_cgi_response` | CGI 출력 → HTTP 응답 변환 |
+| `src/cgi/cgi.c` `cgi_handle` | 경로 검증, `pipe`/`tmpfile`/`fork`/`execve`, `poll` 타임아웃 |
+| `src/cgi/cgi.c` `build_cgi_env` | 환경변수 배열을 부모에서 구성 |
+| `src/cgi/cgi.c` `send_cgi_response` | CGI 출력 → HTTP 응답 변환 |
 | `cgi-bin/echo.c` | 예제 CGI 프로그램 |
 
 ### 한계 (Phase 1)

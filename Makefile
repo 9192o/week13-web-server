@@ -7,14 +7,14 @@ LDFLAGS  += -pthread
 
 .DEFAULT_GOAL := all
 
-EVENT_SRCS := src/event_backend.c src/event_poll.c src/event_epoll.c src/event_kqueue.c
+EVENT_SRCS := src/event/event_backend.c src/event/event_poll.c src/event/event_epoll.c src/event/event_kqueue.c
 
-EV_SERVER_SRCS := src/main_ev.c src/config.c src/config_file.c src/conn.c src/conn_signal.c src/conn_net.c src/conn_timer.c src/conn_io.c src/conn_loop.c src/server_ev.c src/server_cgi.c src/server_request.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c src/cgi_task.c src/task_pool.c $(EVENT_SRCS)
+EV_SERVER_SRCS := src/app/main_ev.c src/common/config.c src/common/config_file.c src/conn/conn.c src/conn/conn_signal.c src/conn/conn_net.c src/conn/conn_timer.c src/conn/conn_io.c src/conn/conn_loop.c src/app/server_ev.c src/app/server_cgi.c src/app/server_request.c src/proxy/proxy.c src/proxy/proxy_pool.c src/proxy/proxy_wire.c src/http/http_upstream.c src/http/chunked.c src/common/util.c src/common/logger.c src/common/access_log.c src/http/http_request.c src/http/http_response.c src/static/static_file.c src/cgi/cgi.c src/cgi/cgi_task.c src/cgi/task_pool.c $(EVENT_SRCS)
 EV_SERVER_OBJS := $(EV_SERVER_SRCS:.c=.o)
 EV_SERVER_BIN  := server_ev
 
 # Standalone proxy-only binary: same proxy core, no static/CGI/task pool.
-PROXY_SERVER_SRCS := src/main_proxy.c src/config.c src/config_file.c src/conn.c src/conn_signal.c src/conn_net.c src/conn_timer.c src/conn_io.c src/conn_loop.c src/proxy_server.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c $(EVENT_SRCS)
+PROXY_SERVER_SRCS := src/app/main_proxy.c src/common/config.c src/common/config_file.c src/conn/conn.c src/conn/conn_signal.c src/conn/conn_net.c src/conn/conn_timer.c src/conn/conn_io.c src/conn/conn_loop.c src/app/proxy_server.c src/proxy/proxy.c src/proxy/proxy_pool.c src/proxy/proxy_wire.c src/http/http_upstream.c src/http/chunked.c src/common/util.c src/common/logger.c src/common/access_log.c src/http/http_request.c src/http/http_response.c $(EVENT_SRCS)
 PROXY_SERVER_OBJS := $(PROXY_SERVER_SRCS:.c=.o)
 PROXY_SERVER_BIN  := reverse-proxy
 
@@ -30,7 +30,7 @@ TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_respons
 TEST_OBJS := $(TEST_SRCS:.c=.o)
 TEST_BIN  := run_tests
 
-TEST_SUPPORT_SRCS := src/http_request.c src/http_response.c src/http_upstream.c src/chunked.c src/config.c src/config_file.c src/util.c src/logger.c src/access_log.c src/static_file.c src/task_pool.c $(EVENT_SRCS)
+TEST_SUPPORT_SRCS := src/http/http_request.c src/http/http_response.c src/http/http_upstream.c src/http/chunked.c src/common/config.c src/common/config_file.c src/common/util.c src/common/logger.c src/common/access_log.c src/static/static_file.c src/cgi/task_pool.c $(EVENT_SRCS)
 TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:.c=.o)
 
 DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(PROXY_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)

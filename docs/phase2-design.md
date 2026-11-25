@@ -278,7 +278,7 @@ typedef struct {
 
 ## 12. 로깅
 
-- 단일 로거 스레드 + bounded 큐(1024). S2c-2에서 `src/logger.c`로 구현.
+- 단일 로거 스레드 + bounded 큐(1024). S2c-2에서 `src/common/logger.c`로 구현.
 - 이벤트 루프/작업 워커는 포맷 후 큐에 넣기만. `log_error`도 로거가 켜져 있으면 큐로 들어간다.
 - full이면 drop + 카운터. 종료 시 `logger: dropped N lines`를 남기고 flush/join.
 - 접근 로그: `ip "METHOD path" status body_bytes`. `server_ev`는 연결별 `access_log_t`를 두고 요청 시작/응답 완료 시 기록한다. 샘플링 옵션은 아직 없다.
@@ -299,45 +299,45 @@ typedef struct {
 
 ## 14. 변경 파일/선행 작업
 
-> 구현 상태 (S0): `src/event_backend.c` + `event_poll.c` + `event_epoll.c` + `event_kqueue.c`와 `tests/test_event_backend.c` 완료. macOS에서 poll/kqueue PASS, epoll은 Linux CI에서 확인 예정.
+> 구현 상태 (S0): `src/event/event_backend.c` + `event_poll.c` + `event_epoll.c` + `event_kqueue.c`와 `tests/test_event_backend.c` 완료. macOS에서 poll/kqueue PASS, epoll은 Linux CI에서 확인 예정.
 >
 > 구현 상태 (S1): `server_ev` (이벤트 루프 + 연결 상태 머신 + 정적 파일 A)와 `tests/integration_s1.sh` 완료. Phase 1 `server`는 그대로 유지하고, S2에서 `server_ev`에 작업 풀/CGI를 붙인 뒤 통합한다. S1의 CGI는 `503` 스캐폴드다.
 > S1 스캐폴드 한계: signal은 `EINTR` 폴링으로 처리하고 self-pipe/drain은 아직 없다. max-conns 초과는 즉시 close(503 아님), access log/로거 스레드도 S2.
-> 구현 상태 (S2a): `src/task_pool.c` + `include/task_pool.h` + `tests/test_task_pool.c` 완료. bounded queue/workers/completion pipe/queue-full/timeout 테스트 PASS. CGI job 연결은 S2b.
+> 구현 상태 (S2a): `src/cgi/task_pool.c` + `include/task_pool.h` + `tests/test_task_pool.c` 완료. bounded queue/workers/completion pipe/queue-full/timeout 테스트 PASS. CGI job 연결은 S2b.
 >
 > 구현 상태 (S2b): `cgi_job_t`/`cgi_result_t` + task pool 연결 완료. CGI GET/POST/crash/10 concurrent/keep-alive/timeout 504, SIGTERM 무시 CGI 504, SIGINT 종료 테스트 PASS. `posix_spawn`, 로거 스레드, max-conns/queue-full 503은 S2c.
 >
 > 구현 상태 (S2c-1): `--task-workers`, `--task-queue`, `--max-conns` config/CLI 추가. max-conns 초과 503 + `Retry-After: 1`, queue-full 503. `tests/integration_s2.sh` PASS.
 >
-> 구현 상태 (S2c-2): `src/logger.c` + `include/logger.h` + `tests/test_logger.c`. 단일 로거 스레드/bounded 큐/drop 카운터, `server_ev` access log(정적/CGI/404/500/동시 요청) PASS.
+> 구현 상태 (S2c-2): `src/common/logger.c` + `include/logger.h` + `tests/test_logger.c`. 단일 로거 스레드/bounded 큐/drop 카운터, `server_ev` access log(정적/CGI/404/500/동시 요청) PASS.
 >
 > 구현 상태 (S2c-3a): CGI 실행을 `fork`+`execve`에서 `posix_spawn` + file actions로 전환. Phase 1 `server`/`server_ev` CGI 테스트 PASS.
 >
-> 구현 상태 (S2c-3b): SIGINT/SIGTERM 단계별 drain + 5초 watchdog, 두 번째 시그널 강제 종료. `server`는 이제 `src/main_ev.c` + `src/server_ev.c` 기반 최종 서버이고, Phase 1 통합/종료/fd/load 테스트도 이 서버로 PASS. `server_ev`는 같은 소스의 호환 바이너리다.
+> 구현 상태 (S2c-3b): SIGINT/SIGTERM 단계별 drain + 5초 watchdog, 두 번째 시그널 강제 종료. `server`는 이제 `src/app/main_ev.c` + `src/app/server_ev.c` 기반 최종 서버이고, Phase 1 통합/종료/fd/load 테스트도 이 서버로 PASS. `server_ev`는 같은 소스의 호환 바이너리다.
 >
 > `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
 
 | 파일 | 변경 |
 |---|---|
-| `src/main_ev.c`, `src/server_ev.c`, `include/server_ev.h` | 최종 이벤트 루프 서버 (S1 + S2 전체 + drain) |
-| `src/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
-| `src/logger.c`, `include/logger.h` | S2c-2 로거 스레드/큐/access log |
+| `src/app/main_ev.c`, `src/app/server_ev.c`, `include/server_ev.h` | 최종 이벤트 루프 서버 (S1 + S2 전체 + drain) |
+| `src/cgi/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
+| `src/common/logger.c`, `include/logger.h` | S2c-2 로거 스레드/큐/access log |
 | `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 + S2c-2 access log 테스트 |
 | `tests/integration_s2.sh` | S2c-1 max-conns/queue-full 503 테스트 |
 | `tests/test_logger.c` | S2c-2 로거 단위 테스트 |
 | `include/event_backend.h` | `ev_add`/`ev_mod`/`ev_del`/`ev_wait` 인터페이스 |
-| `src/event_backend.c` | 백엔드 선택/auto fallback, 공통 API |
-| `src/event_internal.h` | 백엔드 ops/state 내부 인터페이스 |
-| `src/event_poll.c` | `poll` 폴백 |
-| `src/event_epoll.c` | Linux `epoll` |
-| `src/event_kqueue.c` | macOS/BSD `kqueue` |
-| `src/task_pool.c`, `include/task_pool.h` | 작업 큐/워커/완료 파이프 (S2a 완료) |
-| `src/http_request.c`, `include/http.h` | 논블로킹 본문 누적 API |
-| `src/http_response.c` | 응답을 메모리로 직렬화 |
-| `src/static_file.c` | 정책/prepare와 I/O 분리 |
-| `src/cgi.c` | `cgi_execute`가 응답 버퍼 반환, `posix_spawn` |
-| `src/config.c`, `include/config.h` | task/conns 옵션 |
-| `src/util.c`, `include/util.h` | 로거 스레드 |
+| `src/event/event_backend.c` | 백엔드 선택/auto fallback, 공통 API |
+| `src/event/event_internal.h` | 백엔드 ops/state 내부 인터페이스 |
+| `src/event/event_poll.c` | `poll` 폴백 |
+| `src/event/event_epoll.c` | Linux `epoll` |
+| `src/event/event_kqueue.c` | macOS/BSD `kqueue` |
+| `src/cgi/task_pool.c`, `include/task_pool.h` | 작업 큐/워커/완료 파이프 (S2a 완료) |
+| `src/http/http_request.c`, `include/http.h` | 논블로킹 본문 누적 API |
+| `src/http/http_response.c` | 응답을 메모리로 직렬화 |
+| `src/static/static_file.c` | 정책/prepare와 I/O 분리 |
+| `src/cgi/cgi.c` | `cgi_execute`가 응답 버퍼 반환, `posix_spawn` |
+| `src/common/config.c`, `include/config.h` | task/conns 옵션 |
+| `src/common/util.c`, `include/util.h` | 로거 스레드 |
 | `Makefile` | `-pthread` |
 | `tests/` | 이벤트 루프/작업 풀 테스트 |
 

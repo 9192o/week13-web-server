@@ -428,7 +428,7 @@
   - **CGI 프로그램은 작게 유지할 수 있다:** `echo`, `time`, `search` 정도면 C로도 부담이 적다.
   - CGI의 언어 독립성은 README에 설명하되, 이 프로젝트에서는 C로 통일한다.
 - **영향:**
-  - `src/cgi.c`(러너)와 `cgi-bin/*.c`(프로그램)가 추가된다.
+  - `src/cgi/cgi.c`(러너)와 `cgi-bin/*.c`(프로그램)가 추가된다.
   - `fork`/`execve`/`pipe`/`dup2`/`waitpid`, 환경변수, fd 정리, 타임아웃, 보안이 필요하다.
   - `make`에 `cgi` 타깃을 추가한다.
 - **재검토 조건:**
