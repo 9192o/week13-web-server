@@ -3,6 +3,7 @@
 
 #include "http.h"
 #include <netinet/in.h>
+#include <time.h>
 
 #define PROXY_ROUTE_MAX 32
 
@@ -13,6 +14,8 @@ struct proxy_route {
     const char *host;
     size_t next_peer;
     size_t cursor; /* Used only by the first entry for a prefix. */
+    int idle; /* Encoded fd + 1, or zero. */
+    struct timespec idle_deadline;
 };
 
 struct proxy_routes {

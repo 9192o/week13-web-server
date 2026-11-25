@@ -2,6 +2,7 @@
 /* 웹 애플리케이션 */
 
 #include "app.h"
+#include "cgi.h"
 #include "http.h"
 #include "static_file.h"
 #include "static_response.h"
@@ -20,7 +21,7 @@
 static void print_usage(void)
 {
     fputs("Usage: ./webserver --port <1-65535> --root <directory>"
-          " [--max-connections <1-65535>]\n",
+          " [--max-connections <1-65535>] [--cgi-root <trusted-directory>]\n",
           stderr);
 }
 
@@ -121,6 +122,21 @@ static int cli_parse(int argc, char **argv, unsigned short *port, int *root_fd,
 
 int main(int argc, char **argv)
 {
+    const char *cgi_root = NULL;
+    for (int i = 1; i + 1 < argc; i += 2)
+    {
+        if (strcmp(argv[i], "--cgi-root") != 0)
+            continue;
+        if (cgi_root)
+        {
+            print_usage();
+            return EXIT_FAILURE;
+        }
+        cgi_root = argv[i + 1];
+        memmove(argv + i, argv + i + 2, (size_t)(argc - i - 1) * sizeof(*argv));
+        argc -= 2;
+        i -= 2;
+    }
     unsigned short port;
     int root_fd;
     size_t connection_limit;
@@ -137,8 +153,16 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
     close(probe_fd);
-    const struct session_app app = web_app(&root_fd);
+    struct web_config config = {.root_fd = root_fd};
+    if (cgi_root && !(config.cgi = cgi_pool_open(cgi_root)))
+    {
+        fputs("Could not start CGI workers\n", stderr);
+        close(root_fd);
+        return EXIT_FAILURE;
+    }
+    const struct session_app app = web_app(&config);
     int status = http_server_run(port, connection_limit, &app);
+    cgi_pool_close(config.cgi);
     close(root_fd);
     return status;
 }

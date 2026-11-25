@@ -6,17 +6,17 @@ override CPPFLAGS += -Isrc/app -Isrc/http -Isrc/server -Isrc/static
 
 COMMON_SOURCES = src/server/webserver.c src/server/epoll_loop.c src/server/client_session.c src/http/http.c src/server/connection.c src/server/shutdown.c
 COMMON_HEADERS = src/server/webserver.h src/server/epoll_loop.h src/server/client_session.h src/server/session_app.h src/http/http.h src/server/connection.h src/server/shutdown.h
-SOURCES = $(COMMON_SOURCES) src/app/app.c src/app/app_session.c src/app/router.c src/static/static_file.c src/static/static_response.c
-HEADERS = $(COMMON_HEADERS) src/app/app.h src/app/router.h src/static/static_file.h src/static/static_response.h
+SOURCES = $(COMMON_SOURCES) src/app/app.c src/app/app_session.c src/app/cgi.c src/app/router.c src/static/static_file.c src/static/static_response.c
+HEADERS = $(COMMON_HEADERS) src/app/app.h src/app/cgi.h src/app/router.h src/static/static_file.h src/static/static_response.h
 PROXY_SOURCES = $(COMMON_SOURCES) src/proxy/main.c src/proxy/proxy_routes.c src/proxy/proxy_wire.c src/proxy/proxy_exchange.c
 PROXY_HEADERS = $(COMMON_HEADERS) src/proxy/proxy_routes.h src/proxy/proxy_wire.h src/proxy/proxy_exchange.h
 
-.PHONY: all help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll test-keepalive test-proxy test-proxy-unit
+.PHONY: all help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll test-keepalive test-proxy test-proxy-unit test-cgi
 
 all: webserver reverse-proxy
 
 webserver: $(SOURCES) $(HEADERS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(SOURCES) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(SOURCES) $(LDLIBS) -pthread -o $@
 
 reverse-proxy: $(PROXY_SOURCES) $(PROXY_HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(PROXY_SOURCES) $(LDLIBS) -o $@
@@ -29,9 +29,9 @@ test-unit:
 		$(UNIT_RUNNER) "$$http_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_body.c src/http/http.c $(LDLIBS) -o "$$body_bin"; \
 		$(UNIT_RUNNER) "$$body_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c src/app/app_session.c src/http/http.c src/server/connection.c $(LDLIBS) -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_webserver.c src/app/app_session.c src/app/cgi.c src/http/http.c src/server/connection.c $(LDLIBS) -pthread -Wl,--wrap=recv -Wl,--wrap=send -o "$$server_bin"; \
 		$(UNIT_RUNNER) "$$server_bin"; \
-		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c src/app/app_session.c src/app/router.c src/http/http.c src/static/static_response.c src/static/static_file.c $(LDLIBS) -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
+		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_router.c src/app/app_session.c src/app/cgi.c src/app/router.c src/http/http.c src/server/connection.c src/static/static_response.c src/static/static_file.c $(LDLIBS) -pthread -Wl,--wrap=open -Wl,--wrap=fstat -o "$$router_bin"; \
 		$(UNIT_RUNNER) "$$router_bin"; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -I. $(LDFLAGS) tests/test_static_file.c src/static/static_file.c $(LDLIBS) -o "$$static_bin"; \
 		$(UNIT_RUNNER) "$$static_bin"; \
@@ -46,7 +46,7 @@ test-deadlines:
 	@set -eu; \
 		exe=$$(mktemp); trap 'rm -f "$$exe"' EXIT HUP INT TERM; \
 		$(CC) $(CPPFLAGS) $(CFLAGS) -DPHASE1_HEADER_MS=250 -DPHASE1_IDLE_MS=300 \
-			-DPHASE1_TOTAL_MS=1500 -DPHASE1_SEND_MS=500 $(LDFLAGS) $(SOURCES) $(LDLIBS) -o "$$exe"; \
+			-DPHASE1_TOTAL_MS=1500 -DPHASE1_SEND_MS=500 $(LDFLAGS) $(SOURCES) $(LDLIBS) -pthread -o "$$exe"; \
 		python3 tests/test_deadlines.py "$$exe"
 
 test-shutdown: webserver
@@ -71,6 +71,10 @@ test-proxy-unit:
 test-proxy: test-proxy-unit reverse-proxy webserver
 	python3 tests/test_proxy.py ./reverse-proxy
 	python3 tests/test_proxy_processes.py ./reverse-proxy ./webserver
+	python3 tests/test_proxy_reuse.py ./reverse-proxy
+
+test-cgi: webserver
+	python3 tests/test_cgi.py ./webserver
 
 help:
 	@printf '%s\n' \

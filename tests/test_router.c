@@ -173,6 +173,25 @@ static void test_index_files(void)
     assert(close(response.file_fd) == 0);
     assert(unlink("index.html") == 0);
 
+    const struct { const char *path, *type; } mime[] = {
+        {"/file.css", "text/css; charset=utf-8"},
+        {"/file.js", "text/javascript; charset=utf-8"},
+        {"/file.png", "image/png"},
+        {"/file.jpg", "image/jpeg"}
+    };
+    for (size_t i = 0; i < sizeof mime / sizeof *mime; ++i)
+    {
+        const char *name = mime[i].path + 1;
+        file = fopen(name, "wb");
+        assert(file && fputs("fixture", file) >= 0 && fclose(file) == 0);
+        struct http_request asset = request_for("GET", mime[i].path);
+        response = prepare(root_fd, &asset);
+        assert(response.status == 200 && response.file_fd >= 0);
+        assert(strcmp(response.content_type, mime[i].type) == 0);
+        assert(close(response.file_fd) == 0);
+        assert(unlink(name) == 0);
+    }
+
     assert(symlink("missing.html", "index.html") == 0);
     response = prepare(root_fd, &request);
     assert(response.status == 404 && response.file_fd == -1);

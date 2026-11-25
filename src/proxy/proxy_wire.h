@@ -35,6 +35,7 @@ struct proxy_head
     size_t length;
     size_t consumed;
     int status;
+    bool upstream_keep;
 };
 
 /*
@@ -48,7 +49,7 @@ struct proxy_head
  * are removed.  Host is rewritten to the supplied `host`.  Content-Length is
  * rewritten from request->body.length (already decoded by the receiver).
  * Expect is handled locally. A new `Via: 1.1 week13` line is appended.
- * Connection: close is always emitted.
+ * The upstream request uses HTTP/1.1 persistence.
  *
  * Returns the number of bytes written to `out` (not including a NUL
  * terminator), or 0 if a required argument is missing or the buffer is too
@@ -74,10 +75,10 @@ size_t proxy_request_head(const struct http_request *request, const char *host,
  *   PROXY_CHUNKED -> Transfer-Encoding: chunked
  *   PROXY_EOF     -> Transfer-Encoding: chunked (downstream chunked)
  *   PROXY_NONE    -> no framing header, except optional 304 length metadata
- * Connection: close is always emitted.  Via is preserved as-is.
+ * Via is preserved as-is. Downstream persistence is limited to fixed length.
  */
 int proxy_response_head(const char *data, size_t len, bool is_head,
                         struct proxy_head *head, char *out, size_t cap,
-                        size_t *outlen);
+                        size_t *outlen, bool keep_client);
 
 #endif /* PROXY_WIRE_H */

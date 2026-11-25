@@ -5,7 +5,12 @@
 #include "router.h"
 #include "session_app.h"
 
-struct session_app web_app(const int *root_fd);
+struct cgi_pool;
+struct web_config {
+    int root_fd;
+    struct cgi_pool *cgi;
+};
+struct session_app web_app(const struct web_config *config);
 
 struct router_result app_match_request(const struct http_request *request);
 

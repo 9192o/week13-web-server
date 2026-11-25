@@ -360,7 +360,8 @@ def test_routing_and_boundary_fallback(exe: str) -> None:
                 assert r.status == 404, (path, r.status, r.body)
                 assert r.body == b"Not Found", (path, r.body)
 
-            wait_for_fd_count(proc.pid, baseline)
+            # The two successful upstreams may remain idle for five seconds.
+            wait_for_fd_count(proc.pid, baseline, timeout=7.0)
         finally:
             stop_server(proc, drain)
     finally:

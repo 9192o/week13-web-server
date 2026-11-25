@@ -55,7 +55,7 @@ static void test_request_simple_get(void)
     assert_contains(out, "Accept: application/json\r\n");
     assert_contains(out, "Content-Length: 0\r\n");
     assert_contains(out, "Via: 1.1 week13\r\n");
-    assert_contains(out, "Connection: close\r\n\r\n");
+    assert_not_contains(out, "Connection:");
     assert_not_contains(out, "Connection: keep-alive");
     assert_not_contains(out, "keep-alive");
 }
@@ -185,7 +185,7 @@ static void test_response_length(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, true);
     assert(rc == 1);
     assert(head.status == 200);
     assert(head.frame == PROXY_LENGTH);
@@ -196,8 +196,8 @@ static void test_response_length(void)
     assert(strncmp(out, "HTTP/1.1 200 OK\r\n", 17) == 0);
     assert_contains(out, "Server: test\r\n");
     assert_contains(out, "Content-Length: 12\r\n");
-    assert_contains(out, "Connection: close\r\n\r\n");
-    assert_not_contains(out, "Connection: keep-alive");
+    assert(head.upstream_keep);
+    assert_not_contains(out, "Connection:");
 }
 
 static void test_response_chunked(void)
@@ -212,13 +212,15 @@ static void test_response_chunked(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, true);
     assert(rc == 1);
     assert(head.frame == PROXY_CHUNKED);
+    assert(!head.upstream_keep);
     assert(head.length == 0);
     out[outlen] = '\0';
 
     assert_contains(out, "Transfer-Encoding: chunked\r\n");
+    assert_contains(out, "Connection: close\r\n");
     assert_contains(out, "X-Data: value\r\n");
     assert_not_contains(out, "Content-Length");
 }
@@ -234,7 +236,7 @@ static void test_response_eof_framing(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     assert(head.frame == PROXY_EOF);
     out[outlen] = '\0';
@@ -254,7 +256,7 @@ static void test_response_head_preserves_cl(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, true, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     assert(head.status == 200);
     assert(head.frame == PROXY_LENGTH);
@@ -274,7 +276,7 @@ static void test_response_head_no_cl(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, true, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     assert(head.frame == PROXY_LENGTH);
     assert(head.length == 0);
@@ -294,7 +296,7 @@ static void test_response_no_body_status(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     assert(head.status == 204);
     assert(head.frame == PROXY_NONE);
@@ -313,7 +315,7 @@ static void test_response_informational(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     assert(head.status == 100);
     assert(head.frame == PROXY_NONE);
@@ -338,7 +340,7 @@ static void test_response_connection_nominated(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     out[outlen] = '\0';
 
@@ -358,7 +360,7 @@ static void test_response_via_preserved(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 1);
     out[outlen] = '\0';
 
@@ -377,7 +379,7 @@ static void test_response_rejects_conflicting_framing(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == -1);
 }
 
@@ -392,7 +394,7 @@ static void test_response_invalid_content_length(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == -1);
 }
 
@@ -403,7 +405,7 @@ static void test_response_invalid_status_line(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == -1);
 }
 
@@ -414,7 +416,7 @@ static void test_response_need_more(void)
     struct proxy_head head;
     size_t outlen;
     int rc = proxy_response_head(data, sizeof(data) - 1, false, &head, out,
-                                 sizeof(out), &outlen);
+                                 sizeof(out), &outlen, false);
     assert(rc == 0);
     assert(head.consumed == 0);
     assert(head.status == 0);

@@ -308,15 +308,30 @@ static bool cs_advance_stream(struct client_session *c, bool upstream_readable,
                               bool upstream_writable, bool downstream_writable)
 {
     const struct session_stream_ops *ops = c->app->stream_ops;
+    if (ops->response)
+    {
+        struct http_response response;
+        if (upstream_readable && ops->response(c->stream, &response,
+                                                c->location, sizeof(c->location)))
+        {
+            ops->destroy(c->stream);
+            c->stream = NULL;
+            queue_final_response(c, &response);
+        }
+        return true;
+    }
     size_t sent = 0;
+    bool allow_keep = !c->wants_close && !c->have_shutdown_deadline &&
+                      c->request_count < CS_MAX_REQUESTS;
     int result = ops->pump(c->stream, upstream_readable, upstream_writable,
-                           c->fd, downstream_writable, &sent);
+                           c->fd, downstream_writable, allow_keep, &sent);
     c->access.bytes_sent += sent;
     if (ops->started(c->stream))
         c->access.status = ops->status(c->stream);
     if (!result)
         return true;
     bool started = ops->started(c->stream);
+    bool keep = result == 1 && allow_keep && ops->keep_client(c->stream);
     ops->destroy(c->stream);
     c->stream = NULL;
     if (result >= 400 && !started)
@@ -328,6 +343,14 @@ static bool cs_advance_stream(struct client_session *c, bool upstream_readable,
     {
         size_t discarded;
         c->access.complete = 1;
+        if (keep)
+        {
+            cs_log_access(c);
+            if (cs_reset_request(c, c->pending_len == 0))
+                return c->state == CS_IDLE || client_session_advance(c, false, false);
+            cs_close_client(c);
+            return false;
+        }
         shutdown(c->fd, SHUT_WR);
         connection_drain(c->fd, HTTP_REQUEST_HEAD_MAX, &discarded);
     }
@@ -356,7 +379,8 @@ static void cs_handle_timeout(struct client_session *c)
         break;
     case CS_STREAM:
     {
-        bool started = c->app->stream_ops->started(c->stream);
+        const struct session_stream_ops *ops = c->app->stream_ops;
+        bool started = ops->started && ops->started(c->stream);
         c->app->stream_ops->destroy(c->stream);
         c->stream = NULL;
         if (started)
@@ -702,8 +726,7 @@ static enum cs_status cs_process_head(struct client_session *c)
     }
     c->validated = 1;
     ++c->request_count;
-    c->wants_close = c->app->close_after_response ||
-                     http_connection_wants_close(&c->headers.headers);
+    c->wants_close = http_connection_wants_close(&c->headers.headers);
 
     if (connection_deadline_from_now(PHASE1_IDLE_MS, &c->total_deadline,
                                      &c->body_deadline) < 0)
@@ -860,7 +883,8 @@ short client_session_interest(const struct client_session *client)
     case CS_WRITING:
         return POLLOUT;
     case CS_STREAM:
-        return client->app->stream_ops->has_output(client->stream) ? POLLOUT : 0;
+        return client->app->stream_ops->has_output &&
+               client->app->stream_ops->has_output(client->stream) ? POLLOUT : 0;
     default:
         return 0;
     }

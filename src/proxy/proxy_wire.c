@@ -187,7 +187,7 @@ size_t proxy_request_head(const struct http_request *request, const char *host,
     if (append_cstr(out, cap, &pos, "Via: 1.1 week13\r\n") < 0)
         return 0;
 
-    if (append_cstr(out, cap, &pos, "Connection: close\r\n\r\n") < 0)
+    if (append_cstr(out, cap, &pos, "\r\n") < 0)
         return 0;
 
     return pos;
@@ -302,7 +302,7 @@ static int has_chunked_transfer_encoding(const struct http_headers *headers)
 
 int proxy_response_head(const char *data, size_t len, bool is_head,
                         struct proxy_head *head, char *out, size_t cap,
-                        size_t *outlen)
+                        size_t *outlen, bool keep_client)
 {
     if (!data || !head || !out || !outlen || cap == 0)
         return -1;
@@ -365,6 +365,9 @@ int proxy_response_head(const char *data, size_t len, bool is_head,
         head->length = 0;
     }
 
+    head->upstream_keep = line.version_minor == 1 && !is_head &&
+                          head->frame == PROXY_LENGTH &&
+                          !http_connection_wants_close(&headers.headers);
     size_t pos = 0;
     if (append_cstr(out, cap, &pos, "HTTP/1.1 ") < 0)
         return -1;
@@ -419,7 +422,8 @@ int proxy_response_head(const char *data, size_t len, bool is_head,
             return -1;
     }
 
-    if (append_cstr(out, cap, &pos, "Connection: close\r\n\r\n") < 0)
+    if (append_cstr(out, cap, &pos, keep_client && head->frame == PROXY_LENGTH
+                    ? "\r\n" : "Connection: close\r\n\r\n") < 0)
         return -1;
 
     *outlen = pos;

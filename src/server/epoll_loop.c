@@ -3,6 +3,7 @@
 
 #include "client_session.h"
 #include "connection.h"
+#include "session_app.h"
 #include "shutdown.h"
 
 #include <errno.h>
@@ -73,7 +74,10 @@ static int update_upstream_interest(struct event_loop *loop, struct loop_client 
     const short want = client_session_upstream_interest(client->session);
     if (fd != client->upstream_fd)
     {
-        /* The session closes an old upstream before replacing it. */
+        /* CGI's worker may still hold its completion FD after the session leaves. */
+        if (client->upstream_interest && loop->app->stream_ops &&
+            loop->app->stream_ops->response)
+            (void)epoll_ctl(loop->fd, EPOLL_CTL_DEL, client->upstream_fd, NULL);
         client->upstream_fd = fd;
         client->upstream_interest = 0;
     }
@@ -161,6 +165,8 @@ static void reap_clients(struct event_loop *loop, bool all)
             continue;
         }
         *link = client->next;
+        if (client->upstream_interest)
+            (void)epoll_ctl(loop->fd, EPOLL_CTL_DEL, client->upstream_fd, NULL);
         client_session_destroy(client->session);
         free(client);
         --loop->active;
@@ -188,7 +194,7 @@ static int begin_shutdown(struct event_loop *loop)
 
 static int update_deadlines(struct event_loop *loop, int *timeout)
 {
-    *timeout = -1;
+    *timeout = loop->app->expire_idle ? loop->app->expire_idle(loop->app->config) : -1;
     for (struct loop_client *client = loop->clients; client; client = client->next)
     {
         int64_t remaining = client_session_remaining_ms(client->session);

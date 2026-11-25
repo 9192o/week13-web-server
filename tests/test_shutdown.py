@@ -12,7 +12,7 @@ from typing import Final
 
 SERVER_INCLUDE_FLAGS: Final = ("-Isrc/app", "-Isrc/http", "-Isrc/server", "-Isrc/static")
 SERVER_SOURCES: Final = (
-    "src/app/app.c", "src/app/app_session.c", "src/server/webserver.c", "src/server/epoll_loop.c",
+    "src/app/app.c", "src/app/app_session.c", "src/app/cgi.c", "src/server/webserver.c", "src/server/epoll_loop.c",
     "src/server/client_session.c", "src/http/http.c", "src/app/router.c",
     "src/static/static_file.c", "src/static/static_response.c",
     "src/server/connection.c", "src/server/shutdown.c",
@@ -24,7 +24,7 @@ def build_server(src_dir, grace_seconds=2):
     cmd = [
         "gcc", "-std=c17", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
         f"-DSHUTDOWN_GRACE_SECONDS={grace_seconds}",
-        *SERVER_INCLUDE_FLAGS, *SERVER_SOURCES, "-o", exe,
+        *SERVER_INCLUDE_FLAGS, *SERVER_SOURCES, "-pthread", "-o", exe,
     ]
     subprocess.run(cmd, cwd=src_dir, check=True)
     return exe

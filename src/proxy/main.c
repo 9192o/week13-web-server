@@ -47,7 +47,8 @@ static struct session_stream *finish(const void *config,
         return NULL;
     }
     struct session_stream *stream =
-        proxy_exchange_create(&route->address, route->host, request, head);
+        proxy_exchange_create(proxy->routes, (size_t)(route - proxy->routes->entries),
+                              request, head);
     if (!stream)
         error_response(response, 502);
     return stream;
@@ -60,10 +61,17 @@ static const struct session_stream_ops exchange_ops = {
     .has_output = proxy_exchange_has_output,
     .status = proxy_exchange_status,
     .started = proxy_exchange_started,
+    .keep_client = proxy_exchange_keep_client,
     .pump = proxy_exchange_pump,
     .remaining_ms = proxy_exchange_remaining_ms,
     .cap_deadline = proxy_exchange_cap_deadline,
 };
+
+static int expire_idle(const void *config)
+{
+    const struct proxy_config *proxy = config;
+    return proxy_expire_idle(proxy->routes);
+}
 
 static unsigned int parse_positive(const char *text)
 {
@@ -111,9 +119,11 @@ int main(int argc, char **argv)
         .prepare = prepare,
         .finish = finish,
         .stream_ops = &exchange_ops,
-        .close_after_response = true,
+        .expire_idle = expire_idle,
     };
-    return http_server_run((unsigned short)port, limit ? limit : 256u, &app);
+    int rc = http_server_run((unsigned short)port, limit ? limit : 256u, &app);
+    proxy_close_idle(&routes);
+    return rc;
 
 usage:
     fputs("Usage: ./reverse-proxy --port <1-65535> --route /prefix/=IPv4:PORT"

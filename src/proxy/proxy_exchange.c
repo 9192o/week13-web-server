@@ -13,6 +13,7 @@
 #define PX_CONNECT_MS 2000
 #define PX_HEAD_MS 5000
 #define PX_RELAY_MS 30000
+#define PX_IDLE_MS 5000
 
 enum px_state
 {
@@ -36,7 +37,10 @@ struct session_stream
     enum px_state state;
     enum px_chunk_state chunk;
     struct timespec deadline, cap;
-    bool capped, started, is_head;
+    bool capped, started, is_head, keep_client, delivered;
+    struct proxy_routes *routes;
+    size_t first, next, selected;
+    const struct http_request *request;
     unsigned int interim;
     struct proxy_head head;
     struct http_slice request_body;
@@ -56,8 +60,87 @@ static int set_deadline(struct session_stream *e, unsigned int ms)
                                         &e->deadline);
 }
 
-struct session_stream *proxy_exchange_create(const struct sockaddr_in *addr,
-                                             const char *host,
+static bool idle_usable(int fd)
+{
+    char byte;
+    ssize_t n = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+    return n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+static void close_idle(struct proxy_route *route)
+{
+    if (route->idle)
+        close(route->idle - 1);
+    route->idle = 0;
+}
+
+int proxy_expire_idle(struct proxy_routes *routes)
+{
+    int minimum = -1;
+    for (size_t i = 0; i < routes->count; ++i)
+    {
+        struct proxy_route *route = &routes->entries[i];
+        if (!route->idle)
+            continue;
+        int left = (int)connection_deadline_remaining_ms(&route->idle_deadline);
+        if (left <= 0)
+            close_idle(route);
+        else if (minimum < 0 || left < minimum)
+            minimum = left;
+    }
+    return minimum;
+}
+
+void proxy_close_idle(struct proxy_routes *routes)
+{
+    for (size_t i = 0; i < routes->count; ++i)
+        close_idle(&routes->entries[i]);
+}
+
+static int connect_next(struct session_stream *e)
+{
+    while (e->next < e->routes->count &&
+           connection_deadline_remaining_ms(&e->deadline) > 0)
+    {
+        size_t index = e->next;
+        struct proxy_route *route = &e->routes->entries[index];
+        e->next = route->next_peer == e->first ? e->routes->count : route->next_peer;
+        e->out_len = proxy_request_head(e->request, route->host, e->out, sizeof(e->out));
+        if (!e->out_len)
+            return -1;
+
+        int fd = -1;
+        if (route->idle && connection_deadline_remaining_ms(&route->idle_deadline) > 0 &&
+            idle_usable(route->idle - 1))
+        {
+            fd = route->idle - 1;
+            route->idle = 0;
+            e->state = PX_REQUEST;
+        }
+        else
+        {
+            close_idle(route);
+            fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+            if (fd < 0)
+                return -1;
+            if (connect(fd, (const struct sockaddr *)&route->address, sizeof(route->address)) == 0)
+                e->state = PX_REQUEST;
+            else if (errno == EINPROGRESS)
+                e->state = PX_CONNECT;
+            else
+            {
+                close(fd);
+                continue;
+            }
+        }
+        e->fd = fd;
+        e->selected = index;
+        return e->state == PX_REQUEST ? set_deadline(e, PX_HEAD_MS) : 0;
+    }
+    return -1;
+}
+
+struct session_stream *proxy_exchange_create(struct proxy_routes *routes, size_t first,
                                              const struct http_request *req,
                                              bool is_head)
 {
@@ -65,19 +148,12 @@ struct session_stream *proxy_exchange_create(const struct sockaddr_in *addr,
     if (!e)
         return NULL;
     e->fd = -1;
+    e->routes = routes;
+    e->first = e->next = first;
+    e->request = req;
     e->request_body = req->body;
     e->is_head = is_head;
-    e->out_len = proxy_request_head(req, host, e->out, sizeof(e->out));
-    if (!e->out_len)
-        goto fail;
-    e->fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (e->fd < 0)
-        goto fail;
-    if (connect(e->fd, (const struct sockaddr *)addr, sizeof(*addr)) == 0)
-        e->state = PX_REQUEST;
-    else if (errno != EINPROGRESS)
-        goto fail;
-    if (set_deadline(e, e->state == PX_CONNECT ? PX_CONNECT_MS : PX_HEAD_MS) < 0)
+    if (set_deadline(e, PX_CONNECT_MS) < 0 || connect_next(e) < 0)
         goto fail;
     return e;
 fail:
@@ -90,13 +166,23 @@ void proxy_exchange_destroy(struct session_stream *e)
     if (!e)
         return;
     if (e->fd >= 0)
-        close(e->fd);
+    {
+        struct proxy_route *route = &e->routes->entries[e->selected];
+        /* The loop removes interest when the final response bytes are staged. */
+        if (e->delivered && !e->capped && e->head.upstream_keep && !e->in_len &&
+            !route->idle && idle_usable(e->fd) &&
+            connection_deadline_from_now(PX_IDLE_MS, NULL, &route->idle_deadline) == 0)
+            route->idle = e->fd + 1;
+        else
+            close(e->fd);
+    }
     free(e);
 }
 
 int proxy_exchange_fd(const struct session_stream *e) { return e->fd; }
 int proxy_exchange_status(const struct session_stream *e) { return e->head.status; }
 bool proxy_exchange_started(const struct session_stream *e) { return e->started; }
+bool proxy_exchange_keep_client(const struct session_stream *e) { return e->keep_client; }
 
 bool proxy_exchange_has_output(const struct session_stream *e)
 {
@@ -266,7 +352,7 @@ static int stage_body(struct session_stream *e)
 
 int proxy_exchange_pump(struct session_stream *e, bool upstream_readable,
                         bool upstream_writable, int downstream_fd,
-                        bool downstream_writable, size_t *body_sent)
+                        bool downstream_writable, bool keep_client, size_t *body_sent)
 {
     *body_sent = 0;
     if (e->state == PX_CONNECT)
@@ -275,8 +361,16 @@ int proxy_exchange_pump(struct session_stream *e, bool upstream_readable,
             return 0;
         int error = 0;
         socklen_t size = sizeof(error);
-        if (getsockopt(e->fd, SOL_SOCKET, SO_ERROR, &error, &size) < 0 || error ||
-            set_deadline(e, PX_HEAD_MS) < 0)
+        if (getsockopt(e->fd, SOL_SOCKET, SO_ERROR, &error, &size) < 0 || error)
+        {
+            /* Keep the failed fd open until its replacement has a different number. */
+            int failed = e->fd;
+            e->fd = -1;
+            int rc = connect_next(e);
+            close(failed);
+            return rc < 0 ? 502 : 0;
+        }
+        if (set_deadline(e, PX_HEAD_MS) < 0)
             return 502;
         e->state = PX_REQUEST;
     }
@@ -331,13 +425,16 @@ int proxy_exchange_pump(struct session_stream *e, bool upstream_readable,
             downstream_writable = false;
         }
         if (e->state == PX_DONE)
+        {
+            e->delivered = true;
             return 1;
+        }
 
         if (e->state == PX_HEAD)
         {
             size_t len;
             int rc = proxy_response_head(e->in, e->in_len, e->is_head, &e->head,
-                                         e->out, sizeof(e->out), &len);
+                                         e->out, sizeof(e->out), &len, keep_client);
             if (rc < 0)
                 return 502;
             if (rc > 0)
@@ -351,6 +448,7 @@ int proxy_exchange_pump(struct session_stream *e, bool upstream_readable,
                 }
                 if (set_deadline(e, PX_RELAY_MS) < 0)
                     return 502;
+                e->keep_client = keep_client && e->head.frame == PROXY_LENGTH;
                 e->out_len = len;
                 e->remaining = e->head.length;
                 e->state = e->is_head || e->head.frame == PROXY_NONE ||

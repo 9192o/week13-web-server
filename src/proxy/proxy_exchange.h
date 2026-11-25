@@ -2,6 +2,7 @@
 #define PROXY_EXCHANGE_H
 
 #include "http.h"
+#include "proxy_routes.h"
 #include <stdbool.h>
 #include <netinet/in.h>
 #include <stddef.h>
@@ -28,16 +29,14 @@ struct session_stream;
 /*
  * Create a new exchange for a single request/response pair.
  *
- * addr    - backend IPv4 address and port (caller selects via proxy_route).
- * host    - value to use for the outgoing Host header.
+ * first   - first backend index within routes (caller advances round robin).
  * req     - fully decoded request; its body storage must outlive the exchange.
  * is_head - true if the original method was HEAD; passed to proxy_response_head.
  *
  * Returns a new exchange, or NULL if the upstream socket could not be created
  * or the request head could not be serialized.
  */
-struct session_stream *proxy_exchange_create(const struct sockaddr_in *addr,
-                                             const char *host,
+struct session_stream *proxy_exchange_create(struct proxy_routes *routes, size_t first,
                                              const struct http_request *req,
                                              bool is_head);
 
@@ -73,6 +72,9 @@ int proxy_exchange_status(const struct session_stream *e);
  * failure can still be turned into a 502 response page.
  */
 bool proxy_exchange_started(const struct session_stream *e);
+bool proxy_exchange_keep_client(const struct session_stream *e);
+int proxy_expire_idle(struct proxy_routes *routes);
+void proxy_close_idle(struct proxy_routes *routes);
 
 /*
  * Drive the exchange state machine.
@@ -88,8 +90,7 @@ bool proxy_exchange_started(const struct session_stream *e);
  * Returns:
  *   0  - exchange is still alive; caller should continue polling per
  *        proxy_exchange_interest() / proxy_exchange_has_output().
- *   1  - response was delivered completely and the downstream half-close has
- *        been initiated by the caller after this return.
+ *   1  - response was delivered completely.
  *   502 - upstream failure (connect, invalid response, short body, malformed
  *        chunked) before delivery completed.
  *   -1 - downstream write failure; caller should close the client.
@@ -99,6 +100,7 @@ int proxy_exchange_pump(struct session_stream *e,
                         bool upstream_writable,
                         int downstream_fd,
                         bool downstream_writable,
+                        bool keep_client,
                         size_t *body_sent);
 
 /* Milliseconds until the active stage deadline. */
