@@ -64,8 +64,8 @@ backend 127.0.0.1:19092
 make proxy-bin-test
 ```
 
-macOS 로컬 결과: 11 PASS (`/api/id`, 라운드로빈, 404, strip_prefix,
-chunked, POST, keep-alive, 504, 502). 기존 `make test` 358 assertions와
+macOS 로컬 결과: 12 PASS (`/api/id`, 라운드로빈, 404, strip_prefix,
+chunked, POST, Expect 100-continue, keep-alive, 504, 502). 기존 `make test` 358 assertions와
 `make integration-p3` 42 PASS도 그대로 통과합니다.
 
 ## 발견한 것
