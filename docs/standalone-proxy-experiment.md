@@ -18,9 +18,17 @@
 - 새 파일:
   - `src/main_proxy.c` — `--config`만 받는 프록시 전용 진입점
   - `src/proxy_server.c` — 프록시 전용 앱 어댑터 (147줄)
-  - `src/conn_common.c` — 두 서버가 공유하는 연결 수명주기 (662줄)
+  - `src/conn.c` — conn 생성/해제/로그/에러 응답
+  - `src/conn_io.c` — header read, read/write 상태 머신
+  - `src/conn_net.c` — listener, accept, 503 거절
+  - `src/conn_signal.c` — SIGINT/SIGTERM, stop flag
+  - `src/conn_timer.c` — timeout, drain, watchdog
   - `src/conn_loop.c` — 두 서버가 공유하는 이벤트 루프 (223줄)
-  - `include/conn_common.h`, `include/conn_loop.h`
+  - `src/server_ev.c` — 서버 앱 어댑터 (128줄)
+  - `src/server_request.c` — 정적/CGI/proxy 라우팅 (301줄)
+  - `src/server_cgi.c` — CGI task 제출/완료 (133줄)
+  - `include/conn_common.h`, `include/conn_loop.h`, `src/conn_internal.h`,
+    `src/server_internal.h`
   - `include/proxy_server.h`
   - `tests/integration_proxy_bin.sh` — 프록시 전용 통합 테스트
 - 공유하는 것:
@@ -40,20 +48,24 @@
 
 `reverse-proxy` 바이너리에는 `static_file_prepare`, `submit_cgi`,
 `task_pool_create` 심볼이 없습니다. 크기는 macOS 빌드 기준
-`server` 205KB → `reverse-proxy` 165KB.
+`server` 207KB → `reverse-proxy` 167KB.
 
 ### 코드 변화
 
 | 파일 | 이전 | 이후 |
 | --- | ---: | ---: |
-| `src/server_ev.c` | 1320줄 | 557줄 |
+| `src/server_ev.c` | 1320줄 | 128줄 |
+| `src/server_request.c` | 없음 | 301줄 |
+| `src/server_cgi.c` | 없음 | 133줄 |
 | `src/proxy_server.c` | 826줄 (복사본) | 147줄 |
-| `src/conn_common.c` | 없음 | 662줄 |
+| `src/conn*.c` (5개로 분리) | `conn_common.c` 662줄 | 698줄 |
 | `src/conn_loop.c` | 없음 | 223줄 |
 
-`server_ev.c`와 `proxy_server.c`에서 중복되던 연결 수명주기와
-이벤트 루프가 `conn_common.c` / `conn_loop.c`로 모였습니다.
-이제 두 파일의 차이는 **요청 처리 방식(정적/CGI vs 프록시)** 뿐입니다.
+`server_ev.c`는 이제 앱 어댑터만 남았고, 정적/CGI 라우팅과 CGI 처리는
+`server_request.c` / `server_cgi.c`로 나뉘었습니다. 연결 수명주기도
+`conn.c`, `conn_io.c`, `conn_net.c`, `conn_signal.c`, `conn_timer.c`로
+책임별로 분리했습니다. 두 서버의 차이는 **요청 처리 방식(정적/CGI vs 프록시)**
+뿐입니다.
 
 ## 실행
 
