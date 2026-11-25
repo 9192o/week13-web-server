@@ -30,9 +30,9 @@ make load          # ab 부하 테스트
 | 부하 (keep-alive) | `make load` | **PASS** (`failed=0`, 약 2,409 RPS) |
 | 종료 처리 | `make shutdown-test` | **PASS** (idle SIGINT/SIGTERM, keep-alive SIGINT, 두 번째 SIGINT) |
 | macOS 빌드 | `make` | **PASS** |
-| Linux 빌드 | `make linux-test` / CI | **TODO** (Docker 데몬 미실행, CI 워크플로 추가) |
+| Linux 빌드 | `.github/workflows/ci.yml` | **PASS** (GitHub Actions Linux CI) |
 | 아키텍처 | `docs/architecture.md` | **PASS** |
-| README | — | **보류** (사용자가 나중에 작성) |
+| README | `README.md` | **PASS** (빌드/실행/프록시 설정/테스트) |
 
 ## Phase 1.5 전송 안정성 (P0)
 
@@ -170,12 +170,10 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 - **기능 보강**: `[global]` 전역 섹션, `route strip_prefix`, `max_upstreams`(503 + `Retry-After`), `timeout request` → 408, upstream reason phrase/Trailer 보존, static route backend 검증, config 파일 테스트.
 - **검증**: `make test` **358 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **182 PASS**, `integration-p3` **42 PASS** (EOF/1xx/205/HEAD/204/304/body idle/failover/pool reuse/pool idle timeout/client abort/strip_prefix/max_upstreams/408 포함), `make sanitize` PASS, `make fdtest` 9→9.
 - **부하**: proxy `ab -k -n 10000 -c 100` failed=0, 약 **8.7k rps** (macOS 로컬, backend 2개, pool max_idle 8).
-- **알려진 한계**: 100 concurrent에서 upstream 연결 다수 생성(pool max_idle 8), max_conns가 client만 세어 upstream fd가 2배 필요, 설정 파일 IPv6 literal 미지원, `test_proxy_route.c`/`test_proxy_pool.c` 대신 integration 검증, active `/health`/캐싱/gzip 변환/Forward/CONNECT는 future, Linux epoll은 CI 확인.
+- **알려진 한계**: 100 concurrent에서 upstream 연결 다수 생성(pool max_idle 8), max_conns가 client만 세어 upstream fd가 2배 필요, 설정 파일 IPv6 literal 미지원, `test_proxy_route.c`/`test_proxy_pool.c` 대신 integration 검증, active `/health`/캐싱/gzip 변환/Forward/CONNECT는 future. Linux epoll CI는 통과.
 
 ## 남은 품질 항목
 
-- README 작성 (사용자가 나중에 한 번에 작성)
-- Linux 빌드/테스트 (`make linux-test` 또는 GitHub Actions CI)
 - CGI 큰 POST 교착 테스트
 - CGI fd 상속 테스트
 - bind 실패/EMFILE 같은 운영 엣지 테스트

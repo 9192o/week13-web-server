@@ -689,4 +689,4 @@ Phase 2 drain을 확장한다.
   - 설정 파일의 IPv6 literal(`[::1]:8001`)은 아직 지원하지 않는다.
   - `test_proxy_route.c`/`test_proxy_pool.c` 단위 테스트 대신 integration으로 검증한다.
   - active `/health`, 캐싱, gzip 변환, Forward proxy, CONNECT는 범위 밖.
-  - Linux epoll은 CI에서 확인한다.
+  - Linux epoll CI는 통과했다.
