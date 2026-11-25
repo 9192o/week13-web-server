@@ -1,5 +1,5 @@
 CC       ?= cc
-CFLAGS   ?= -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -g
+CFLAGS   ?= -std=c11 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -Wpedantic -g
 CFLAGS   += -MMD -MP -pthread
 CPPFLAGS += -Iinclude
 LDFLAGS  ?=
@@ -31,7 +31,7 @@ TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:.c=.o)
 DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)
 -include $(DEPS)
 
-SAN_CFLAGS := -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -g -MMD -MP -pthread -fsanitize=address,undefined -fno-omit-frame-pointer
+SAN_CFLAGS := -std=c11 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -Wpedantic -g -MMD -MP -pthread -fsanitize=address,undefined -fno-omit-frame-pointer
 SAN_LDFLAGS := -fsanitize=address,undefined -pthread
 
 .PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 proxy-load shutdown-test sanitize fdtest load linux-test clean
