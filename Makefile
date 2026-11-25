@@ -48,7 +48,7 @@ FAST_ENV  = HEADER_MS=$(FAST_HEADER_MS) BODY_MS=$(FAST_BODY_MS) \
             CGI_MS=$(FAST_CGI_MS) SEND_MS=$(FAST_SEND_MS) KEEPALIVE_MS=$(FAST_KEEPALIVE_MS) \
             SHUTDOWN_MS=$(FAST_SHUTDOWN_MS) PROXY_MS=$(FAST_PROXY_MS)
 
-.PHONY: all test asan ftest ftest-slow valgrind clean
+.PHONY: all test asan ftest ftest-slow valgrind demo-files clean
 
 all: $(TARGET) $(CGI_BINS)
 
@@ -90,6 +90,12 @@ valgrind: all
 www/cgi-bin/%: cgi-src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $< -o $@
+
+# 데모용 100MB 더미 파일 (큰 파일 전송 도중 끊기, graceful shutdown 시연). 커밋하지 않는다.
+demo-files: www/big.bin
+
+www/big.bin:
+	head -c 104857600 /dev/zero > $@
 
 clean:
 	rm -rf build build-asan build-asan-fast server server-asan server-asan-fast $(CGI_BINS)

@@ -1,5 +1,60 @@
 <!doctype html>
-<html>
-<head><meta charset="utf-8"><title>week13 web server</title></head>
-<body><h1>It works</h1></body>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>week13 web server</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <img src="/cat.png" alt="고양이" width="96" height="96">
+    <div>
+      <h1>week13 web server</h1>
+      <p>C 로 만든 HTTP/1.1 서버 데모 페이지. 개발자도구 Network 탭을 열고 새로고침해 보세요.</p>
+    </div>
+  </header>
+
+  <section>
+    <h2>1. 정적 파일 · MIME</h2>
+    <p>이 페이지는 아래 파일을 불러옵니다. Network 탭의 <b>Type</b> 과 응답 헤더 <code>Content-Type</code> 을 확인하세요.
+       Connection ID 열을 켜면 같은 연결(keep-alive)로 받았는지 보입니다.</p>
+    <table id="static">
+      <thead><tr><th>경로</th><th>상태</th><th>Content-Type</th><th>크기</th></tr></thead>
+      <tbody>
+        <tr data-path="/index.html"></tr>
+        <tr data-path="/style.css"></tr>
+        <tr data-path="/app.js"></tr>
+        <tr data-path="/cat.png"></tr>
+        <tr data-path="/big.bin"></tr>
+        <tr data-path="/missing.txt"></tr>
+      </tbody>
+    </table>
+    <p class="hint"><code>/big.bin</code> (100MB) 은 <code>make demo-files</code> 로 만듭니다. 없으면 404 로 보입니다.</p>
+  </section>
+
+  <section>
+    <h2>2. 동적 요청 · CGI</h2>
+    <form action="/cgi-bin/adder" method="get">
+      <input name="a" value="12" size="6"> + <input name="b" value="30" size="6">
+      <button type="submit">GET /cgi-bin/adder</button>
+    </form>
+    <form id="post-form">
+      <input name="a" value="7" size="6"> + <input name="b" value="-2" size="6">
+      <button type="submit">POST /cgi-bin/adder</button>
+      <output id="post-result"></output>
+    </form>
+  </section>
+
+  <section>
+    <h2>3. 리버스 프록시 · 라운드로빈</h2>
+    <p>서버를 <code>-R /api/=127.0.0.1:8001,127.0.0.1:8002</code> 로 띄웠을 때만 동작합니다.
+       버튼을 누를 때마다 응답한 백엔드가 번갈아 바뀝니다. 백엔드 하나를 끄면 다른 쪽으로 넘어가고, 둘 다 끄면 502 입니다.</p>
+    <button id="api-btn">GET /api/whoami.txt × 6</button>
+    <ol id="api-log"></ol>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
 </html>
