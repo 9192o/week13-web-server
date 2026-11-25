@@ -19,44 +19,6 @@ C17과 Linux 소켓 API로 HTTP/1.1 웹 서버와 리버스 프록시를 구현�
 - `reverse-proxy`는 요청 경로로 백엔드를 선택하고 응답을 중계합니다.
 - 두 프로그램은 HTTP 파서와 이벤트 루프를 공유하지만 독립적으로 실행합니다.
 
-### 요구 사항
-
-```text
-Phase 1: HTTP 기본 → Phase 2: 동시 연결과 재사용 → Phase 3: 리버스 프록시
-```
-
-| 단계 | 구현 범위 |
-| --- | --- |
-| [Phase 1](docs/PHASE_1_REQUIREMENTS.md) | TCP 연결 수락, HTTP/1.1 파싱과 응답, 정적 `GET`/`HEAD`, 바이너리 `POST /echo`를 구현합니다. |
-| [Phase 2](docs/PHASE_2_REQUIREMENTS.md) | 논블로킹 I/O로 여러 연결을 처리하고, 연결 재사용·순차 파이프라이닝·정상 종료를 지원합니다. |
-| [Phase 3](docs/PHASE_3_ARCHITECTURE.md) | 경로 기반 중계, 백엔드 풀, 접속 실패와 타임아웃 처리를 구현합니다. |
-
-전체 범위는 [과제 요구 사항](docs/REQUIREMENTS.md)에서 확인할 수 있습니다.
-
-### 빌드 및 실행
-
-```text
-개발 이미지 빌드 → 컨테이너 셸 → make → 웹 서버 시작 → curl로 응답 확인
-```
-
-- 기준 환경은 **Linux/amd64 Docker**입니다. 호스트에서 개발 이미지를 빌드하고 셸을 엽니다. WSL에서는 `dev.sh`가 `docker.exe`를 사용합니다.
-
-```sh
-sh dev.sh build
-sh dev.sh shell
-```
-
-- 개발 셸에서 두 프로그램을 빌드하고 웹 서버를 시작합니다.
-
-```sh
-make
-./webserver --port 8080 --root public
-```
-
-- 같은 컨테이너의 다른 셸에서 `curl -i http://127.0.0.1:8080/`으로 시작 페이지를 확인합니다.
-- 다른 셸이 필요하면 호스트에서 `docker exec -it <컨테이너-ID> bash`를 실행합니다. WSL에서는 `docker.exe`를 사용합니다.
-- 브라우저 실행 방법은 [브라우저 라우팅 실습](docs/ROUTING_DEMO.md)에 정리했습니다.
-
 <a name="server"></a>
 
 ## 🖥️ 웹 서버 핵심 구현
@@ -74,9 +36,9 @@ TCP 연결 수락 → HTTP 요청 파싱 → 정적·동적 처리 → HTTP 응�
 데이터 처리: 연결 FD의 읽기·쓰기 이벤트 → recv() / send()
 ```
 
-- `socket()`으로 IPv4 TCP 논블로킹 소켓을 만들고 `setsockopt()`로 `SO_REUSEADDR`를 설정합니다.
+- `socket() -> bind() -> listen()` 흐름으로 재사용 가능한 IPv4 TCP 논블로킹 리스너 소켓을 만듭니다.
 - `bind()`로 루프백 주소와 포트를 지정하고 `listen()`으로 연결을 받을 준비를 합니다.
-- 리스너의 `EPOLLIN`은 **HTTP 요청이 아니라 수락할 TCP 연결이 준비됐다는 뜻**입니다. `recv()`와 `send()`는 `accept4()`가 반환한 연결 전용 FD에서 수행합니다.
+- 이벤트 루프 내에서 `epoll`로 준비된 연결만 `accept4()`로 꺼냅니다. 각 연결마다 세션을 만들어 요청 버퍼와 송수신 상태를 따로 관리합니다.
 
 ### HTTP 요청 파싱/응답 생성
 
@@ -89,7 +51,7 @@ recv() → 요청 줄·헤더 파싱 → 요청 대상·헤더 검증
 최종 응답 준비 → 상태 줄·헤더 전송 → 본문 전송(HEAD 제외)
 ```
 
-- **요청을 읽습니다.** TCP는 요청 경계를 보존하지 않으므로 [클라이언트 세션](src/server/client_session.c)이 연결별 버퍼와 파서 상태를 유지합니다.
+- **요청을 읽습니다.** TCP는 요청 단위를 보장하지 않으므로 [클라이언트 세션](src/server/client_session.c)당 요청 줄과 헤더, 본문 파서 상태를 유지하며 파싱합니다.
 - **본문을 읽습니다.** [HTTP 파서](src/http/http.c)는 `Content-Length` 또는 chunked 형식에 맞춰 읽습니다. 헤더나 라우트 단계에서 요청을 거부하면 본문을 읽기 전에 오류 응답을 준비할 수 있습니다.
 - **응답을 보냅니다.** 상태 줄과 헤더를 먼저 보내고, 한 번에 다 쓰지 못하면 전송 위치를 저장합니다. `HEAD`에는 본문을 보내지 않습니다.
 
@@ -107,22 +69,6 @@ recv() → 요청 줄·헤더 파싱 → 요청 대상·헤더 검증
 | 정적 `GET`/`HEAD` | [정적 파일 처리기](src/static/static_response.c)는 정적 루트 아래에서 일반 파일 또는 `index.html`을 찾고, 파일 FD·MIME·크기를 응답에 넘깁니다. 파일 전체를 메모리에 올리지 않고 나눠 보냅니다. |
 | `POST /echo` | [라우트 테이블](src/app/app.c)이 에코 처리기를 선택합니다. 널 바이트를 포함한 본문을 `application/octet-stream`으로 그대로 돌려줍니다. |
 | `/cgi-bin/이름` | `--cgi-root`를 지정할 때만 켭니다. [CGI 실행기](src/app/cgi.c)는 워커 2개와 대기열 8칸을 사용합니다. 대기열이 차면 `503`, 실행 한도 5초를 넘기면 자식을 정리하고 `504`로 응답합니다. 출력 한도는 1 MiB입니다. |
-
-- [파일 열기](src/static/static_file.c)는 `openat2` 제약으로 정적 루트 밖이나 다른 마운트로 넘어가지 않도록 합니다.
-- CGI는 샌드박스가 아니므로 공개 정적 루트나 업로드 경로와 분리하고 신뢰하는 실행 파일만 둡니다.
-
-### 동시 요청 처리
-
-```text
-epoll_wait() → 준비된 FD 확인
-               ├─ 리스너·세션: 연결 수락 또는 읽기·쓰기 → 다음 이벤트
-               └─ 종료 신호: 새 연결 수락 중단 → 유예 후 남은 연결 정리
-```
-
-- [이벤트 루프](src/server/epoll_loop.c)는 단일 스레드에서 LT(Level-Triggered) `epoll`로 리스너와 세션을 처리합니다. 프록시의 백엔드 소켓도 같은 루프에서 감시합니다.
-- 읽기나 쓰기가 막히면 세션 상태를 저장하고 다른 연결을 처리합니다. 연결을 재사용하고 파이프라인 요청에는 수신 순서대로 응답합니다.
-- `SIGINT`나 `SIGTERM`을 받으면 진행 중인 요청은 유예 시간 안에서 마무리합니다.
-- [LT/ET 비교 실습](examples/README.md)에서 두 알림 방식의 차이를 확인할 수 있습니다.
 
 <a name="proxy"></a>
 
@@ -326,3 +272,41 @@ make fuzz FUZZ_SECONDS=60
 | 인덱스가 있는 디렉터리 URL에 끝 슬래시가 없습니다. | `308`과 `Location`으로 슬래시가 붙은 URL을 안내합니다. |
 | 백엔드가 응답을 끝내기 전에 끊깁니다. | 이미 시작한 응답을 새 상태 줄로 덮지 않고 연결을 닫습니다. |
 | 종료 신호를 받거나 연결 한도에 도달합니다. | 새 연결 수락을 제어하고, 종료 유예가 끝나면 남은 연결과 FD를 정리합니다. |
+
+### 요구 사항
+
+```text
+Phase 1: HTTP 기본 → Phase 2: 동시 연결과 재사용 → Phase 3: 리버스 프록시
+```
+
+| 단계 | 구현 범위 |
+| --- | --- |
+| [Phase 1](docs/PHASE_1_REQUIREMENTS.md) | TCP 연결 수락, HTTP/1.1 파싱과 응답, 정적 `GET`/`HEAD`, 바이너리 `POST /echo`를 구현합니다. |
+| [Phase 2](docs/PHASE_2_REQUIREMENTS.md) | 논블로킹 I/O로 여러 연결을 처리하고, 연결 재사용·순차 파이프라이닝·정상 종료를 지원합니다. |
+| [Phase 3](docs/PHASE_3_ARCHITECTURE.md) | 경로 기반 중계, 백엔드 풀, 접속 실패와 타임아웃 처리를 구현합니다. |
+
+전체 범위는 [과제 요구 사항](docs/REQUIREMENTS.md)에서 확인할 수 있습니다.
+
+### 빌드 및 실행
+
+```text
+개발 이미지 빌드 → 컨테이너 셸 → make → 웹 서버 시작 → curl로 응답 확인
+```
+
+- 기준 환경은 **Linux/amd64 Docker**입니다. 호스트에서 개발 이미지를 빌드하고 셸을 엽니다. WSL에서는 `dev.sh`가 `docker.exe`를 사용합니다.
+
+```sh
+sh dev.sh build
+sh dev.sh shell
+```
+
+- 개발 셸에서 두 프로그램을 빌드하고 웹 서버를 시작합니다.
+
+```sh
+make
+./webserver --port 8080 --root public
+```
+
+- 같은 컨테이너의 다른 셸에서 `curl -i http://127.0.0.1:8080/`으로 시작 페이지를 확인합니다.
+- 다른 셸이 필요하면 호스트에서 `docker exec -it <컨테이너-ID> bash`를 실행합니다. WSL에서는 `docker.exe`를 사용합니다.
+- 브라우저 실행 방법은 [브라우저 라우팅 실습](docs/ROUTING_DEMO.md)에 정리했습니다.
