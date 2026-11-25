@@ -23,12 +23,41 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 ## 전체 구조
 
+### 기본: 프록시 우선
+
 ```text
 클라이언트
    │
    ▼
 ┌──────────────────────────────────────────────┐
-│ 이벤트 루프 (단일 스레드)                     │
+│ reverse-proxy (프론트 프로세스)              │
+│ main_proxy → proxy_server → conn_loop        │
+│ proxy_route → proxy_connection → proxy_relay │
+└───────┬──────────────────────────────────────┘
+        │ HTTP (backend keep-alive pool)
+        ▼
+┌──────────────────────────────────────────────┐
+│ server --backend (백엔드 프로세스)           │
+│ main_ev → server_ev → conn_loop              │
+│ static_file / task_pool → cgi                │
+└──────────────────────────────────────────────┘
+```
+
+- `reverse-proxy`가 클라이언트 요청을 먼저 받고, route에 따라 backend로 중계합니다.
+- `server --backend`는 정적 파일과 CGI만 처리합니다. proxy route는 시작 시 거부합니다.
+- 프록시와 백엔드는 각자 이벤트 루프를 가진 별도 프로세스입니다.
+- **CGI만** 백엔드에서 task pool로 분리합니다. access log/logger도 각 프로세스에서 처리합니다.
+
+### 통합 모드 (비교용)
+
+`server`를 단독 실행하면 정적/CGI/프록시를 한 프로세스에서 처리합니다.
+
+```text
+클라이언트
+   │
+   ▼
+┌──────────────────────────────────────────────┐
+│ server (통합 모드)                            │
 │ conn_loop.c + event_poll/epoll/kqueue.c      │
 │                                              │
 │  accept → conn_t → EV_READ/EV_WRITE 상태 머신 │
@@ -47,12 +76,20 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
                                    backend 서버
 ```
 
-- **이벤트 루프는 1개**입니다. 연결마다 스레드를 만들지 않고, fd별 상태 머신으로 읽기/쓰기를 진행합니다.
-- **CGI만 별도 worker**로 보냅니다. worker 수는 `task_workers`(기본 4), 대기 큐는 `task_queue`(기본 64)입니다.
-- **access log/logger**는 별도 스레드에서 처리합니다.
+- 통합 모드에서만 `server`가 정적/CGI/프록시를 모두 가집니다.
 - `server`와 `server_ev`는 같은 오브젝트를 링크하는 빌드 별칭입니다.
 
 ## 요청 처리 흐름
+
+### 기본: 프록시 우선
+
+1. `reverse-proxy`의 `conn_loop`가 클라이언트 연결을 accept하고 HTTP 요청을 파싱합니다.
+2. `proxy_route`가 longest-prefix로 backend를 고릅니다.
+3. `proxy_connection`이 backend 연결을 얻고 요청을 보냅니다. keep-alive pool에 idle 연결이 있으면 재사용합니다.
+4. `proxy_relay`가 요청/응답 body를 중계합니다. backend는 `server --backend`이고, 여기서 정적 파일/CGI를 처리합니다.
+5. backend 응답을 클라이언트에 전달합니다. 프록시와 백엔드는 각자 keep-alive/timeout을 관리합니다.
+
+### 통합 모드
 
 1. `accept()` 후 `conn_t`를 만들고 `EV_READ`를 등록합니다.
 2. 입력 버퍼에서 HTTP 요청 헤더를 파싱합니다. URI/헤더/본문 한도를 넘으면 각각 `414`/`431`/`413`으로 거절합니다.

@@ -43,30 +43,31 @@ Phase 3는 Phase 1의 HTTP 파서/응답 빌더와 Phase 2의 이벤트 루프/�
 
 ## 3. 전체 구조
 
-기본 배포는 **클라이언트 → `reverse-proxy` → `server --backend`**다. `server` 단독 실행은 정적/CGI/proxy를 한 프로세스에서 처리하는 비교용 통합 모드로 남긴다.
-
+기본 배포는 **클라이언트 → `reverse-proxy` → `server --backend`**다.
 
 ```text
-client fd
-   │  Phase 2 conn_t (ST_READ / ST_PROXY / ...)
+클라이언트
+   │
    ▼
-conn_loop + server_ev app
-   ├─ route match
-   │    ├─ static / local CGI → Phase 2 static_file / cgi
-   │    └─ proxy route      → proxy_conn_t
-   │                              │
-   │                              ├─ backend 선택 (Round-Robin, passive health)
-   │                              ├─ pool에서 idle 연결 획득 또는 새 connect
-   │                              ├─ 요청 헤더/본문 전송
-   │                              ├─ 응답 헤더 파싱
-   │                              └─ 응답 본문 중계 (CL/chunked/close)
+reverse-proxy
+   main_proxy → proxy_server → conn_loop
+   └─ proxy_route
+      └─ proxy_connection
+         └─ proxy_relay
+            └─ http_upstream / chunked
+   │
+   │ HTTP + keep-alive pool
    ▼
-client fd ← proxy_conn_t ← upstream fd
+server --backend
+   main_ev → server_ev → conn_loop
+   ├─ static_file
+   └─ server_cgi → cgi_task → task_pool
 ```
 
-- 소켓 I/O는 모두 이벤트 루프가 한다. proxy도 예외가 아니다.
-- CGI 작업 풀은 그대로 유지한다. proxy 라우트가 아닌 `/cgi-bin/*`은 Phase 2 CGI로 처리한다.
-- 로거/access log/종료 절차도 Phase 2 것을 재사용한다.
+- `reverse-proxy`가 프론트 진입점이고, backend 연결을 pool로 재사용한다.
+- `server --backend`는 정적 파일/CGI만 처리하며 proxy route를 시작 시 거부한다.
+- `server` 단독 실행(full mode)은 정적/CGI/proxy를 한 프로세스에서 처리하는 비교용 통합 모드다.
+- 소켓 I/O는 두 프로세스 모두 각자의 이벤트 루프가 담당한다. CGI만 backend의 task pool로 분리한다.
 
 ## 4. 모듈과 파일
 
@@ -80,7 +81,8 @@ client fd ← proxy_conn_t ← upstream fd
 | `src/common/config_file.c` | INI 유사 설정 파일 파서 |
 | `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_PROXY`, event source kind |
 | `tests/backend.c`, `tests/integration_p3.sh` | 테스트용 C backend와 Phase 3 통합 테스트 |
-| `src/app/server_ev.c` | 앱 어댑터, `conn_loop` 콜백, proxy 이벤트 dispatch |
+| `src/app/main_proxy.c`, `src/app/proxy_server.c` | 프론트 진입점, 프록시 앱 콜백/proxy 초기화 |
+| `src/app/server_ev.c` | 백엔드/통합 앱 어댑터, `conn_loop` 콜백, proxy 이벤트 dispatch |
 | `src/app/server_request.c` | client 상태 `ST_PROXY` route 분기, 정적 응답 |
 | `src/conn/conn_loop.c`, `src/conn/conn_io.c` | 이벤트 dispatch, header read, read/write 상태 머신 |
 | `include/config.h`, `src/common/config.c` | route/backend/timeout/pool 설정 필드 추가 |
@@ -210,12 +212,14 @@ ST_WRITE       일반 응답 쓰기
 ```
 
 - `conn_t`에 `proxy_conn_t *proxy`를 추가한다.
-- `ST_PROXY`에서 client fd 이벤트는 `proxy_on_client_readable`/`proxy_on_client_writable`로 위임한다.
+- `ST_PROXY`에서 client fd 이벤트는 `conn_loop_app_t.client_event`를 거쳐 `proxy_handle_client_event()`로 위임한다. upstream 이벤트는 `conn_loop_app_t.upstream_event` → `proxy_handle_upstream_event()`다.
 - `conn_close`는 `proxy_detach(c)`를 호출해 upstream과 풀 상태를 정리한다.
 
 ## 6. 요청 흐름
 
 ### 6.1 client 요청 파싱
+
+기본 프록시 우선 배포에서는 프론트의 `src/app/proxy_server.c` `process_buffer()`가 proxy route만 확인하고 `proxy_start()`를 호출한다. 아래 1~5는 통합 모드/백엔드까지 포함한 흐름이다.
 
 1. `server_readable()`이 `conn_common_read_headers()`로 헤더 끝까지 읽는다.
 2. `process_buffer()` (`src/app/server_request.c`)가 `http_request_parse_buffer`로 요청을 파싱한다.

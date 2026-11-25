@@ -25,52 +25,63 @@ Phase 1의 `server.c` 연결 루프는 Phase 2에서 이벤트 루프로 대체�
 
 ## 2. 실행 모델
 
-```text
-┌─────────────────────────────────────────────┐
-│ main thread                                  │
-│  - epoll / kqueue / poll                    │
-│  - client 연결 상태 머신                     │
-│  - 정적 파일 전송                            │
-│  - 프록시 client/upstream 중계               │
-└───────────────┬─────────────────────────────┘
-                │ task queue
-                ▼
-┌─────────────────────────────┐
-│ CGI task pool (기본 4 workers)│
-│  posix_spawn + pipe + timeout│
-└─────────────────────────────┘
+기본 배포는 두 프로세스다.
 
-┌─────────────────────────────┐
-│ logger thread                │
-│  access/error log queue      │
-└─────────────────────────────┘
+```text
+[reverse-proxy 프로세스]
+main thread
+  - epoll / kqueue / poll
+  - client conn_t 상태 머신
+  - proxy_route 선택
+  - proxy_connection / proxy_relay
+  - backend keep-alive pool
+
+        │ HTTP
+
+[server --backend 프로세스]
+main thread
+  - epoll / kqueue / poll
+  - client conn_t 상태 머신
+  - 정적 파일 전송
+  - CGI 요청 dispatch
+        │ task queue
+        ▼
+CGI task pool (기본 4 workers)
+  posix_spawn + pipe + timeout
+
+logger thread (각 프로세스)
+  access/error log queue
 ```
 
 | 실행 단위 | 담당 |
 | --- | --- |
-| main thread | accept, HTTP 파싱, 정적 파일, 프록시, 응답 전송 |
+| reverse-proxy main thread | accept, HTTP 파싱, route 선택, upstream 중계 |
+| backend main thread | accept, HTTP 파싱, 정적 파일, CGI dispatch |
 | CGI worker | `posix_spawn`, CGI 입출력, timeout |
-| logger thread | 로그 큐 소비 |
+| logger thread | 각 프로세스의 로그 큐 소비 |
 
-프록시는 별도 스레드가 아니라 **main event loop 안의 상태 머신**이다. 따라서 프록시 연결끼리 공유 상태를 lock으로 보호할 필요는 없지만, 한 연결의 긴 콜백이 전체 루프를 막을 수 있다.
+프록시는 별도 스레드가 아니라 **프론트 프로세스의 main event loop 안의 상태 머신**이다. 프록시 연결끼리 공유 상태를 lock으로 보호할 필요는 없지만, 한 연결의 긴 콜백이 프론트 루프를 막을 수 있다.
+
+`server` 단독 실행(통합 모드)은 위 두 프로세스의 역할을 한 프로세스로 합친 비교용 구성이다.
 
 ## 3. 모듈 구조
 
 ```text
-main_ev
-├─ config
-│  └─ config_file
-└─ server_ev (app callbacks)
-   └─ conn_loop ─ conn / conn_io / conn_net / conn_signal / conn_timer
-      ├─ event_backend ─ event_epoll / event_kqueue / event_poll
-      ├─ server_request ─ http_request / http_response / static_file / proxy
-      ├─ server_cgi ─ cgi_task ─ task_pool
-      └─ common: access_log / logger / util
+main_ev ───────→ server_ev ─────┐
+                                ├→ conn_loop
+main_proxy ────→ proxy_server ──┘     │
+                                      ├─ conn / conn_io / conn_net / conn_signal / conn_timer
+                                      ├─ event_backend ─ event_epoll / event_kqueue / event_poll
+                                      ├─ server_request ─ http_request / http_response / static_file / proxy
+                                      ├─ server_cgi ─ cgi_task ─ task_pool
+                                      └─ common: access_log / logger / util
 ```
 
 | 모듈 | 책임 |
 | --- | --- |
-| `app/main_ev.c` | 진입점, 설정 로드, `server_ev_run()` |
+| `app/main_ev.c` | 백엔드/통합 진입점, `server_ev_run()` |
+| `app/main_proxy.c` | 프론트 진입점, `proxy_server_run()` |
+| `app/proxy_server.c` | 프록시 앱 콜백, proxy init/cleanup |
 | `common/config.c` / `common/config_file.c` | CLI/INI 설정, 검증, route 매칭 |
 | `conn/conn_loop.c` | listener/signal/event dispatch, timeout, drain |
 | `conn/conn.c` | `conn_t` 생성/해제, access log, 에러 응답 |
@@ -139,7 +150,7 @@ typedef struct {
 
 ## 5. 요청 처리 경계
 
-`src/app/server_request.c`의 `process_buffer()`가 요청을 파싱한 뒤 세 갈래로 나눈다.
+기본 프록시 우선 배포에서는 프론트의 `src/app/proxy_server.c` `process_buffer()`가 proxy route만 처리하고, 백엔드의 `src/app/server_request.c` `process_buffer()`가 정적/CGI를 처리한다. 통합 모드에서는 아래처럼 한 `process_buffer()`가 세 갈래로 나눈다.
 
 ```text
 process_buffer

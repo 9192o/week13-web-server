@@ -18,17 +18,16 @@
 
 ## 1. 전체 호출 흐름
 
-### 시작
+### 기본: 프록시 우선
+
+프론트:
 
 ```text
-main                         src/app/main_ev.c
+main_proxy                   src/app/main_proxy.c
 ├─ config_init
 ├─ config_parse_cli
-│  ├─ config_parse_file      (--config가 있을 때)
-│  ├─ parse_int_arg
-│  └─ parse_size_arg
 ├─ config_validate
-└─ server_ev_run             src/app/server_ev.c
+└─ proxy_server_run          src/app/proxy_server.c
    └─ conn_loop_run          src/conn/conn_loop.c
       ├─ conn_common_setup_signals
       ├─ conn_common_create_listen_socket
@@ -36,19 +35,60 @@ main                         src/app/main_ev.c
       ├─ ev_add(listen fd)
       ├─ ev_add(signal pipe)
       ├─ logger_start
+      ├─ app->start          proxy_app_start
+      │  └─ proxy_init       src/proxy/proxy_route.c
+      └─ event loop
+```
+
+백엔드:
+
+```text
+main_ev                      src/app/main_ev.c
+├─ config_init
+├─ config_parse_cli
+├─ config_validate
+└─ server_ev_run             src/app/server_ev.c
+   └─ conn_loop_run          src/conn/conn_loop.c
+      ├─ ... (프론트와 같은 공통 초기화)
       ├─ app->start          server_start
-      │  ├─ proxy_init       src/proxy/proxy_route.c
+      │  ├─ (full mode만) proxy_init
       │  └─ task_pool_create src/cgi/task_pool.c
       └─ event loop
 ```
 
-### 요청 하나
+### 요청 하나 (기본)
+
+```text
+클라이언트
+└─ reverse-proxy conn_loop
+   ├─ conn_common_accept_new → conn_common_new
+   ├─ proxy_app_readable → conn_common_read_headers
+   │  └─ process_buffer (src/app/proxy_server.c)
+   │     └─ proxy_start (src/proxy/proxy_connection.c)
+   │        ├─ proxy_route 선택
+   │        ├─ backend pool acquire / connect
+   │        └─ proxy_relay → backend
+   │
+   ▼
+server --backend conn_loop
+   ├─ server_readable → conn_common_read_headers
+   │  └─ process_buffer (src/app/server_request.c)
+   │     ├─ /cgi-bin/ → submit_cgi
+   │     └─ 그 외 → static_file_prepare → conn_build_static
+   └─ conn_common_on_writable
+   │
+   ▼
+reverse-proxy가 응답을 클라이언트로 relay
+```
+
+### 통합 모드 (비교용)
+
+`server` 단독 실행에서는 한 이벤트 루프가 정적/CGI/proxy를 모두 처리한다.
 
 ```text
 ev_wait
 └─ conn_loop dispatch
    ├─ conn_common_accept_new → conn_common_new
-   │  └─ ev_add(client fd, EV_READ)
    ├─ app->readable           server_readable
    │  ├─ ST_READ_BODY → submit_cgi (src/app/server_cgi.c)
    │  └─ ST_READ → conn_common_read_headers (src/conn/conn_io.c)
@@ -90,6 +130,12 @@ ev_wait
 - 설정 파일을 읽은 경우 positional 인자는 필수가 아니다.
 
 `config_parse_file()`은 `key value` 형식과 `[route <prefix>]`, `[global]` 섹션을 읽는다. 줄 번호를 붙여 fail-fast 한다.
+
+### `main_proxy()`
+
+`src/app/main_proxy.c`
+
+기본 프론트 진입점이다. `config_init()` → `config_parse_cli()` → `config_validate()` 후 `proxy_server_run()`을 호출한다. `server_mode`는 `SERVER_MODE_PROXY_ONLY`이고, docroot/CGI 없이 route/backend만 사용한다.
 
 ### `server_ev_run()`
 
