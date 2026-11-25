@@ -111,7 +111,7 @@ chunked, POST, Expect 100-continue, keep-alive, 504, 502).
 
 전체 검증:
 
-- `make test` — 358 assertions
+- `make test` — 410 assertions
 - `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test`/`proxy-bin-test` — 194 PASS
 - `make sanitize` — PASS
 - `make proxy-bin-test` with ASAN/UBSAN — 12 PASS

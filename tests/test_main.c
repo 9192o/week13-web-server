@@ -90,6 +90,17 @@ void test_config_file_bad_number(void);
 void test_config_file_proxy_without_backend(void);
 void test_config_file_ipv6_backend(void);
 
+void test_proxy_route_table(void);
+void test_proxy_route_round_robin(void);
+void test_proxy_route_resolve_failure(void);
+
+void test_proxy_pool_reuse(void);
+void test_proxy_pool_max_idle(void);
+void test_proxy_pool_stale(void);
+void test_proxy_pool_timeout(void);
+void test_proxy_pool_next_timeout(void);
+void test_proxy_pool_zero_idle(void);
+
 int g_tests_run = 0;
 int g_tests_failed = 0;
 
@@ -179,6 +190,15 @@ int main(void) {
     RUN_TEST(test_config_file_bad_number);
     RUN_TEST(test_config_file_proxy_without_backend);
     RUN_TEST(test_config_file_ipv6_backend);
+    RUN_TEST(test_proxy_route_table);
+    RUN_TEST(test_proxy_route_round_robin);
+    RUN_TEST(test_proxy_route_resolve_failure);
+    RUN_TEST(test_proxy_pool_reuse);
+    RUN_TEST(test_proxy_pool_max_idle);
+    RUN_TEST(test_proxy_pool_stale);
+    RUN_TEST(test_proxy_pool_timeout);
+    RUN_TEST(test_proxy_pool_next_timeout);
+    RUN_TEST(test_proxy_pool_zero_idle);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

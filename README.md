@@ -395,7 +395,7 @@ make proxy-bin-test    # standalone reverse-proxy 테스트
 make proxy-front-test  # client -> proxy -> backend 통합 테스트
 ```
 
-현재 로컬 기준 `make test`는 **358 assertions**, 전체 integration은 proxy 테스트를 포함해 **208 PASS**입니다.
+현재 로컬 기준 `make test`는 **410 assertions**, 전체 integration은 proxy 테스트를 포함해 **208 PASS**입니다.
 
 - Linux CI: 빌드, 전체 integration, sanitize, load, proxy-load, proxy-front-test를 실행
 - proxy `ab -k -n 10000 -c 100`: `failed=0`, 로컬 약 10k rps

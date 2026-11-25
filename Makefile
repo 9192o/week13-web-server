@@ -1,7 +1,7 @@
 CC       ?= cc
 CFLAGS   ?= -std=c11 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -Wpedantic -g
 CFLAGS   += -MMD -MP -pthread
-CPPFLAGS += -Iinclude
+CPPFLAGS += -Iinclude -Isrc/proxy
 LDFLAGS  ?=
 LDFLAGS  += -pthread
 
@@ -31,11 +31,11 @@ SERVER_BIN  := server
 CGI_BINS := cgi-bin/echo cgi-bin/sleep cgi-bin/crash cgi-bin/term cgi-bin/partial cgi-bin/created cgi-bin/dupct cgi-bin/status204 cgi-bin/badstatus cgi-bin/nocontent cgi-bin/notmodified cgi-bin/reset
 BACKEND_BIN := tests/backend
 
-TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c tests/test_event_backend.c tests/test_task_pool.c tests/test_logger.c tests/test_chunked.c tests/test_http_upstream.c tests/test_config_file.c
+TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c tests/test_event_backend.c tests/test_task_pool.c tests/test_logger.c tests/test_chunked.c tests/test_http_upstream.c tests/test_config_file.c tests/test_proxy_route.c tests/test_proxy_pool.c
 TEST_OBJS := $(TEST_SRCS:.c=.o)
 TEST_BIN  := run_tests
 
-TEST_SUPPORT_SRCS := src/http/http_request.c src/http/http_response.c src/http/http_upstream.c src/http/chunked.c src/common/config.c src/common/config_file.c src/common/util.c src/common/logger.c src/common/access_log.c src/static/static_file.c src/cgi/task_pool.c $(EVENT_SRCS)
+TEST_SUPPORT_SRCS := src/http/http_request.c src/http/http_response.c src/http/http_upstream.c src/http/chunked.c src/common/config.c src/common/config_file.c src/common/util.c src/common/logger.c src/common/access_log.c src/static/static_file.c src/cgi/task_pool.c src/proxy/proxy_route.c src/proxy/proxy_pool.c $(EVENT_SRCS)
 TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:.c=.o)
 
 DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(PROXY_SERVER_OBJS:.o=.d) $(BACKEND_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)
