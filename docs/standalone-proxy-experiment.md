@@ -9,7 +9,7 @@
 
 1. 1차 — `server_ev.c`의 프록시 관련 부분을 복사해 `reverse-proxy`
    바이너리를 만든 단계
-2. 2차 — 연결 수명주기를 `conn_common.c`로 뽑아 `server`와
+2. 2차 — 연결 수명주기를 `conn` 계층으로 뽑아 `server`와
    `reverse-proxy`가 **같은 코드**를 쓰도록 바꾼 단계
 
 ## 최종 결과 (ldc-standalone-proxy)
@@ -48,7 +48,7 @@
 
 `reverse-proxy` 바이너리에는 `static_file_prepare`, `submit_cgi`,
 `task_pool_create` 심볼이 없습니다. 크기는 macOS 빌드 기준
-`server` 207KB → `reverse-proxy` 167KB.
+`server` 209KB → `reverse-proxy` 169KB.
 
 ### 코드 변화
 
@@ -58,7 +58,7 @@
 | `src/app/server_request.c` | 없음 | 301줄 |
 | `src/app/server_cgi.c` | 없음 | 133줄 |
 | `src/app/proxy_server.c` | 826줄 (복사본) | 147줄 |
-| `src/conn/*.c` (5개로 분리) | `conn_common.c` 662줄 | 698줄 |
+| `src/conn/*.c` (5개로 분리) | 초기 `conn_common.c` 662줄 | 698줄 |
 | `src/conn/conn_loop.c` | 없음 | 223줄 |
 
 `server_ev.c`는 이제 앱 어댑터만 남았고, 정적/CGI 라우팅과 CGI 처리는

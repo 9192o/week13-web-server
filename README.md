@@ -27,21 +27,22 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
    ▼
 ┌──────────────────────────────────────────────┐
 │ 이벤트 루프 (단일 스레드)                     │
-│ server_ev.c + event_poll/epoll/kqueue.c      │
+│ conn_loop.c + event_poll/epoll/kqueue.c      │
 │                                              │
 │  accept → conn_t → EV_READ/EV_WRITE 상태 머신 │
-└───────┬──────────────────┬───────────────────┘
-        │                  │
-        │ 정적 요청         │ /cgi-bin/ 요청
-        ▼                  ▼
- static_file.c       task_pool.c → cgi.c → CGI 프로세스
-        │                  │
-        │ proxy route      │
-        ▼                  ▼
-    proxy.c  ───────→  http_upstream.c / chunked.c
-        │
-        ▼
-   backend 서버
+└───────┬───────────────┬───────────────┬──────┘
+        │ 정적 요청       │ /cgi-bin/     │ proxy route
+        ▼               ▼               ▼
+ static_file.c   task_pool.c → cgi.c   proxy_connection.c
+                                        │
+                                        ▼
+                                   proxy_relay.c
+                                        │
+                                        ▼
+                              http_upstream.c / chunked.c
+                                        │
+                                        ▼
+                                   backend 서버
 ```
 
 - **이벤트 루프는 1개**입니다. 연결마다 스레드를 만들지 않고, fd별 상태 머신으로 읽기/쓰기를 진행합니다.
@@ -87,7 +88,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
   - Linux: `epoll`
   - macOS/BSD: `kqueue`
   - fallback: `poll`
-- `src/conn/conn_loop.c`가 accept, read/write, timeout, connection sweep, shutdown을 담당하고, `src/app/server_ev.c`는 정적/CGI/proxy 앱 콜백을 제공합니다.
+- `src/conn/conn_loop.c`가 이벤트 dispatch, timeout, connection sweep, shutdown을 담당합니다. accept는 `conn_net.c`, read/write는 `conn_io.c`, 연결 생성/해제는 `conn.c`에 있습니다. `src/app/server_ev.c`는 정적/CGI/proxy 앱 콜백을 제공합니다.
 - 응답을 다 보내지 못하면 `EV_WRITE`로 전환하고, 입력이 밀리면 `EV_READ`를 조절하는 방식으로 backpressure를 겁니다.
 - keep-alive는 `keepalive_idle`, `keepalive_max`로 제한합니다.
 
@@ -172,6 +173,20 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 | backend connect 실패 | `502 Bad Gateway` |
 | `max_conns`/`max_upstreams`/task queue 초과 | `503 Service Unavailable` + `Retry-After` |
 | backend 응답 헤더/body idle 초과 | `504 Gateway Timeout` |
+
+## 소스 구조
+
+```text
+src/
+├── app/      진입점, 서버/프록시 앱 어댑터, 요청 라우팅, CGI 연결
+├── conn/     accept, conn_t, read/write, timeout, signal, event loop
+├── http/     요청/응답/upstream 파서, chunked
+├── proxy/    route, connection, relay, pool, wire
+├── event/    epoll / kqueue / poll backend
+├── static/   정적 파일
+├── cgi/      CGI 실행, task pool
+└── common/   설정, 로그, access log, 유틸
+```
 
 ## 구현 파일 맵
 

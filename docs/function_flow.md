@@ -1,7 +1,7 @@
 # 함수 흐름 — Phase 3
 
-> 최종 `server`는 `src/app/main_ev.c` + `src/app/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
-> Phase 3 프록시는 `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`가 담당하고, `proxy_pool.c`가 backend 연결 pool을, `proxy_wire.c`가 요청/응답 헤더 재작성을, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
+> 최종 `server`는 `src/app/main_ev.c` + `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
+> Phase 3 프록시는 `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`가 담당하고, `src/proxy/proxy_pool.c`가 backend 연결 pool을, `src/proxy/proxy_wire.c`가 요청/응답 헤더 재작성을, `src/http/http_upstream.c`/`src/http/chunked.c`가 파서를 보조한다.
 > 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 함수 레퍼런스는 [function_reference.md](function_reference.md)에 남아 있다.
 
 이 문서는 “어떤 함수가 어떤 순서로 호출되는가”를 따라간다. 함수별 세부 구현은 각 소스와 [phase3-design.md](phase3-design.md)를 본다.
@@ -21,42 +21,41 @@ main                         src/app/main_ev.c
 │  └─ parse_size_arg
 ├─ config_validate
 └─ server_ev_run             src/app/server_ev.c
-   ├─ setup_signals
-   ├─ create_listen_socket
-   ├─ ev_create_backend
-   ├─ ev_add(listenfd)
-   ├─ task_pool_create
-   ├─ ev_add(task completion fd)
-   ├─ ev_add(signal pipe)
-   ├─ logger_start
-   ├─ proxy_init
-   └─ event loop
+   └─ conn_loop_run          src/conn/conn_loop.c
+      ├─ conn_common_setup_signals
+      ├─ conn_common_create_listen_socket
+      ├─ ev_create_backend
+      ├─ ev_add(listen fd)
+      ├─ ev_add(signal pipe)
+      ├─ logger_start
+      ├─ app->start          server_start
+      │  ├─ proxy_init       src/proxy/proxy_route.c
+      │  └─ task_pool_create src/cgi/task_pool.c
+      └─ event loop
 ```
 
 ### 요청 하나
 
 ```text
 ev_wait
-└─ accept_new
-   └─ conn_new
-      └─ ev_add(client fd, EV_READ)
-
-EV_READ
-└─ on_readable
-   ├─ 헤더 읽기 루프
-   └─ process_buffer
-      ├─ proxy route  → proxy_start
-      ├─ /cgi-bin/    → submit_cgi → task pool
-      └─ 그 외        → static_file_prepare → conn_build_static
-
-EV_WRITE
-└─ on_writable
-   ├─ c->out 전송
-   ├─ 파일 body 전송
-   └─ keep-alive면 ST_READ, 아니면 close
+└─ conn_loop dispatch
+   ├─ conn_common_accept_new → conn_common_new
+   │  └─ ev_add(client fd, EV_READ)
+   ├─ app->readable           server_readable
+   │  ├─ ST_READ_BODY → submit_cgi (src/app/server_cgi.c)
+   │  └─ ST_READ → conn_common_read_headers (src/conn/conn_io.c)
+   │     └─ server_process_buffer
+   │        └─ process_buffer (src/app/server_request.c)
+   │           ├─ proxy route  → proxy_start (src/proxy/proxy_connection.c)
+   │           ├─ /cgi-bin/    → submit_cgi (src/app/server_cgi.c)
+   │           └─ 그 외        → static_file_prepare → conn_build_static
+   ├─ app->writable            server_writable
+   │  └─ conn_common_on_writable (src/conn/conn_io.c)
+   └─ extra fd                 server_extra_event
+      └─ drain_task_completions (src/app/server_cgi.c)
 ```
 
-프록시 요청은 client fd가 `ST_PROXY`가 되고, 이후 client 이벤트는 `proxy_handle_client_event()`가, upstream 이벤트는 `proxy_handle_upstream_event()`가 처리한다.
+프록시 요청은 client fd가 `ST_PROXY`가 되고, 이후 client 이벤트는 `proxy_handle_client_event()`가, upstream 이벤트는 `proxy_handle_upstream_event()`가 처리한다. 두 콜백은 `conn_loop_app_t`로 전달된다.
 
 ---
 
@@ -88,23 +87,27 @@ EV_WRITE
 
 `src/app/server_ev.c`
 
-호출 순서:
+`server_ev_run()`은 이제 얇은 앱 어댑터다. `conn_common_hooks_t`와 `conn_loop_app_t`를 채우고 `conn_loop_run()`에 넘긴다.
 
-1. `setup_signals()`
-   - `SIGINT`/`SIGTERM` 핸들러 등록
-   - self-pipe 생성
-2. `create_listen_socket(cfg->port)`
-3. `ev_create_backend(getenv("EV_BACKEND"))`
-   - 기본값은 플랫폼별 epoll/kqueue/poll
-4. listen fd를 `EV_READ`로 등록
-5. `task_pool_create(cfg->task_workers, cfg->task_queue_size)`
-6. task pool completion fd와 signal pipe를 이벤트 루프에 등록
-7. `logger_start()`
-8. `proxy_init(cfg)`
-   - route/backend 복사
-   - backend hostname을 시작 시 1회 resolve
-   - pool/health 카운터 초기화
-9. 이벤트 루프 진입
+```c
+conn_loop_app_t app = {
+    .name = "server",
+    .hooks = &hooks,
+    .start = server_start,
+    .stop = server_stop,
+    .extra_event = server_extra_event,
+    .tick = server_tick,
+    .readable = server_readable,
+    .writable = server_writable,
+    .client_event = proxy_handle_client_event,
+    .upstream_event = server_upstream_event,
+};
+return conn_loop_run(cfg, &app, &ctx);
+```
+
+- `server_start()`가 `proxy_init()`과 `task_pool_create()`를 호출하고 completion fd를 반환한다.
+- `server_stop()`이 task pool과 proxy pool을 정리한다.
+- `server_tick()`이 `proxy_sweep()`/`proxy_reap()`을 호출한다.
 
 `server`와 `server_ev`는 같은 `EV_SERVER_OBJS`를 링크한다. 즉 둘은 동일한 실행 코드다.
 
@@ -112,66 +115,19 @@ EV_WRITE
 
 ## 3. 이벤트 루프
 
-`server_ev_run()`의 메인 루프는 대략 다음과 같다.
+`conn_loop_run()`의 메인 루프는 `src/conn/conn_loop.c`에 있다.
 
-```c
-while (!g_stop || !draining || head != NULL) {
-    if (g_stop && !draining) {
-        draining = 1;
-        begin_drain(...);
-    }
-
-    int timeout = next_timeout(head);
-    int n = ev_wait(loop, events, 64, timeout);
-
-    for (int i = 0; i < n; i++) {
-        if (fd == listenfd)             accept_new();
-        else if (fd == completion_fd)   drain_task_completions();
-        else if (fd == signal_pipe)     drain_signal_pipe();
-        else if (src->kind == EV_SRC_UPSTREAM)
-            proxy_handle_upstream_event(src, events);
-        else if (c->state == ST_PROXY)
-            proxy_handle_client_event(c, events);
-        else {
-            on_readable(...);           // EV_READ
-            on_writable(...);           // EV_WRITE
-        }
-    }
-
-    conn_sweep(&head, &count);
-    expire_timers(loop, head, cfg);
-    proxy_sweep();
-    conn_sweep(&head, &count);
-    proxy_reap();
-}
-```
-
-### 이벤트 source 구분
-
-`ev_event_t.ptr`은 `ev_source_t *`다.
-
-- `EV_SRC_CLIENT`: `conn_t`
-- `EV_SRC_UPSTREAM`: `proxy_conn_t`
-
-`conn_t`와 `proxy_conn_t` 모두 `ev_source_t source`를 **첫 필드**로 가진다. 이벤트 루프는 `source.kind`를 보고 어느 쪽인지 구분한다. 이 구분이 틀리면 UAF/close 오류가 나기 쉬우므로 `include/ev_source.h`의 규칙을 유지해야 한다.
-
-### 타임아웃 소유권
-
-- 일반 client 연결: `expire_timers()`가 `c->deadline_ms`를 본다.
-- 프록시 연결: `expire_timers()`는 `ST_PROXY`를 건너뛰고 `proxy_sweep()`이 처리한다.
-- `next_timeout()`은 일반 연결 deadline과 `proxy_next_timeout_ms()` 중 작은 값을 `ev_wait()` timeout으로 넘긴다.
-
-프록시 timeout을 `expire_timers()`와 `proxy_sweep()` 양쪽에서 처리하지 않도록 주의한다.
-
-### 루프 끝 정리
-
-매 이벤트 배치가 끝난 뒤:
-
-1. `conn_sweep()` — 닫힌 `conn_t` 제거
-2. `expire_timers()` — 일반 연결의 request/keep-alive/CGI deadline
-3. `proxy_sweep()` — 프록시 active deadline, backend/pool idle timeout
-4. `conn_sweep()` — 프록시가 닫은 client 정리
-5. `proxy_reap()` — `dead` 표시된 `proxy_conn_t` 실제 free
+1. 종료 신호가 오면 `conn_common_begin_drain()`으로 listener를 닫고 연결을 정리한다.
+2. `conn_common_next_timeout()`으로 다음 deadline을 계산해 `ev_wait()`를 호출한다.
+3. 이벤트 종류에 따라 분기한다.
+   - listen fd → `conn_common_accept_new()`
+   - signal pipe → 신호 소비
+   - app이 등록한 extra fd → `server_extra_event()` → `drain_task_completions()`
+   - `EV_SRC_UPSTREAM` → `app->upstream_event()`
+   - `ST_PROXY` client → `app->client_event()`
+   - 그 외 client → `app->readable()` / `app->writable()`
+4. 루프 끝에서 `conn_common_sweep()`, `conn_common_expire_timers()`, `app->tick()`을 호출한다.
+5. `app->tick()`은 서버에서 `proxy_sweep()`과 `proxy_reap()`을 호출한다.
 
 `proxy_reap()`가 따로 있는 이유는 이벤트 콜백 도중 `free()`하면 같은 이벤트 배치의 다른 이벤트가 같은 포인터를 만질 수 있기 때문이다.
 
@@ -179,14 +135,16 @@ while (!g_stop || !draining || head != NULL) {
 
 ## 4. 연결 수락과 상태
 
-### `accept_new()`
+### `conn_common_accept_new()`
 
-`src/app/server_ev.c`
+`src/conn/conn_net.c`
 
 - `accept()`를 non-blocking으로 반복한다.
-- `*count >= cfg->max_conns`이면 `reject_overloaded()`로 `503 + Retry-After: 1`을 보내고 닫는다.
-- `set_nonblocking()`, `set_cloexec()` 후 `conn_new()`.
+- `*count >= cfg->max_conns`이면 `conn_common_reject_overloaded()`로 `503 + Retry-After: 1`을 보내고 닫는다.
+- `conn_common_set_nonblocking()`, `conn_common_set_cloexec()` 후 `conn_common_new()`.
 - `ev_add(fd, EV_READ, c)`로 등록하고 연결 리스트에 넣는다.
+
+`conn_common_new()`는 `src/conn/conn.c`에 있고, `conn_t` 초기화와 access log 시작을 담당한다.
 
 ### `conn_t` 상태
 
@@ -204,23 +162,23 @@ while (!g_stop || !draining || head != NULL) {
 
 ---
 
-## 5. 요청 처리 — `on_readable()` → `process_buffer()`
+## 5. 요청 처리 — `server_readable()` → `process_buffer()`
 
 ### 헤더 읽기
 
-`on_readable()`은 `ST_READ`에서 `\r\n\r\n`이 나올 때까지 `c->in`에 읽는다.
+`src/app/server_ev.c`의 `server_readable()`이 `ST_READ`에서 `src/conn/conn_io.c`의 `conn_common_read_headers()`를 호출한다. 공통 함수가 `\r\n\r\n`이 나올 때까지 `c->in`에 읽는다.
 
-- buffer가 가득 차면 `has_crlf()`와 `request_line_uri_too_long()`으로 원인을 구분해 `414` 또는 `431`을 만든다.
+- buffer가 가득 차면 `conn_common_has_crlf()`와 `conn_common_request_line_uri_too_long()`으로 원인을 구분해 `414` 또는 `431`을 만든다.
 - keep-alive 연결에서 `in_len == 0`으로 idle이 시작되면 request timeout deadline을 갱신한다.
 
 ### `process_buffer()`
 
-`src/app/server_ev.c`
+`src/app/server_request.c`
 
 1. `http_request_init()`
 2. `http_request_parse_buffer()`
    - `HTTP_PARSE_INCOMPLETE`는 `400`으로 처리
-   - 파싱 실패는 `conn_build_error()`
+   - 파싱 실패는 `conn_common_build_error()`
 3. `config_find_route()`로 longest-prefix route 선택
 4. 분기:
    - proxy route → `proxy_start()`
@@ -239,23 +197,9 @@ while (!g_stop || !draining || head != NULL) {
 
 `proxy_start()`가 `0`을 반환하면 `502`/`503` 같은 에러 응답을 이미 만든 것이므로 `c->in_len`을 비운다.
 
-### 정적 분기
+### 응답 쓰기
 
-`static_file_prepare()`가 `static_result_t`를 만들고, `conn_build_static()`이 응답 헤더와 파일 전송 상태를 `conn_t`에 넣는다. 실제 파일 전송은 `on_writable()`에서 한다.
-
-### CGI 분기
-
-- body가 아직 다 오지 않았으면 `ST_READ_BODY`로 바꾸고 body buffer를 할당한다.
-- `Expect: 100-continue`가 있으면 여기서 `100 Continue`를 직접 보낸다.
-- body가 준비되면 `submit_cgi()`.
-
-### keep-alive 복귀
-
-`on_writable()`이 응답을 모두 보내면:
-
-- `close_after`이면 연결을 닫는다.
-- 아니면 `ST_READ`로 돌아가고 `keepalive_idle` 또는 request timeout을 설정한다.
-- `c->in`에 다음 요청이 이미 들어와 있으면 바로 `process_buffer()`를 호출한다.
+`server_writable()`이 `conn_common_on_writable()`을 호출한다. 이 함수가 `c->out`과 파일 body를 전송하고, keep-alive면 `ST_READ`로 돌아간다.
 
 ---
 
@@ -269,12 +213,12 @@ process_buffer
    ├─ Range / If-Modified-Since
    └─ static_result_t
 
-conn_build_static
+conn_build_static (src/app/server_request.c)
 ├─ 응답 헤더 생성
 ├─ file_fd / file_remaining / file_offset 설정
 └─ c->state = ST_WRITE
 
-on_writable
+conn_common_on_writable (src/conn/conn_io.c)
 ├─ c->out 전송
 ├─ file_fd에서 chunk read → client write
 └─ 완료 후 file_fd close, keep-alive 또는 close
@@ -287,8 +231,8 @@ on_writable
 ## 7. CGI 흐름
 
 ```text
-process_buffer
-└─ submit_cgi
+process_buffer (src/app/server_request.c)
+└─ submit_cgi (src/app/server_cgi.c)
    ├─ cgi_job_create
    ├─ task_pool_submit
    ├─ c->state = ST_WAIT_TASK
@@ -302,13 +246,13 @@ worker thread
    └─ cgi_result_t
 
 completion fd
-└─ drain_task_completions
+└─ server_extra_event → drain_task_completions (src/app/server_cgi.c)
    ├─ find_by_task
    ├─ 응답을 c->out에 연결
    ├─ c->state = ST_WRITE
    └─ ev_add(client fd, EV_WRITE)
 
-on_writable
+conn_common_on_writable (src/conn/conn_io.c)
 └─ 응답 전송 후 keep-alive 또는 close
 ```
 
@@ -517,18 +461,18 @@ HTTP/1.0 응답이거나 `Connection: close`이면 pool에 넣지 않는다.
 
 ### 신호
 
-`on_signal()`:
+`src/conn/conn_signal.c`의 `on_signal()`:
 
 - 첫 `SIGINT`/`SIGTERM`: `g_stop = 1`, self-pipe에 byte write
 - 두 번째 신호: `_exit(1)`
 
-`server_ev_run()`은 `g_stop`을 보면:
+`conn_loop_run()`은 `conn_common_stopping()`을 보면:
 
-1. `begin_drain()`
+1. `conn_common_begin_drain()`
    - listen fd close
    - `ST_READ`/`ST_READ_BODY` 연결은 즉시 close
    - 나머지는 `close_after = 1`
-2. 최대 `EV_DRAIN_TIMEOUT_MS`(5초) 동안 진행 중 연결을 기다린다.
+2. 최대 `CONN_DRAIN_TIMEOUT_MS`(5초) 동안 진행 중 연결을 기다린다.
 3. watchdog thread가 drain 시간을 넘기면 프로세스를 종료한다.
 
 ### 정리 순서
@@ -545,7 +489,7 @@ proxy_shutdown_all()
 → logger_stop()
 ```
 
-`proxy_cleanup()`은 route별 pool fd를 닫고 `proxy_reap()`로 남은 dead proxy를 정리한다.
+`proxy_cleanup()`은 `proxy_route_cleanup()`으로 route별 pool fd를 닫고, `proxy_connection.c`의 `proxy_reap()`로 남은 dead proxy를 정리한다.
 
 ---
 
@@ -556,7 +500,15 @@ proxy_shutdown_all()
 | `src/app/main_ev.c` | 진입점, 설정 파싱, `server_ev_run()` 호출 |
 | `src/common/config.c` | 기본값, CLI 파싱, 검증, route 매칭 |
 | `src/common/config_file.c` | INI 설정 파일 파서 |
-| `src/app/server_ev.c` | 이벤트 루프, `conn_t` 상태 머신, 정적/CGI 연결, 종료 |
+| `src/conn/conn_loop.c` | 이벤트 루프, accept/signal/dispatch/drain |
+| `src/conn/conn.c` | `conn_t` 생성/해제, access log, 에러 응답 |
+| `src/conn/conn_io.c` | header read, read/write 상태 머신 |
+| `src/conn/conn_net.c` | listener, accept, 503 거절 |
+| `src/conn/conn_signal.c` | SIGINT/SIGTERM, stop flag |
+| `src/conn/conn_timer.c` | timeout, drain, watchdog |
+| `src/app/server_ev.c` | 서버 앱 콜백, task pool/proxy 시작·종료 |
+| `src/app/server_request.c` | 정적/CGI/proxy 라우팅, 정적 응답 |
+| `src/app/server_cgi.c` | CGI task 제출/완료 |
 | `src/event/event_backend.c` | epoll/kqueue/poll backend 선택 |
 | `src/event/event_epoll.c` | Linux epoll backend |
 | `src/event/event_kqueue.c` | macOS/BSD kqueue backend |
@@ -568,7 +520,7 @@ proxy_shutdown_all()
 | `src/cgi/cgi_task.c` | CGI job 실행과 결과 변환 |
 | `src/cgi/task_pool.c` | worker thread + queue + completion fd |
 | `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | route/backend 선택, 프록시 상태 머신 |
-| `src/proxy/proxy_conn.h` | 내부 `proxy_conn_t`/route/state/body 타입 |
+| `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_internal.h` | 내부 타입, 공유 API, pool 타입 |
 | `src/proxy/proxy_wire.c` | 요청/응답 헤더 직렬화 |
 | `src/proxy/proxy_pool.c` | backend keep-alive pool |
 | `src/http/http_upstream.c` | upstream 응답 헤더 파서 |
@@ -589,8 +541,8 @@ proxy_shutdown_all()
    - 이벤트 콜백 안에서 직접 `free(p)`를 호출하면 안 된다.
 
 3. **프록시 deadline은 `proxy_sweep()` 소유**
-   - `expire_timers()`는 `ST_PROXY`를 건너뛴다.
-   - `next_timeout()`은 `proxy_next_timeout_ms()`를 함께 본다.
+   - `conn_common_expire_timers()`는 `ST_PROXY`를 건너뛴다.
+   - `conn_common_next_timeout()`은 `proxy_next_timeout_ms()`를 함께 본다.
 
 4. **chunked는 raw relay**
    - `chunked.c`는 framing 검증과 decoded byte 수 계산을 한다.

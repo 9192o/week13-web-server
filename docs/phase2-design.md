@@ -71,15 +71,15 @@ for (;;) {
         uint32_t ev = events[i].events;
         void *ptr = events[i].ptr;
 
-        if (fd == listenfd && (ev & EV_READ))       accept_new_connections();
-        if (fd == completion_pipe && (ev & EV_READ)) drain_task_completions();
-        if (fd == signal_pipe && (ev & EV_READ))     handle_shutdown_signal();
-        if (ptr != NULL && (ev & EV_READ))           on_readable(ptr);
-        if (ptr != NULL && (ev & EV_WRITE))          on_writable(ptr);
+        if (fd == listenfd && (ev & EV_READ))       conn_common_accept_new();
+        if (fd == completion_pipe && (ev & EV_READ)) server_extra_event();
+        if (fd == signal_pipe && (ev & EV_READ))     /* signal pipe drain */;
+        if (ptr != NULL && (ev & EV_READ))           app->readable(ptr);
+        if (ptr != NULL && (ev & EV_WRITE))          app->writable(ptr);
         if (ev & EV_ERR)                             close_conn(ptr);
     }
 
-    expire_timers();
+    conn_common_expire_timers();
 }
 ```
 
@@ -313,13 +313,14 @@ typedef struct {
 >
 > 구현 상태 (S2c-3a): CGI 실행을 `fork`+`execve`에서 `posix_spawn` + file actions로 전환. Phase 1 `server`/`server_ev` CGI 테스트 PASS.
 >
-> 구현 상태 (S2c-3b): SIGINT/SIGTERM 단계별 drain + 5초 watchdog, 두 번째 시그널 강제 종료. `server`는 이제 `src/app/main_ev.c` + `src/app/server_ev.c` 기반 최종 서버이고, Phase 1 통합/종료/fd/load 테스트도 이 서버로 PASS. `server_ev`는 같은 소스의 호환 바이너리다.
+> 구현 상태 (S2c-3b): SIGINT/SIGTERM 단계별 drain + 5초 watchdog, 두 번째 시그널 강제 종료. `server`는 이제 `src/app/main_ev.c` + `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반 최종 서버이고, Phase 1 통합/종료/fd/load 테스트도 이 서버로 PASS. `server_ev`는 같은 소스의 호환 바이너리다.
 >
 > `EV_BACKEND=poll|kqueue|epoll`로 백엔드를 강제할 수 있다.
 
 | 파일 | 변경 |
 |---|---|
-| `src/app/main_ev.c`, `src/app/server_ev.c`, `include/server_ev.h` | 최종 이벤트 루프 서버 (S1 + S2 전체 + drain) |
+| `src/app/main_ev.c`, `src/app/server_ev.c`, `include/server_ev.h` | 최종 서버 진입점/앱 콜백 |
+| `src/conn/conn_loop.c`, `src/conn/conn_*.c` | 공통 이벤트 루프, 연결 수명주기, timeout/drain |
 | `src/cgi/cgi_task.c`, `include/cgi.h` | S2b CGI job/result, 임시 파일 캡처 |
 | `src/common/logger.c`, `include/logger.h` | S2c-2 로거 스레드/큐/access log |
 | `tests/integration_s1.sh` | S1 정적 + S2b CGI/타임아웃/종료 + S2c-2 access log 테스트 |

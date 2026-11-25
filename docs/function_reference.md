@@ -1,6 +1,6 @@
 # 함수 레퍼런스 — Phase 1
 
-> **Phase 3 기준:** 최종 `server`는 `src/app/main_ev.c` + `src/app/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 실행 흐름은 [function_flow.md](function_flow.md), 구조는 [README](../README.md), 프록시는 [phase3-design.md](phase3-design.md)를 본다.
+> **Phase 3 기준:** 최종 `server`는 `src/app/main_ev.c` + `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 아래 경로와 줄 번호는 **Phase 1 당시의 역사적 기록**이며, 현재 파일 위치는 README의 소스 구조를 본다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 실행 흐름은 [function_flow.md](function_flow.md), 구조는 [README](../README.md), 프록시는 [phase3-design.md](phase3-design.md)를 본다.
 
 `function_flow.md`가 **서버가 어떻게 돌아가는지 읽는 가이드**라면, 이 문서는 **함수 하나하나를 찾아보는 사전**이다.
 각 항목은 `파일:라인 · 반환형 · 호출자`로 시작하고, 무엇을 하는지와 왜 그렇게 했는지를 불릿으로 적었다.
@@ -557,21 +557,21 @@
 
 | 함수 | 위치 | 한 줄 역할 |
 |---|---|---|
-| `main` | `src/main.c:6` | 설정 → 검증 → 구동 |
+| `main` | `main.c:6` (Phase 1) | 설정 → 검증 → 구동 |
 | `config_init` | `src/common/config.c:10` | 설정 구조체 기본값 |
 | `copy_path` | `src/common/config.c:25` | 경로 복사 + 절단 검사 |
 | `parse_int_arg` | `src/common/config.c:30` | 엄격한 정수 파싱 |
 | `parse_size_arg` | `src/common/config.c:40` | 엄격한 크기 파싱 |
 | `config_parse_cli` | `src/common/config.c:50` | `argv` 해석 |
 | `config_validate` | `src/common/config.c:110` | docroot/cgi_dir 검증 |
-| `handle_signal` | `src/server.c:21` | 첫 시그널 `g_stop`, 두 번째 `_exit` |
-| `setup_signals` | `src/server.c:28` | SIGPIPE/SIGINT/SIGTERM 등록 |
-| `create_listen_socket` | `src/server.c:45` | socket/bind/listen |
-| `has_header_end` | `src/server.c:82` | `\r\n\r\n` 탐색 |
-| `set_send_timeout` | `src/server.c` | `SO_SNDTIMEO` 설정 |
-| `handle_connection` | `src/server.c` | 연결별 요청 루프 |
-| `server_run` | `src/server.c` | accept 루프 |
-| `server_request_stop` | `src/server.c` | 외부 종료 API (미사용) |
+| `handle_signal` | `server.c:21` (Phase 1) | 첫 시그널 `g_stop`, 두 번째 `_exit` |
+| `setup_signals` | `server.c (Phase 1):28` | SIGPIPE/SIGINT/SIGTERM 등록 |
+| `create_listen_socket` | `server.c (Phase 1):45` | socket/bind/listen |
+| `has_header_end` | `server.c (Phase 1):82` | `\r\n\r\n` 탐색 |
+| `set_send_timeout` | `server.c (Phase 1)` | `SO_SNDTIMEO` 설정 |
+| `handle_connection` | `server.c (Phase 1)` | 연결별 요청 루프 |
+| `server_run` | `server.c (Phase 1)` | accept 루프 |
+| `server_request_stop` | `server.c (Phase 1)` | 외부 종료 API (미사용) |
 | `now_ms` | `src/common/util.c` | monotonic 밀리초 |
 | `readn_deadline` | `src/common/util.c` | deadline 기반 n바이트 읽기 |
 | `readn_stop` | `src/common/util.c` | 종료 플래그 지원 n바이트 읽기 |

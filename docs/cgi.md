@@ -61,7 +61,7 @@ query  = x=1
 
 ### 3.3 라우팅
 
-`src/server.c`의 `handle_connection`:
+Phase 1의 `server.c` `handle_connection` (현재는 `src/app/server_request.c`의 `process_buffer()` + `src/app/server_cgi.c`):
 
 ```c
 } else if (cfg->cgi_dir[0] != '\0' &&
@@ -251,7 +251,8 @@ CGI는 라이브러리도 언어도 아니다. **서버와 프로그램 사이�
 
 | 파일 | 역할 |
 |---|---|
-| `src/server.c` | `/cgi-bin/` 라우팅, `cgi_dir` 기능 스위치 |
+| `src/app/server_request.c` | `/cgi-bin/` 라우팅, `cgi_dir` 기능 스위치 |
+| `src/app/server_cgi.c` | CGI task 제출/완료 |
 | `src/cgi/cgi.c` `cgi_handle` | 경로 검증, `pipe`/`tmpfile`/`fork`/`execve`, `poll` 타임아웃 |
 | `src/cgi/cgi.c` `build_cgi_env` | 환경변수 배열을 부모에서 구성 |
 | `src/cgi/cgi.c` `send_cgi_response` | CGI 출력 → HTTP 응답 변환 |

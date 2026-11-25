@@ -1,6 +1,6 @@
 # 아키텍처 — Phase 3
 
-> 최종 `server`는 `src/app/main_ev.c` + `src/app/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다. 이 문서는 현재 코드의 구조, 모듈 경계, 데이터 소유권을 설명한다. 함수 호출 순서는 [function_flow.md](function_flow.md), 프록시 상세 설계는 [phase3-design.md](phase3-design.md)를 본다.
+> 최종 `server`는 `src/app/main_ev.c` + `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다. 이 문서는 현재 코드의 구조, 모듈 경계, 데이터 소유권을 설명한다. 함수 호출 순서는 [function_flow.md](function_flow.md), 프록시 상세 설계는 [phase3-design.md](phase3-design.md)를 본다.
 
 ## 1. 설계 목표
 
@@ -10,7 +10,7 @@
 - 프록시 backend 연결은 **keep-alive pool**로 재사용한다.
 - 잘못된 설정은 시작 시 **fail-fast**로 거부한다.
 
-Phase 1의 `server.c` 연결 루프는 Phase 2에서 이벤트 루프로 대체됐고, Phase 3에서 `proxy.c`가 추가됐다.
+Phase 1의 `server.c` 연결 루프는 Phase 2에서 이벤트 루프로 대체됐고, Phase 3에서 프록시 코어가 `proxy_route.c` / `proxy_connection.c` / `proxy_relay.c`로 추가됐다.
 
 ## 2. 실행 모델
 
@@ -49,35 +49,42 @@ Phase 1의 `server.c` 연결 루프는 Phase 2에서 이벤트 루프로 대체�
 main_ev
 ├─ config
 │  └─ config_file
-└─ server_ev
-   ├─ event_backend ─ event_epoll / event_kqueue / event_poll
-   ├─ http_request
-   ├─ http_response
-   ├─ static_file
-   ├─ cgi_task ─ task_pool
-   ├─ proxy ─ http_upstream / chunked / proxy_pool / proxy_wire
-   ├─ access_log
-   └─ logger
+└─ server_ev (app callbacks)
+   └─ conn_loop ─ conn / conn_io / conn_net / conn_signal / conn_timer
+      ├─ event_backend ─ event_epoll / event_kqueue / event_poll
+      ├─ server_request ─ http_request / http_response / static_file / proxy
+      ├─ server_cgi ─ cgi_task ─ task_pool
+      └─ common: access_log / logger / util
 ```
 
 | 모듈 | 책임 |
 | --- | --- |
-| `main_ev.c` | 진입점, 설정 로드, `server_ev_run()` |
-| `config.c` / `config_file.c` | CLI/INI 설정, 검증, route 매칭 |
-| `server_ev.c` | 이벤트 루프, `conn_t` 상태 머신, 정적/CGI/프록시 연결 |
-| `event_*.c` | epoll/kqueue/poll abstraction |
-| `http_request.c` | 요청 라인/헤더/URI/body 파싱 |
-| `http_response.c` | 응답 헤더/에러 응답 생성 |
-| `static_file.c` | docroot 매핑, MIME, Range, IMS |
-| `cgi.c` / `cgi_task.c` | CGI 실행과 결과 변환 |
-| `task_pool.c` | CGI worker queue와 completion fd |
-| `proxy.c` | route/backend 선택, 프록시 상태 머신 |
-| `proxy_conn.h` | 내부 `proxy_conn_t`/route/state/body 타입 |
-| `proxy_wire.c` | 요청/응답 헤더 직렬화, hop-by-hop 제거 |
-| `proxy_pool.c` | backend keep-alive pool (idle fd, stale 검사, sweep) |
-| `http_upstream.c` | upstream 응답 헤더 파서 |
-| `chunked.c` | chunked framing/trailer 파서 |
-| `access_log.c` / `logger.c` | 요청 로그와 logger thread |
+| `app/main_ev.c` | 진입점, 설정 로드, `server_ev_run()` |
+| `common/config.c` / `common/config_file.c` | CLI/INI 설정, 검증, route 매칭 |
+| `conn/conn_loop.c` | listener/signal/event dispatch, timeout, drain |
+| `conn/conn.c` | `conn_t` 생성/해제, access log, 에러 응답 |
+| `conn/conn_io.c` | header read, read/write 상태 머신 |
+| `conn/conn_net.c` | accept, 503 거절, listen socket |
+| `conn/conn_signal.c` | SIGINT/SIGTERM, stop flag |
+| `conn/conn_timer.c` | timeout, drain, watchdog |
+| `app/server_ev.c` | 서버 앱 콜백, task pool/proxy 시작·종료 |
+| `app/server_request.c` | 정적/CGI/proxy 라우팅, 정적 응답 |
+| `app/server_cgi.c` | CGI task 제출/완료 |
+| `event/event_*.c` | epoll/kqueue/poll abstraction |
+| `http/http_request.c` | 요청 라인/헤더/URI/body 파싱 |
+| `http/http_response.c` | 응답 헤더/에러 응답 생성 |
+| `static/static_file.c` | docroot 매핑, MIME, Range, IMS |
+| `cgi/cgi.c` / `cgi/cgi_task.c` | CGI 실행과 결과 변환 |
+| `cgi/task_pool.c` | CGI worker queue와 completion fd |
+| `proxy/proxy_route.c` | route/backend 선택, DNS, health |
+| `proxy/proxy_connection.c` | 프록시 연결 수명주기/이벤트 |
+| `proxy/proxy_relay.c` | 요청/응답 body 중계 |
+| `proxy/proxy_conn.h` | 내부 `proxy_conn_t`/route/state/body 타입 |
+| `proxy/proxy_wire.c` | 요청/응답 헤더 직렬화, hop-by-hop 제거 |
+| `proxy/proxy_pool.c` | backend keep-alive pool (idle fd, stale 검사, sweep) |
+| `http/http_upstream.c` | upstream 응답 헤더 파서 |
+| `http/chunked.c` | chunked framing/trailer 파서 |
+| `common/access_log.c` / `common/logger.c` | 요청 로그와 logger thread |
 
 `server`와 `server_ev`는 같은 오브젝트를 링크하는 빌드 별칭이다.
 
@@ -102,26 +109,26 @@ typedef struct {
 
 | 상태 | 의미 | 담당 |
 | --- | --- | --- |
-| `ST_READ` | 요청 헤더 읽기 | `on_readable()` |
-| `ST_READ_BODY` | CGI용 body 읽기 | `on_readable()` |
+| `ST_READ` | 요청 헤더 읽기 | `server_readable()` → `conn_common_read_headers()` |
+| `ST_READ_BODY` | CGI용 body 읽기 | `server_readable()` |
 | `ST_WAIT_TASK` | CGI worker 결과 대기 | completion fd |
 | `ST_PROXY` | 프록시 중계 | `proxy_*` |
-| `ST_WRITE` | 응답 전송 | `on_writable()` |
+| `ST_WRITE` | 응답 전송 | `conn_common_on_writable()` |
 
 ### 이벤트 루프의 책임 분리
 
-- listen fd: `accept_new()`
-- task completion fd: `drain_task_completions()`
-- signal self-pipe: 종료 신호 소비
-- `EV_SRC_UPSTREAM`: `proxy_handle_upstream_event()`
-- `ST_PROXY` client: `proxy_handle_client_event()`
-- 그 외 client: `on_readable()` / `on_writable()`
+- listen fd: `conn_common_accept_new()`
+- task completion fd: `server_extra_event()` → `drain_task_completions()`
+- signal self-pipe: `conn_loop`가 소비
+- `EV_SRC_UPSTREAM`: `conn_loop_app_t.upstream_event` → `proxy_handle_upstream_event()`
+- `ST_PROXY` client: `conn_loop_app_t.client_event` → `proxy_handle_client_event()`
+- 그 외 client: `conn_loop_app_t.readable` / `writable`
 
-루프 끝에서 `conn_sweep()`, `expire_timers()`, `proxy_sweep()`, `proxy_reap()`를 호출한다. 일반 연결 deadline은 `expire_timers()`가, 프록시 deadline은 `proxy_sweep()`이 소유한다.
+루프 끝에서 `conn_common_sweep()`, `conn_common_expire_timers()`, `conn_loop_app_t.tick()`을 호출한다. 서버의 tick은 `proxy_sweep()`/`proxy_reap()`이고, 일반 연결 deadline은 공통 timer가, 프록시 deadline은 `proxy_sweep()`이 소유한다.
 
 ## 5. 요청 처리 경계
 
-`process_buffer()`가 요청을 파싱한 뒤 세 갈래로 나눈다.
+`src/app/server_request.c`의 `process_buffer()`가 요청을 파싱한 뒤 세 갈래로 나눈다.
 
 ```text
 process_buffer
@@ -148,16 +155,16 @@ process_buffer
 ## 6. 정적 파일
 
 - `static_file_prepare()`가 docroot 검증, dotfile/symlink 탈출 차단, Range/IMS를 처리하고 `static_result_t`를 만든다.
-- `conn_build_static()`이 응답 헤더를 만들고 `file_fd`, `file_remaining`, `file_offset`을 `conn_t`에 넣는다.
-- 실제 전송은 event loop의 `on_writable()`이 `EV_FILE_CHUNK`(64KB) 단위로 처리한다.
+- `server_request.c`의 `conn_build_static()`이 응답 헤더를 만들고 `file_fd`, `file_remaining`, `file_offset`을 `conn_t`에 넣는다.
+- 실제 전송은 `conn/conn_io.c`의 `conn_common_on_writable()`이 64KB 단위로 처리한다.
 - 파일 fd는 전송 완료/에러/close 경로에서 반드시 닫는다.
 - 정적 파일은 CGI worker로 보내지 않는다. 디스크 read가 event loop에서 일어난다.
 
 ## 7. CGI
 
 ```text
-process_buffer
-└─ submit_cgi
+process_buffer (src/app/server_request.c)
+└─ submit_cgi (src/app/server_cgi.c)
    ├─ cgi_job_create (요청/body 소유권 이전)
    ├─ task_pool_submit
    ├─ state = ST_WAIT_TASK
@@ -171,7 +178,7 @@ worker
    └─ cgi_result_t
 
 completion fd
-└─ drain_task_completions
+└─ server_extra_event → drain_task_completions (src/app/server_cgi.c)
    ├─ task_id로 conn_t 검색
    ├─ cgi_result_t의 response를 conn_t로 이동
    ├─ state = ST_WRITE
@@ -189,10 +196,12 @@ completion fd
 
 | 구성 | 역할 |
 | --- | --- |
-| `proxy_route_t[]` | route prefix와 backend 목록 |
+| `proxy_route_t[]` | route prefix와 backend 목록 (`proxy_route.c`) |
 | `proxy_backend_t` | host/port, resolved sockaddr, `down_until_ms`, idle pool |
 | `proxy_conn_t` | 요청 하나의 프록시 상태와 buffer |
 | `proxy_idle_t` | backend별 idle upstream fd |
+| `proxy_connection.c` | 프록시 연결 수명주기, 상태 전이 |
+| `proxy_relay.c` | 요청/응답 body relay |
 | `proxy_wire.c` | 요청/응답 헤더 직렬화 |
 | `proxy_pool.c` | idle fd 획득/반납/sweep |
 | `http_upstream.c` | upstream 응답 헤더 파서 |
@@ -200,7 +209,7 @@ completion fd
 
 ### 8.2 `proxy_conn_t` 소유권
 
-내부 타입 정의는 `src/proxy/proxy_conn.h`에 있고, 요청/응답 헤더 직렬화는 `src/proxy/proxy_wire.c`가 담당한다.
+내부 타입 정의는 `src/proxy/proxy_conn.h`, 공유 상태/API는 `src/proxy/proxy_core.h`에 있고, 요청/응답 헤더 직렬화는 `src/proxy/proxy_wire.c`가 담당한다.
 
 ```text
 proxy_conn_t
@@ -215,10 +224,10 @@ proxy_conn_t
 └─ tried_mask
 ```
 
-- `req_out`, `resp_out`, `resp_hdr`는 동적 할당이며 `proxy_reap()`에서 해제된다.
+- `req_out`, `resp_out`, `resp_hdr`는 동적 할당이며 `proxy_connection.c`의 `proxy_reap()`에서 해제된다.
 - `c2u`, `u2c`는 `proxy_conn_t`에 내장된 고정 크기 buffer다.
 - `route`/`backend`는 전역 route table을 가리키며 `proxy_conn_t`가 소유하지 않는다.
-- `proxy_free_struct()`는 즉시 free하지 않고 `dead` 표시 후 `g_dead`에 넣는다. 실제 free는 이벤트 배치가 끝난 뒤 `proxy_reap()`가 한다.
+- `proxy_free_struct()`는 `proxy_connection.c`에서 즉시 free하지 않고 `dead` 표시 후 `g_dead`에 넣는다. 실제 free는 이벤트 배치가 끝난 뒤 `proxy_reap()`가 한다.
 
 ### 8.3 상태 전이
 
@@ -279,9 +288,12 @@ config_init
       → config_parse_file (선택)
       → CLI override
   → config_validate
-  → server_ev_run
-      → proxy_init (backend DNS resolve)
-      → event loop
+  → server_ev_run (앱 콜백 등록)
+      → conn_loop_run
+          → server_start
+              → proxy_init (backend DNS resolve)
+              → task_pool_create
+          → event loop
 ```
 
 - 설정 파일은 `key value`, `[route]`, `[global]` 형식이다.
@@ -327,7 +339,7 @@ config_init
 | backend keep-alive pool | TCP handshake 감소 | stale 검사, idle timeout, pool 크기 관리 |
 | 시작 시 DNS resolve | 요청 경로 단순 | DNS 변경에 재시작 필요 |
 | passive health | 구현 단순 | 죽은 backend를 매 요청 재시도할 수 있음 |
-| 프록시 통합 | 정적/CGI와 한 프로세스 | `proxy.c`/`proxy_pool.c`가 커지고 상태 머신 결합 |
+| 프록시 통합 | 정적/CGI와 한 프로세스 | `proxy_connection.c`/`proxy_relay.c`/`proxy_pool.c`가 커지고 상태 머신 결합 |
 
 ## 13. 더 찾아보기
 

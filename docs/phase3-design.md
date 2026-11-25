@@ -47,7 +47,7 @@ Phase 3는 Phase 1의 HTTP 파서/응답 빌더와 Phase 2의 이벤트 루프/�
 client fd
    │  Phase 2 conn_t (ST_READ / ST_PROXY / ...)
    ▼
-server_ev event loop
+conn_loop + server_ev app
    ├─ route match
    │    ├─ static / local CGI → Phase 2 static_file / cgi
    │    └─ proxy route      → proxy_conn_t
@@ -70,14 +70,16 @@ client fd ← proxy_conn_t ← upstream fd
 | 파일 | 역할 |
 |---|---|
 | `include/proxy.h`, `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
-| `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c` | 내부 proxy 타입, 요청/응답 헤더 재작성 |
+| `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_wire.c` | 내부 proxy 타입/공유 API, 요청/응답 헤더 재작성 |
 | `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h` | backend keep-alive pool (idle fd, stale 검사, sweep) |
 | `include/http_upstream.h`, `src/http/http_upstream.c` | upstream 응답(status line + headers) 파서 |
 | `include/chunked.h`, `src/http/chunked.c` | chunked stream-through 파서 |
 | `src/common/config_file.c` | INI 유사 설정 파일 파서 |
 | `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_PROXY`, event source kind |
 | `tests/backend.c`, `tests/integration_p3.sh` | 테스트용 C backend와 Phase 3 통합 테스트 |
-| `src/app/server_ev.c` | client 상태에 `ST_PROXY` 추가, route 분기, proxy 이벤트 dispatch |
+| `src/app/server_ev.c` | 앱 어댑터, `conn_loop` 콜백, proxy 이벤트 dispatch |
+| `src/app/server_request.c` | client 상태 `ST_PROXY` route 분기, 정적 응답 |
+| `src/conn/conn_loop.c`, `src/conn/conn_io.c` | 이벤트 dispatch, header read, read/write 상태 머신 |
 | `include/config.h`, `src/common/config.c` | route/backend/timeout/pool 설정 필드 추가 |
 | `Makefile` | proxy 모듈/테스트 backend/`integration-p3` 타깃 추가 |
 
@@ -212,8 +214,8 @@ ST_WRITE       일반 응답 쓰기
 
 ### 6.1 client 요청 파싱
 
-1. `on_readable`이 헤더 끝까지 읽는다.
-2. `process_buffer`가 `http_request_parse_buffer`로 요청을 파싱한다.
+1. `server_readable()`이 `conn_common_read_headers()`로 헤더 끝까지 읽는다.
+2. `process_buffer()` (`src/app/server_request.c`)가 `http_request_parse_buffer`로 요청을 파싱한다.
 3. `/cgi-bin/`이면 기존 CGI 경로를 우선한다.
 4. route table에서 longest-prefix 매칭:
    - `ROUTE_STATIC` → 기존 `static_file_prepare`/`conn_build_static`
@@ -673,8 +675,8 @@ Phase 2 drain을 확장한다.
 
 ## 21. 구현 상태 (2026-11-25)
 
-- **구현 완료**: `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
-- **통합**: `server`/`server_ev`가 최종 이벤트 루프 서버로 빌드되고, `--config`로 Phase 3 설정을 읽는다.
+- **구현 완료**: `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
+- **통합**: `server`/`server_ev`가 `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반 최종 서버로 빌드되고, `--config`로 Phase 3 설정을 읽는다.
 - **동작 확인**:
   - `/api/*` → Round-Robin backend, 그 외 → 정적 서빙.
   - hop-by-hop 헤더 제거, `X-Forwarded-For` 추가.

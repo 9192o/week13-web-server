@@ -160,7 +160,7 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 ### Phase 2 S2c-3b (2026-11-24)
 
 - **drain/watchdog**: SIGINT/SIGTERM 시 listen 중단 → idle/read 연결 close → ST_WRITE/ST_WAIT_TASK 응답 완료 → 5초 deadline → watchdog `_exit`. 두 번째 시그널은 `_exit(1)`.
-- **통합**: `server`가 `src/app/main_ev.c` + `src/app/server_ev.c` 기반 최종 서버로 교체됨. `server_ev`는 같은 소스의 호환 바이너리.
+- **통합**: `server`가 `src/app/main_ev.c` + `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반 최종 서버로 교체됨. `server_ev`는 같은 소스의 호환 바이너리.
 - **검증**: `make integration`, `make integration-s1`, `make integration-s2`, `make shutdown-test`(SIGINT 중 CGI 응답 완료 포함), `make fdtest`(9→9), `make load`(close/keep-alive failed=0), `make sanitize` 모두 PASS. 단위 **283 assertions**. 추가로 `ab -n 10000 -c 100` close-only **3629 rps**, keep-alive **3671 rps**, failed=0.
 
 ### Phase 3 (2026-11-25)
