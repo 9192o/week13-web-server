@@ -38,7 +38,7 @@
   - timeout, drain, signal 처리, access log
   - 이벤트 루프 dispatch, listener/signal 관리, task-pool completion fd 연결
 - 재사용:
-  - `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`
+  - `src/proxy/proxy_route.c`, `src/proxy/proxy_lifecycle.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`
   - `src/http/http_request.c`, `src/http/http_response.c`, `src/http/http_upstream.c`,
     `src/http/chunked.c`
   - `src/common/config.c`, `src/common/config_file.c`

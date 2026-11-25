@@ -1,7 +1,7 @@
 # 함수 흐름 — Phase 3
 
 > 최종 `server`는 `src/app/main_ev.c` + `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
-> Phase 3 프록시는 `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`가 담당하고, `src/proxy/proxy_pool.c`가 backend 연결 pool을, `src/proxy/proxy_wire.c`가 요청/응답 헤더 재작성을, `src/http/http_upstream.c`/`src/http/chunked.c`가 파서를 보조한다.
+> Phase 3 프록시는 `src/proxy/proxy_route.c`, `src/proxy/proxy_lifecycle.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`가 담당하고, `src/proxy/proxy_pool.c`가 backend 연결 pool을, `src/proxy/proxy_wire.c`가 요청/응답 헤더 재작성을, `src/http/http_upstream.c`/`src/http/chunked.c`가 파서를 보조한다.
 > 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 함수 레퍼런스는 [function_reference.md](function_reference.md)에 남아 있다.
 
 이 문서는 “어떤 함수가 어떤 순서로 호출되는가”를 따라간다. 함수별 세부 구현은 각 소스와 [phase3-design.md](phase3-design.md)를 본다.
@@ -318,7 +318,7 @@ CGI worker는 event loop와 별도 스레드에서 실행된다. task queue가 �
 
 ### 8.1 초기화 — `proxy_init()`
 
-프록시 코어는 `proxy_route.c`(라우팅), `proxy_connection.c`(상태 머신), `proxy_relay.c`(본문 중계)로 나뉜다.
+프록시 코어는 `proxy_route.c`(라우팅), `proxy_lifecycle.c`(수명주기), `proxy_connection.c`(상태 머신), `proxy_relay.c`(본문 중계)로 나뉜다.
 
 1. 설정의 route/backend를 내부 `proxy_route_t`/`proxy_backend_t`로 복사한다.
 2. backend hostname을 `getaddrinfo()`로 **시작 시 1회** resolve한다.
@@ -543,7 +543,7 @@ proxy_shutdown_all()
 → logger_stop()
 ```
 
-`proxy_cleanup()`은 `proxy_route_cleanup()`으로 route별 pool fd를 닫고, `proxy_connection.c`의 `proxy_reap()`로 남은 dead proxy를 정리한다.
+`proxy_cleanup()`은 `proxy_route_cleanup()`으로 route별 pool fd를 닫고, `proxy_lifecycle.c`의 `proxy_reap()`로 남은 dead proxy를 정리한다.
 
 ---
 
@@ -573,7 +573,7 @@ proxy_shutdown_all()
 | `src/cgi/cgi.c` | `posix_spawn`, pipe, CGI 출력 처리 |
 | `src/cgi/cgi_task.c` | CGI job 실행과 결과 변환 |
 | `src/cgi/task_pool.c` | worker thread + queue + completion fd |
-| `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | route/backend 선택, 프록시 상태 머신 |
+| `src/proxy/proxy_route.c`, `src/proxy/proxy_lifecycle.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | route/backend 선택, 수명주기, 프록시 상태 머신 |
 | `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_internal.h` | 내부 타입, 공유 API, pool 타입 |
 | `src/proxy/proxy_wire.c` | 요청/응답 헤더 직렬화 |
 | `src/proxy/proxy_pool.c` | backend keep-alive pool |

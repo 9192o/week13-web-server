@@ -5,7 +5,8 @@ find_base_ports() {
     for p in 19490 19590 19690 19790; do
         if ! nc -z 127.0.0.1 "$p" >/dev/null 2>&1 &&
            ! nc -z 127.0.0.1 "$((p + 1))" >/dev/null 2>&1 &&
-           ! nc -z 127.0.0.1 "$((p + 2))" >/dev/null 2>&1; then
+           ! nc -z 127.0.0.1 "$((p + 2))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 3))" >/dev/null 2>&1; then
             echo "$p"
             return 0
         fi
@@ -20,6 +21,7 @@ BASE=$(find_base_ports) || {
 PPORT=$BASE
 BPORT=$((BASE + 1))
 TPORT=$((BASE + 2))
+LPORT=$((BASE + 3))
 
 TMP="${TMPDIR:-/tmp}/web_server_proxy_front.$$"
 mkdir -p "$TMP"
@@ -57,6 +59,20 @@ type proxy
 backend 127.0.0.1:$BPORT
 EOF
 
+cat >"$TMP/limit.conf" <<EOF
+listen $LPORT
+timeout request 5
+timeout connect 1
+timeout response 3
+timeout body 2
+max_conns 2
+max_upstreams 2
+
+[route /api/]
+type proxy
+backend 127.0.0.1:$TPORT
+EOF
+
 fail=0
 
 ./tests/backend "$TPORT" 7 >"$TMP/testbackend.log" 2>&1 &
@@ -73,12 +89,15 @@ done
 BPID=$!
 ./reverse-proxy --config "$TMP/proxy.conf" >"$TMP/proxy.log" 2>&1 &
 PROXYPID=$!
+LPID=""
 
 cleanup() {
     kill -INT "$PROXYPID" 2>/dev/null || true
+    [ -z "$LPID" ] || kill -INT "$LPID" 2>/dev/null || true
     kill -INT "$BPID" 2>/dev/null || true
     kill -INT "$TPID" 2>/dev/null || true
     wait "$PROXYPID" 2>/dev/null || true
+    [ -z "$LPID" ] || wait "$LPID" 2>/dev/null || true
     wait "$BPID" 2>/dev/null || true
     wait "$TPID" 2>/dev/null || true
     rm -rf "$TMP"
@@ -167,6 +186,33 @@ else
     echo "FAIL: front client keep-alive (got $ka_count)"
     fail=1
 fi
+
+# max_conns counts client + active upstream connections.
+./reverse-proxy --config "$TMP/limit.conf" >"$TMP/limit.log" 2>&1 &
+LPID=$!
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -fsS --max-time 1 -o /dev/null "http://127.0.0.1:$LPORT/api/id" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+curl -sS --max-time 5 -o /dev/null "http://127.0.0.1:$LPORT/api/slow?ms=1000" 2>/dev/null &
+slow_pid=$!
+sleep 0.2
+limit_code=$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$LPORT/api/id" 2>/dev/null || echo "000")
+wait "$slow_pid" 2>/dev/null || true
+if [ "$limit_code" = "503" ]; then
+    echo "PASS: max_conns includes active upstream"
+else
+    echo "FAIL: max_conns includes active upstream (got $limit_code)"
+    fail=1
+fi
+kill -INT "$LPID" 2>/dev/null || true
+wait "$LPID" 2>/dev/null || true
+LPID=""
 
 kill -TERM "$BPID" 2>/dev/null || true
 wait "$BPID" 2>/dev/null || true

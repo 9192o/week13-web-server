@@ -73,7 +73,7 @@ backend-server
 
 | 파일 | 역할 |
 |---|---|
-| `include/proxy.h`, `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
+| `include/proxy.h`, `src/proxy/proxy_route.c`, `src/proxy/proxy_lifecycle.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | 라우팅, 수명주기, proxy 상태 머신, 헤더/본문 중계 |
 | `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_wire.c` | 내부 proxy 타입/공유 API, 요청/응답 헤더 재작성 |
 | `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h` | backend keep-alive pool (idle fd, stale 검사, sweep) |
 | `include/http_upstream.h`, `src/http/http_upstream.c` | upstream 응답(status line + headers) 파서 |
@@ -683,7 +683,7 @@ Phase 2 drain을 확장한다.
 
 ## 21. 구현 상태 (2026-11-25)
 
-- **구현 완료**: `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
+- **구현 완료**: `src/proxy/proxy_route.c`, `src/proxy/proxy_lifecycle.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_core.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
 - **통합**: `server`/`server_ev`가 `src/conn/conn_loop.c` + `src/app/server_ev.c` 기반 최종 서버로 빌드되고, `--config`로 Phase 3 설정을 읽는다.
 - **동작 확인**:
   - `/api/*` → Round-Robin backend, 그 외 → 정적 서빙.
@@ -693,7 +693,7 @@ Phase 2 drain을 확장한다.
   - connect/response/body timeout, 502/504. client request body timeout은 408.
   - client keep-alive, 1MB body, backpressure.
   - `strip_prefix 1` route, `max_upstreams` 상한(503 + `Retry-After`), upstream reason phrase/Trailer 보존.
-- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/test_proxy_route.c` 3개, `tests/test_proxy_pool.c` 6개, `tests/integration_p3.sh` 42개 PASS. `make test` **410 assertions**, 전체 integration **182 PASS**, `make proxy-bin-test` 12 PASS, `make proxy-front-test` 14 PASS (총 **208 PASS**), `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/test_proxy_route.c` 3개, `tests/test_proxy_pool.c` 6개, `tests/integration_p3.sh` 42개 PASS. `make test` **410 assertions**, 전체 integration **182 PASS**, `make proxy-bin-test` 12 PASS, `make proxy-front-test` 15 PASS (총 **209 PASS**), `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
 - **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205/HEAD/204/304 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용, slow request body 408, upstream 상한 503.
 - **알려진 한계**:
   - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.

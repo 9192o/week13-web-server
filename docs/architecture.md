@@ -21,7 +21,7 @@
 - 프록시 backend 연결은 **keep-alive pool**로 재사용한다.
 - 잘못된 설정은 시작 시 **fail-fast**로 거부한다.
 
-Phase 1의 `server.c` 연결 루프는 Phase 2에서 이벤트 루프로 대체됐고, Phase 3에서 프록시 코어가 `proxy_route.c` / `proxy_connection.c` / `proxy_relay.c`로 추가됐다.
+Phase 1의 `server.c` 연결 루프는 Phase 2에서 이벤트 루프로 대체됐고, Phase 3에서 프록시 코어가 `proxy_route.c` / `proxy_lifecycle.c` / `proxy_connection.c` / `proxy_relay.c`로 추가됐다.
 
 ## 2. 실행 모델
 
@@ -100,7 +100,8 @@ main_proxy ────→ proxy_server ──┘     │
 | `cgi/cgi.c` / `cgi/cgi_task.c` | CGI 실행과 결과 변환 |
 | `cgi/task_pool.c` | CGI worker queue와 completion fd |
 | `proxy/proxy_route.c` | route/backend 선택, DNS, health |
-| `proxy/proxy_connection.c` | 프록시 연결 수명주기/이벤트 |
+| `proxy/proxy_lifecycle.c` | 프록시 연결 수명주기, free/reap, shutdown |
+| `proxy/proxy_connection.c` | 프록시 연결/이벤트 상태 머신 |
 | `proxy/proxy_relay.c` | 요청/응답 body 중계 |
 | `proxy/proxy_conn.h` | 내부 `proxy_conn_t`/route/state/body 타입 |
 | `proxy/proxy_wire.c` | 요청/응답 헤더 직렬화, hop-by-hop 제거 |
@@ -223,7 +224,8 @@ completion fd
 | `proxy_backend_t` | host/port, resolved sockaddr, `down_until_ms`, idle pool |
 | `proxy_conn_t` | 요청 하나의 프록시 상태와 buffer |
 | `proxy_idle_t` | backend별 idle upstream fd |
-| `proxy_connection.c` | 프록시 연결 수명주기, 상태 전이 |
+| `proxy_lifecycle.c` | 연결 수명주기, free/reap, shutdown |
+| `proxy_connection.c` | 연결/이벤트 상태 머신 |
 | `proxy_relay.c` | 요청/응답 body relay |
 | `proxy_wire.c` | 요청/응답 헤더 직렬화 |
 | `proxy_pool.c` | idle fd 획득/반납/sweep |
@@ -247,10 +249,10 @@ proxy_conn_t
 └─ tried_mask
 ```
 
-- `req_out`, `resp_out`, `resp_hdr`는 동적 할당이며 `proxy_connection.c`의 `proxy_reap()`에서 해제된다.
+- `req_out`, `resp_out`, `resp_hdr`는 동적 할당이며 `proxy_lifecycle.c`의 `proxy_reap()`에서 해제된다.
 - `c2u`, `u2c`는 `proxy_conn_t`에 내장된 고정 크기 buffer다.
 - `route`/`backend`는 전역 route table을 가리키며 `proxy_conn_t`가 소유하지 않는다.
-- `proxy_free_struct()`는 `proxy_connection.c`에서 즉시 free하지 않고 `dead` 표시 후 `g_dead`에 넣는다. 실제 free는 이벤트 배치가 끝난 뒤 `proxy_reap()`가 한다.
+- `proxy_free_struct()`는 `proxy_lifecycle.c`에서 즉시 free하지 않고 `dead` 표시 후 `g_dead`에 넣는다. 실제 free는 이벤트 배치가 끝난 뒤 `proxy_reap()`가 한다.
 
 ### 8.3 상태 전이
 
@@ -362,7 +364,7 @@ config_init
 | backend keep-alive pool | TCP handshake 감소 | stale 검사, idle timeout, pool 크기 관리 |
 | 시작 시 DNS resolve | 요청 경로 단순 | DNS 변경에 재시작 필요 |
 | passive health | 구현 단순 | 죽은 backend를 매 요청 재시도할 수 있음 |
-| 프록시 통합 | 정적/CGI와 한 프로세스 | `proxy_connection.c`/`proxy_relay.c`/`proxy_pool.c`가 커지고 상태 머신 결합 |
+| 프록시 통합 | 정적/CGI와 한 프로세스 | `proxy_lifecycle.c`/`proxy_connection.c`/`proxy_relay.c`/`proxy_pool.c`가 커지고 상태 머신 결합 |
 
 ## 13. 더 찾아보기
 

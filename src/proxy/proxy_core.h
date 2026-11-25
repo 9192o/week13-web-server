@@ -18,7 +18,12 @@ proxy_route_t *proxy_route_at(int index);
 proxy_backend_t *proxy_select_backend(proxy_route_t *r, uint32_t skip_mask,
                                        int *out_index);
 
-/* Connection lifecycle (proxy_connection.c), used by the relay code. */
+/* Connection lifecycle (proxy_connection.c / proxy_lifecycle.c). */
+int proxy_set_events(conn_t *c, int fd, uint32_t events, void *ptr,
+                     int *in_loop);
+void proxy_list_add(proxy_conn_t *p);
+proxy_conn_t *proxy_active_head(void);
+int proxy_active_count(void);
 void proxy_update_events(proxy_conn_t *p);
 void proxy_close_upstream(proxy_conn_t *p);
 void proxy_fail(proxy_conn_t *p, int status);
