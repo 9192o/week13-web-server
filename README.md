@@ -331,7 +331,7 @@ make proxy-load        # 프록시 부하 테스트 (ab 필요)
 ## 문서
 
 - [함수 흐름](docs/function_flow.md)
-- [Phase 1 아키텍처](docs/architecture.md)
+- [아키텍처](docs/architecture.md)
 - [Phase 1 요구사항](docs/phase1-requirements.md)
 - [Phase 2 설계](docs/phase2-design.md)
 - [Phase 3 설계](docs/phase3-design.md)

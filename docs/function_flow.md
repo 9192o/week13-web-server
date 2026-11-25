@@ -2,7 +2,7 @@
 
 > 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
 > Phase 3 프록시는 `src/proxy.c`가 담당하고, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
-> 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 역사 문서는 [architecture.md](architecture.md), [function_reference.md](function_reference.md)에 남아 있다.
+> 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 함수 레퍼런스는 [function_reference.md](function_reference.md)에 남아 있다.
 
 이 문서는 “어떤 함수가 어떤 순서로 호출되는가”를 따라간다. 함수별 세부 구현은 각 소스와 [phase3-design.md](phase3-design.md)를 본다.
 
