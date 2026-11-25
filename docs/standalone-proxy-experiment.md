@@ -4,14 +4,15 @@
 "통합 서버에서 프록시만 분리하면 무엇이 남고 무엇이 필요한가"를 확인하기 위한
 브랜치입니다.
 
-실험은 두 단계로 진행했습니다.
+실험은 두 단계로 진행했습니다. 두 단계 모두 현재
+`ldc-standalone-proxy` 브랜치에 들어 있습니다.
 
-1. `exp/standalone-proxy` — `server_ev.c`의 프록시 관련 부분을 복사해
-   `reverse-proxy` 바이너리를 만든 단계
-2. `exp/shared-conn` — 연결 수명주기를 `conn_common.c`로 뽑아
-   `server`와 `reverse-proxy`가 **같은 코드**를 쓰도록 바꾼 단계
+1. 1차 — `server_ev.c`의 프록시 관련 부분을 복사해 `reverse-proxy`
+   바이너리를 만든 단계
+2. 2차 — 연결 수명주기를 `conn_common.c`로 뽑아 `server`와
+   `reverse-proxy`가 **같은 코드**를 쓰도록 바꾼 단계
 
-## 최종 결과 (exp/shared-conn)
+## 최종 결과 (ldc-standalone-proxy)
 
 - 새 실행 파일: `reverse-proxy`
 - 새 파일:
