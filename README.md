@@ -27,7 +27,7 @@
 ### 🐳 개발 환경
 
 - **Linux/amd64 Docker** 환경에서 개발했습니다.
-- 개발 이미지에는 GCC, Make, Python 3, curl, Valgrind가 들어있습니다.
+- 개발 이미지에는 GCC, clang/libFuzzer, Make, Python 3, curl, Valgrind가 들어있습니다.
 - WSL에서는 `dev.sh`가 `docker.exe`를 사용하여 작동합니다.
 
 ```sh
@@ -253,6 +253,21 @@ make -B test test-shutdown test-epoll test-keepalive test-proxy test-cgi
 실제 소켓으로 정적 GET/HEAD, 바이너리 echo, 타임아웃, 정상 종료, 동시 연결, 재사용·파이프라인을 검사한다.
 프록시는 별도 프로세스로 띄워 양쪽 연결의 독립적 재사용, 접속 장애 시 대체 경로,
 전송한 POST의 미재시도를 확인한다. CGI는 바이너리 요청과 느린 자식 처리 중 정적 응답, 마감과 자식 회수를 확인한다.
+
+#### Fuzz 테스트
+
+`tests/fuzz_http.c`는 HTTP 요청/헤더/본문 파서와 프록시 응답 헤더 파서를
+libFuzzer로 검사한다. `tests/fuzz_corpus/`의 seed를 시작점으로 사용하며,
+생성된 입력은 `fuzz_work/`에만 쓰고 커밋하지 않는다.
+
+```sh
+make fuzz FUZZ_SECONDS=600
+```
+
+`clang`의 `-fsanitize=fuzzer,address,undefined`를 사용하므로 개발 이미지에
+`clang`과 libFuzzer runtime이 포함되어 있다. Fuzz는 네트워크·파일 시스템이 아닌
+파서 robustness 확인이며, 전체 서버 동작이나 커버리지를 보증하지 않는다.
+실행 결과와 seed 목록은 [Fuzzing](docs/FUZZING.md)에 정리했다.
 
 #### 부하 테스트
 

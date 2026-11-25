@@ -3,12 +3,15 @@ FROM debian:trixie-20261104-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        clang \
         clang-format \
         curl \
         gcc \
         gdb \
         git \
         libc6-dev \
+        libclang-rt-19-dev \
+        libfuzzer-19-dev \
         make \
         python3 \
         strace \
