@@ -13,6 +13,11 @@ EV_SERVER_SRCS := src/main_ev.c src/config.c src/config_file.c src/server_ev.c s
 EV_SERVER_OBJS := $(EV_SERVER_SRCS:.c=.o)
 EV_SERVER_BIN  := server_ev
 
+# Standalone proxy-only binary: same proxy core, no static/CGI/task pool.
+PROXY_SERVER_SRCS := src/main_proxy.c src/config.c src/config_file.c src/proxy_server.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c $(EVENT_SRCS)
+PROXY_SERVER_OBJS := $(PROXY_SERVER_SRCS:.c=.o)
+PROXY_SERVER_BIN  := reverse-proxy
+
 # Phase 2 merged: the final server is the event-loop/task-pool server.
 SERVER_SRCS := $(EV_SERVER_SRCS)
 SERVER_OBJS := $(EV_SERVER_OBJS)
@@ -28,15 +33,15 @@ TEST_BIN  := run_tests
 TEST_SUPPORT_SRCS := src/http_request.c src/http_response.c src/http_upstream.c src/chunked.c src/config.c src/config_file.c src/util.c src/logger.c src/access_log.c src/static_file.c src/task_pool.c $(EVENT_SRCS)
 TEST_SUPPORT_OBJS := $(TEST_SUPPORT_SRCS:.c=.o)
 
-DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)
+DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(PROXY_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_SUPPORT_OBJS:.o=.d)
 -include $(DEPS)
 
 SAN_CFLAGS := -std=c11 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -Wpedantic -g -MMD -MP -pthread -fsanitize=address,undefined -fno-omit-frame-pointer
 SAN_LDFLAGS := -fsanitize=address,undefined -pthread
 
-.PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 proxy-load shutdown-test sanitize fdtest load linux-test clean
+.PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 proxy-load proxy-bin-test shutdown-test sanitize fdtest load linux-test clean
 
-all: $(SERVER_BIN) $(EV_SERVER_BIN) cgi
+all: $(SERVER_BIN) $(EV_SERVER_BIN) $(PROXY_SERVER_BIN) cgi
 
 backend: $(BACKEND_BIN)
 
@@ -53,6 +58,9 @@ $(SERVER_BIN): $(SERVER_OBJS)
 
 $(EV_SERVER_BIN): $(EV_SERVER_OBJS)
 	$(CC) $(CFLAGS) $(EV_SERVER_OBJS) -o $@ $(LDFLAGS)
+
+$(PROXY_SERVER_BIN): $(PROXY_SERVER_OBJS)
+	$(CC) $(CFLAGS) $(PROXY_SERVER_OBJS) -o $@ $(LDFLAGS)
 
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -81,6 +89,9 @@ integration-p3: $(SERVER_BIN) backend
 proxy-load: $(SERVER_BIN) backend
 	sh tests/load_proxy.sh
 
+proxy-bin-test: $(PROXY_SERVER_BIN) backend
+	sh tests/integration_proxy_bin.sh
+
 shutdown-test: $(SERVER_BIN) cgi
 	sh tests/shutdown.sh
 
@@ -101,4 +112,4 @@ linux-test:
 		sh -c "apt-get update && apt-get install -y curl netcat-openbsd apache2-utils && make test && make integration && make integration-s1 && make integration-s2 && make integration-p3 && make proxy-load && make shutdown-test"
 
 clean:
-	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(CGI_BINS) $(BACKEND_BIN) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o src/main.o src/server.o src/main.d src/server.d
+	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(PROXY_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(PROXY_SERVER_BIN) $(CGI_BINS) $(BACKEND_BIN) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o src/main.o src/server.o src/main.d src/server.d

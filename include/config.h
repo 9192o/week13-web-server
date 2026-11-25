@@ -47,6 +47,7 @@ typedef struct {
     int port;
     char docroot[PATH_MAX];
     char cgi_dir[PATH_MAX];
+    int proxy_only; /* standalone reverse-proxy: no static files, no CGI */
 
     size_t max_uri;
     size_t max_header_bytes;

@@ -237,6 +237,12 @@ int config_validate(const config_t *cfg) {
             fprintf(stderr, "invalid route type: %s\n", r->prefix);
             return -1;
         }
+        if (cfg->proxy_only && r->type != ROUTE_PROXY) {
+            fprintf(stderr,
+                    "proxy-only server cannot serve static route: %s\n",
+                    r->prefix);
+            return -1;
+        }
         if (r->backend_count < 0 || r->backend_count > MAX_BACKENDS) {
             fprintf(stderr, "invalid backend count: %s\n", r->prefix);
             return -1;
@@ -266,6 +272,14 @@ int config_validate(const config_t *cfg) {
     if (cfg->max_upstreams < 1 || cfg->max_upstreams > 65536) {
         fprintf(stderr, "invalid max upstreams: %d\n", cfg->max_upstreams);
         return -1;
+    }
+
+    if (cfg->proxy_only) {
+        if (cfg->route_count == 0) {
+            fprintf(stderr, "proxy-only server needs at least one route\n");
+            return -1;
+        }
+        return 0;
     }
 
     struct stat st;

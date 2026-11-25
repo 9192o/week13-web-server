@@ -3,6 +3,7 @@
 *.dSYM/
 server
 server_ev
+reverse-proxy
 run_tests
 tests/backend
 cgi-bin/echo
