@@ -1,6 +1,8 @@
 CC      ?= cc
 CFLAGS  ?= -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -O2 -g
-CPPFLAGS = -Iinclude
+# realpath 는 XSI 함수라 _POSIX_C_SOURCE 만으로는 선언되지 않는다 (GCC 14 는 암묵 선언을 오류로 처리).
+# CFLAGS 를 통째로 바꾸는 빌드(asan, 팀 공통 부하 빌드 등)에도 남도록 CPPFLAGS 에 둔다.
+CPPFLAGS = -Iinclude -D_XOPEN_SOURCE=700
 # 워커 스레드 풀 (컴파일과 링크 모두). CFLAGS 를 통째로 바꾸는 asan/ftest 빌드에도 붙도록 따로 둔다.
 PTHREAD  = -pthread
 
