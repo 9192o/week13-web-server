@@ -681,7 +681,7 @@ Phase 2 drain을 확장한다.
   - connect/response/body timeout, 502/504. client request body timeout은 408.
   - client keep-alive, 1MB body, backpressure.
   - `strip_prefix 1` route, `max_upstreams` 상한(503 + `Retry-After`), upstream reason phrase/Trailer 보존.
-- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/integration_p3.sh` 41개 PASS. `make test` **358 assertions**, 전체 integration **181 PASS**, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/integration_p3.sh` 42개 PASS. `make test` **358 assertions**, 전체 integration **182 PASS**, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
 - **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205/HEAD/204/304 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용, slow request body 408, upstream 상한 503.
 - **알려진 한계**:
   - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.

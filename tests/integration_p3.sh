@@ -452,6 +452,52 @@ kill -INT "$LPID" 2>/dev/null || true
 wait "$LPID" 2>/dev/null || true
 LPID=""
 
+# Pool idle timeout: an idle upstream must be closed and replaced.
+ICONF="$TMP/idle.conf"
+cat >"$ICONF" <<EOF
+listen $LPORT
+docroot ./www
+pool max_idle 4
+pool idle_timeout 1
+timeout connect 1
+timeout response 3
+timeout body 2
+[route /api/]
+type proxy
+backend 127.0.0.1:$B1PORT
+[route /]
+type static
+EOF
+./server --config "$ICONF" >"$TMP/idle.log" 2>&1 &
+LPID=$!
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$LPORT/" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+idle_before=$(curl -sS --max-time 3 "http://127.0.0.1:$B1PORT/stats" 2>/dev/null || true)
+idle_before=$(printf '%s' "$idle_before" |
+    sed -n 's/.*connections=\([0-9][0-9]*\).*/\1/p')
+curl -sS --max-time 3 -o /dev/null "http://127.0.0.1:$LPORT/api/id" 2>/dev/null || true
+sleep 2.2
+curl -sS --max-time 3 -o /dev/null "http://127.0.0.1:$LPORT/api/id" 2>/dev/null || true
+idle_after=$(curl -sS --max-time 3 "http://127.0.0.1:$B1PORT/stats" 2>/dev/null || true)
+idle_after=$(printf '%s' "$idle_after" |
+    sed -n 's/.*connections=\([0-9][0-9]*\).*/\1/p')
+if [ -n "$idle_before" ] && [ -n "$idle_after" ] &&
+   [ "$((idle_after - idle_before))" -ge 2 ]; then
+    echo "PASS: pool idle timeout replaces connection"
+else
+    echo "FAIL: pool idle timeout (before=$idle_before after=$idle_after)"
+    fail=1
+fi
+kill -INT "$LPID" 2>/dev/null || true
+wait "$LPID" 2>/dev/null || true
+LPID=""
+
 # Failover: one backend down, the other must serve the request.
 kill -TERM "$BPID1" 2>/dev/null || true
 wait "$BPID1" 2>/dev/null || true
