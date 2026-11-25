@@ -1,6 +1,6 @@
 # 함수 레퍼런스 — Phase 1
 
-> **Phase 2 merged:** 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 구조는 [phase2-design.md](phase2-design.md)를 본다.
+> **Phase 3 기준:** 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 실행 흐름은 [function_flow.md](function_flow.md), 구조는 [README](../README.md), 프록시는 [phase3-design.md](phase3-design.md)를 본다.
 
 `function_flow.md`가 **서버가 어떻게 돌아가는지 읽는 가이드**라면, 이 문서는 **함수 하나하나를 찾아보는 사전**이다.
 각 항목은 `파일:라인 · 반환형 · 호출자`로 시작하고, 무엇을 하는지와 왜 그렇게 했는지를 불릿으로 적었다.

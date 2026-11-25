@@ -1,463 +1,612 @@
-# 함수 흐름 — Phase 1
+# 함수 흐름 — Phase 3
 
-> **Phase 2 merged:** 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반 이벤트 루프/작업 풀 서버다. 이 문서는 Phase 1 구현을 역사적 맥락으로 설명한다. 현재 구조는 [phase2-design.md](phase2-design.md)를 본다.
+> 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
+> Phase 3 프록시는 `src/proxy.c`가 담당하고, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
+> 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 역사 문서는 [architecture.md](architecture.md), [function_reference.md](function_reference.md)에 남아 있다.
 
-이 문서는 서버가 **어떤 순서로 돌아가는지** 읽는 가이드다. `main`에서 시작해 `accept`, 연결 처리, keep-alive까지 따라간다.
-함수 하나하나의 상세 설명은 [function_reference.md](function_reference.md)에 모아 두었다.
-
-- 여기서는 "왜 이 순서인가", "이 상태가 무엇을 뜻하는가"를 중심으로 본다.
-- 함수별 `파일:라인`, 반환형, 호출자는 레퍼런스에서 찾는다.
-- `docs/architecture.md`가 모듈 구조를, 이 문서가 실행 흐름을 설명한다.
+이 문서는 “어떤 함수가 어떤 순서로 호출되는가”를 따라간다. 함수별 세부 구현은 각 소스와 [phase3-design.md](phase3-design.md)를 본다.
 
 ---
 
 ## 1. 전체 호출 흐름
 
+### 시작
+
 ```text
-main
+main                         src/main_ev.c
 ├─ config_init
 ├─ config_parse_cli
-│   ├─ copy_path
-│   ├─ parse_int_arg
-│   └─ parse_size_arg
+│  ├─ config_parse_file      (--config가 있을 때)
+│  ├─ parse_int_arg
+│  └─ parse_size_arg
 ├─ config_validate
-└─ server_run
-    ├─ setup_signals
-    │   └─ handle_signal                (SIGINT/SIGTERM 수신 시)
-    ├─ create_listen_socket
-    └─ while (!g_stop)
-        ├─ accept
-        └─ handle_connection
-            ├─ has_header_end
-            ├─ set_send_timeout
-            ├─ poll (deadline)
-            ├─ http_request_init
-            ├─ http_request_parse_buffer
-            │   ├─ find_crlf
-            │   ├─ parse_request_line
-            │   │   ├─ parse_method
-            │   │   └─ parse_version
-            │   ├─ parse_headers
-            │   │   ├─ trim_ows
-            │   │   ├─ ci_equal / ci_contains
-            │   │   └─ parse_content_length
-            │   └─ parse_uri
-            │       ├─ decode_uri
-            │       │   └─ hexval
-            │       └─ normalize_path
-            ├─ http_request_read_body
-            │   └─ readn_deadline
-            ├─ 라우팅
-            │   ├─ http_response_send_options
-            │   ├─ cgi_handle
-            │   │   ├─ path_within_root
-            │   │   ├─ pipe / tmpfile / fork
-            │   │   ├─ build_cgi_env
-            │   │   ├─ poll
-            │   │   └─ send_cgi_response
-            │   └─ static_file_handle
-            │       ├─ has_dotfile_segment
-            │       ├─ status_from_errno
-            │       ├─ path_within_root
-            │       ├─ http_date_format / http_date_parse
-            │       ├─ http_request_get_header
-            │       ├─ parse_range_header
-            │       │   └─ parse_size_value
-            │       ├─ prepare_range_error
-            │       ├─ http_response_send_headers
-            │       └─ send_file
-            ├─ http_request_free
-            └─ close(connfd)
+└─ server_ev_run             src/server_ev.c
+   ├─ setup_signals
+   ├─ create_listen_socket
+   ├─ ev_create_backend
+   ├─ ev_add(listenfd)
+   ├─ task_pool_create
+   ├─ ev_add(task completion fd)
+   ├─ ev_add(signal pipe)
+   ├─ logger_start
+   ├─ proxy_init
+   └─ event loop
 ```
 
-### 요청 하나의 상태 흐름
+### 요청 하나
 
 ```text
-accept
-  → 헤더 끝(\r\n\r\n)까지 읽기
-  → 헤더 파싱 (실패 시 400/414/431/505)
-  → 본문 읽기 (실패 시 408/413)
-  → 라우팅 (OPTIONS / CGI / 정적)
-  → 응답 전송
-  → keep-alive면 pending 바이트 정리 후 반복
-  → 아니면 close
+ev_wait
+└─ accept_new
+   └─ conn_new
+      └─ ev_add(client fd, EV_READ)
+
+EV_READ
+└─ on_readable
+   ├─ 헤더 읽기 루프
+   └─ process_buffer
+      ├─ proxy route  → proxy_start
+      ├─ /cgi-bin/    → submit_cgi → task pool
+      └─ 그 외        → static_file_prepare → conn_build_static
+
+EV_WRITE
+└─ on_writable
+   ├─ c->out 전송
+   ├─ 파일 body 전송
+   └─ keep-alive면 ST_READ, 아니면 close
 ```
+
+프록시 요청은 client fd가 `ST_PROXY`가 되고, 이후 client 이벤트는 `proxy_handle_client_event()`가, upstream 이벤트는 `proxy_handle_upstream_event()`가 처리한다.
 
 ---
 
-## 2. 모듈 지도 — 나머지 .c는 어디에 쓰이나
-
-1절이 **함수 단위** 호출 그래프라면, 여기는 **파일 단위** 지도다.
-`src/*.c` 7개는 전부 하나의 `server` 실행 파일로 링크된다 (`Makefile:7`).
-`main.c`와 `server.c`만 "흐름"을 알고, 나머지는 `server.c`가 필요할 때 부르는 부품이다.
-
-### 요청 시간축에서의 위치
-
-```text
-[시작 전]   config.c        ← main만 사용
-[accept]
-[요청 읽기]  http_request.c  ← server가 호출
-[라우팅]     static_file.c   ← server가 호출
-             cgi.c           ← server가 호출
-[응답]       http_response.c ← server + 두 핸들러가 호출
-[전 구간]    util.c          ← 거의 모든 모듈이 호출
-```
-
-### 모듈 의존 관계
-
-```text
-                    main.c
-                   ╱      ╲
-             config.c      server.c ──────────────┐
-                              │  │  │              │
-              ┌───────────────┘  │  └──────────┐   │
-              ▼                  ▼             ▼   ▼
-       http_request.c     static_file.c      cgi.c │
-              │                  │             │   │
-              └──────────┬───────┴─────────────┘   │
-                         ▼                         │
-                  http_response.c ◄────────────────┘
-                         │
-                         ▼
-                      util.c
-```
-
-- 화살표는 include/호출 방향이다.
-- **순환 의존이 없다.** `util → http_response → static_file → server` 방향으로만 흐르는 DAG라, 모듈을 따로 테스트할 수 있다.
-- `server.c`는 `http_response.c`도 직접 부른다. `OPTIONS` 응답과 에러 응답은 핸들러를 거치지 않기 때문이다.
-
-### 모듈별 역할
-
-| 파일 | 누가 부르나 | 역할 | 없으면 |
-|---|---|---|---|
-| `config.c` | `main` | CLI/기본값/검증 | 포트·docroot를 못 정함 |
-| `http_request.c` | `server` | 바이트 → 요청 구조체 | 헤더/URI 파싱 불가 |
-| `http_response.c` | `server`, `static_file`, `cgi` | 상태·헤더·본문 전송 | 응답 조립이 곳곳에 중복 |
-| `static_file.c` | `server` | 정적 파일 서빙 | 파일 서빙 불가 |
-| `cgi.c` | `server` | 외부 프로그램 실행 | 동적 처리 불가 |
-| `util.c` | 거의 모든 모듈 | I/O·날짜·MIME·로그 | 부분 읽기/쓰기 버그 |
-
-#### `config.c` — 시작할 때만
-
-- **호출자는 `main.c`뿐이다.** `server.c`는 `config_t`를 받기만 하고 config 함수는 부르지 않는다.
-- `config_init` → `config_parse_cli` → `config_validate`가 프로세스 수명 중 딱 한 번 실행된다.
-- 서버가 뜬 뒤에는 이 파일의 코드는 다시 실행되지 않는다. 그래서 "설정"과 "구동"이 분리된다.
-- Phase 3에서 설정 파일이 생기면 이 파일에 함수가 하나 늘고, `server.c`는 건드리지 않아도 된다.
-
-#### `http_request.c` — 요청이 도착할 때마다
-
-- **호출자는 `server.c`의 `handle_connection` 하나뿐이다.**
-- 입력은 `buf`(바이트), `len`, `cfg`; 출력은 `http_request_t`다.
-- 이 구조체가 이후 모든 모듈의 공용 언어다. `static_file.c`는 `req.method/path/query`를, `cgi.c`는 `req.method/query/body`를 읽는다.
-- "HTTP를 아는 지식"이 이 파일에 몰려 있다. 정적 파일 핸들러는 HTTP 헤더를 직접 파싱하지 않는다.
-- Phase 3 프록시에서도 이 파서를 재사용한다. 요청을 파싱해 백엔드로 다시 보내야 하기 때문이다.
-
-#### `http_response.c` — 응답을 내보낼 때마다
-
-- **호출자는 세 곳**: `server.c`(OPTIONS/에러), `static_file.c`(파일 응답/304/301/416), `cgi.c`(CGI 출력 변환).
-- "HTTP 응답을 만드는 지식"이 여기 몰려 있다. 상태 라인 형식, reason phrase, `Content-Length`, `Connection` 헤더.
-- 핸들러는 상태 코드와 헤더 목록만 정하고, 바이트 조립은 이 모듈에 맡긴다.
-- `http_status_reason`이 여기 있는 이유도 같다. 상태 코드 → 문자열 변환이 한곳에 있어야 일관성이 깨지지 않는다.
-
-#### `static_file.c` — 정적 라우팅을 탔을 때
-
-- **호출자는 `server.c` 라우팅의 `else` 가지 하나다.**
-- `req.path`를 docroot 기준 파일 경로로 바꾸고, dotfile/symlink/탈출 검사를 하고, `open`/`stat`/스트리밍을 한다.
-- "파일 시스템을 아는 지식"이 여기 몰려 있다. `http_request.c`는 경로 정규화까지만 하고 실제 파일 존재는 모른다.
-- 이 파일이 없으면 CGI만 있는 서버가 된다.
-
-#### `cgi.c` — `/cgi-bin/` 라우팅을 탔을 때
-
-- **호출자는 `server.c` 라우팅의 `else if` 가지 하나다.**
-- `fork`/`execve`/`pipe`/`poll`/`waitpid` — "프로세스를 다루는 지식"이 여기 몰려 있다.
-- `http_request.c`가 만든 구조체를 환경변수와 stdin으로 풀어주는 번역기다.
-- 이 파일이 없으면 동적 요청은 404가 된다. 라우팅 자체가 `cgi_dir`이 비어 있으면 꺼지기 때문이다.
-
-#### `util.c` — 전 구간에서 조금씩
-
-- **호출자는 거의 모든 모듈**이다. `server.c`(로그/타임아웃), `http_request.c`(`readn_deadline`), `http_response.c`(`writen`/`write_body`), `static_file.c`(MIME/날짜/`write_body`), `cgi.c`(`write_body`).
-- "여러 모듈이 똑같이 필요로 하는 바닥 지식"이다. 부분 읽기/쓰기 루프, IMF-fixdate 변환, 확장자→MIME.
-- 이게 없으면 `read`/`write` 루프가 모듈마다 복사되고, 한 곳의 버그를 고쳐도 다른 곳에 남는다.
-- `readn_deadline`/`writen`/`write_body`가 특히 중요하다. 소켓은 "한 번에 다 읽고 쓰는" 것을 보장하지 않는다.
-
-#### `main.c` — 24줄짜리 지휘자
-
-- **아무 일도 직접 하지 않는다.** 설정 3단계와 `server_run`을 순서대로 엮기만 한다.
-- 이 파일이 얇은 덕분에 `server.c`를 테스트하거나 Phase 2에서 바꾸기가 쉽다.
-
-### 실행 파일 경계
-
-`src/` 밖의 `.c`는 같은 바이너리에 들어가지 않는다.
-
-| 위치 | 실행 파일 | 링크 시점 |
-|---|---|---|
-| `src/*.c` | `server` 하나 | 빌드할 때 전부 링크 |
-| `cgi-bin/echo.c`, `sleep.c`, `crash.c` | 각각 별도 실행 파일 | 빌드할 때 각각 컴파일 |
-| `tests/*.c` | `run_tests` 하나 | 테스트할 때만 링크 |
-
-- **`cgi-bin/*.c`는 `server`에 링크되지 않는다.** `fork` + `execve`로 런타임에 별도 프로세스로 실행된다. 그래서 `crash`가 죽어도 서버는 살아남는다. 프로세스 경계가 격리벽이다.
-- **`tests/*.c`는 서버와 다른 바이너리다.** `Makefile:17`을 보면 테스트 지원 소스가 `http_request.c`, `http_response.c`, `config.c`, `util.c` 네 개뿐이다. 즉 `static_file.c`, `cgi.c`, `server.c`는 단위 테스트 대상이 아니고 통합 테스트로만 검증된다.
-- **`include/*.h`는 계약서다.** 특히 `http.h`가 요청/응답 구조체와 상태 코드를 정의해 파서·핸들러·응답 빌더가 같은 언어를 쓰게 한다.
-
-### Phase 2에서 의미
-
-- 연결 루프와 연결별 상태(`pending`, `requests`)가 `server.c`에만 있다.
-- `http_request_t`는 요청마다 새로 만들어지고 전역 상태가 없다. 유일한 전역은 `g_stop`(시그널)과 `cfg`(읽기 전용)뿐이다.
-- 그래서 스레드 풀이든 `poll` 루프든 **핸들러는 그대로 재사용**할 수 있다. 동시성 작업은 사실상 `server.c` 하나에 갇혀 있다.
-
----
-
-## 3. 시작 흐름
+## 2. 시작 흐름
 
 ### `main()`
 
-`src/main.c:6` · `int` · 프로그램 진입점
+`src/main_ev.c`
 
-- **`config_t cfg`를 스택에 잡고 `config_init`으로 기본값을 채운다.** 초기화하지 않은 스택 쓰레기값이 서버 설정으로 쓰이는 사고를 막는다.
-- **`config_parse_cli`로 CLI를 반영한다.** 실패하면 usage를 stderr에 찍고 `1`로 종료한다.
-- **`config_validate`로 환경을 검사한다.** docroot/cgi_dir가 실제 디렉터리인지 확인하고, 실패하면 역시 종료한다.
-- **`server_run`만 실제로 서버를 띄운다.** 반환값이 `0`이면 `0`, 아니면 `1`을 프로세스 종료 코드로 돌려준다.
-- 즉 `main`은 **"설정 → 검증 → 구동" 세 단계를 순서대로 엮는 역할**만 하고, 로직은 각 모듈에 넘긴다.
+1. `config_init()`으로 기본값을 채운다.
+2. `config_parse_cli()`가 `--config` 파일을 먼저 읽고, 그다음 positional 인자와 CLI 옵션으로 덮어쓴다.
+3. `config_validate()`가 포트, timeout, route, docroot, CGI 디렉터리, `max_conns`, `max_upstreams`를 검증한다.
+4. `server_ev_run()`을 호출한다.
 
-### `config_init()`
-
-`src/config.c:10` · `void` · ← `main()`
-
-- **`memset(cfg, 0, sizeof *cfg)`로 구조체 전체를 0으로 민다.** 이게 없으면 `cgi_dir` 같은 char 배열에 임의의 바이트가 남아 엉뚱한 경로가 될 수 있다.
-- **포트 기본값 8080, docroot 기본값 `./www`, cgi_dir는 빈 문자열**로 둔다. 빈 cgi_dir는 "CGI 기능 꺼짐"을 뜻한다.
-- **D11 한계값을 넣는다.** URI 4096, 헤더 16384바이트, 헤더 100개, 본문 8MB.
-- **타임아웃/keep-alive 기본값을 넣는다.** 요청 20초, idle 10초, 최대 100요청.
-- 파일 시스템도, 소켓도 건드리지 않는다. **순수하게 메모리만 채우는 함수**다.
-
-### `copy_path()`
-
-`src/config.c:25` · `static int` · ← `config_parse_cli()`
-
-- **`snprintf`로 경로를 고정 크기 버퍼에 복사한다.** `strcpy`를 쓰면 긴 인자 하나로 스택 버퍼가 넘친다.
-- **`snprintf`의 반환값이 버퍼 크기 이상이면 `-1`.** 잘린 경로를 조용히 받아들이지 않는다. 잘린 docroot는 엉뚱한 디렉터리를 서빙하는 결과로 이어질 수 있다.
-- 성공 시 `0`.
-
-### `parse_int_arg()`
-
-`src/config.c:30` · `static int` · ← `config_parse_cli()`
-
-- **`strtol`로 정수를 파싱하고, `end == s`로 "숫자가 아예 없음"을 잡는다.**
-- **`*end != '\0'`로 뒤에 붙은 쓰레기를 잡는다.** `"8080abc"`를 8080으로 받아들이지 않는다.
-- **`errno`로 오버플로를 잡고, `min`/`max` 범위를 검사한다.**
-- `atoi`를 쓰지 않은 이유가 이 세 가지다. `atoi`는 실패를 알려주지 않는다.
-
-### `parse_size_arg()`
-
-`src/config.c:40` · `static int` · ← `config_parse_cli()`
-
-- **`strtoull`로 크기를 파싱한다.** 음수가 들어오면 `strtoull`이 감싸서 거대한 값이 되므로, `-1` 같은 입력은 범위 검사에서 걸린다.
-- **0을 거부한다.** "헤더 0바이트", "본문 0바이트" 같은 한계는 서버를 사실상 마비시킨다.
-- **`max`를 넘으면 `-1`.** `--max-uri`, `--max-header`는 기본값이 상한이라 **키울 수 없고 줄일 수만 있다.** `--max-body`만 1GiB까지 올릴 수 있다.
+설정 우선순위는 **CLI > 설정 파일 > 기본값**이다.
 
 ### `config_parse_cli()`
 
-`src/config.c:50` · `int` · ← `main()`
+`src/config.c`
 
-- **`argc < 3`이면 실패.** 포트와 docroot는 필수다.
-- **`argv[1]`은 포트(1~65535), `argv[2]`는 docroot.** 포트는 임시 변수에 받아 성공했을 때만 `cfg`에 쓴다.
-- **`cfg->cgi_dir[0] = '\0'`로 비운다.** "CLI에 cgi_dir가 있으면 그것만, 없으면 빈 값"이라는 규칙을 여기서 확정한다.
-- **`argv[3]`부터 루프를 돌며 `--timeout`, `--max-uri`, `--max-header`, `--max-body`, `--keepalive-idle`, `--keepalive-max`를 처리한다.**
-- **값은 `i++`로 건너뛰며 읽는다.** `i >= argc` 검사로 "값 없이 플래그만 있는 경우"를 잡는다.
-- **플래그가 아닌 첫 토큰은 cgi_dir로 흡수한다.** 그래서 `./server 8080 ./www --timeout 5 ./cgi-bin`처럼 순서를 섞어도 된다.
-- **미인식 토큰이 두 개 이상이면 실패.** 오타 난 플래그를 조용히 무시하지 않으려는 것이다.
-- 실패 시 `-1`, 성공 시 `0`. **어느 인자가 틀렸는지는 알려주지 않는다** (현재 한계).
+- `--config <file>`이 있으면 `config_parse_file()`을 먼저 호출한다.
+- 이후 argv를 다시 훑으면서 `--timeout`, `--max-uri`, `--max-header`, `--max-body`, `--keepalive-idle`, `--keepalive-max`, `--task-workers`, `--task-queue`, `--max-conns`, `--max-upstreams`를 적용한다.
+- `positional` 인자는 `<port> <docroot> [cgi_dir]` 순서다.
+- 설정 파일을 읽은 경우 positional 인자는 필수가 아니다.
 
-### `config_validate()`
+`config_parse_file()`은 `key value` 형식과 `[route <prefix>]`, `[global]` 섹션을 읽는다. 줄 번호를 붙여 fail-fast 한다.
 
-`src/config.c:110` · `int` · ← `main()`
+### `server_ev_run()`
 
-- **포트 범위를 한 번 더 검사한다.** `config_parse_cli`가 이미 했지만, 다른 경로로 `config_t`가 만들어질 수 있어 방어적으로 남긴다.
-- **`stat(cfg->docroot)`로 존재를 확인하고 `S_ISDIR`로 디렉터리인지 본다.** 파일을 docroot로 주면 실패한다.
-- **`cgi_dir`가 비어 있지 않을 때만 같은 검사를 한다.** 빈 값은 "CGI 없음"이라는 정상 상태다.
-- **실패하면 어떤 경로가 왜 문제인지 stderr에 찍는다.** 여기서만 사용자에게 친절한 에러가 나온다.
-- **소켓을 만들기 전에 실패하므로 정리할 자원이 없다.** 이게 "설정 단계와 구동 단계를 분리"한 실질적 이득이다.
+`src/server_ev.c`
 
----
+호출 순서:
 
-## 4. 연결 수락 흐름
+1. `setup_signals()`
+   - `SIGINT`/`SIGTERM` 핸들러 등록
+   - self-pipe 생성
+2. `create_listen_socket(cfg->port)`
+3. `ev_create_backend(getenv("EV_BACKEND"))`
+   - 기본값은 플랫폼별 epoll/kqueue/poll
+4. listen fd를 `EV_READ`로 등록
+5. `task_pool_create(cfg->task_workers, cfg->task_queue_size)`
+6. task pool completion fd와 signal pipe를 이벤트 루프에 등록
+7. `logger_start()`
+8. `proxy_init(cfg)`
+   - route/backend 복사
+   - backend hostname을 시작 시 1회 resolve
+   - pool/health 카운터 초기화
+9. 이벤트 루프 진입
 
-### `handle_signal()`
-
-`src/server.c:21` · `static void` · ← 시그널 수신 시
-
-- **첫 시그널은 `g_stop = 1`만 설정한다.** 시그널 핸들러 안에서는 `printf`, `malloc`, `close` 같은 함수를 부르면 안 된다(async-signal-safe가 아니다).
-- **두 번째 시그널은 `_exit(1)`로 즉시 종료한다.** `_exit`는 async-signal-safe라 핸들러에서 안전하게 쓸 수 있다. 정리 없이 빠지는 강제 종료다.
-- **`volatile sig_atomic_t`라 컴파일러가 최적화로 접근을 없애지 않는다.** 메인 루프가 이 값을 폴링한다.
-- 첫 시그널의 실제 종료는 핸들러가 아니라 `server_run`/`handle_connection`이 한다.
-
-### `setup_signals()`
-
-`src/server.c:28` · `static int` · ← `server_run()`
-
-- **SIGPIPE 무시**: 클라이언트가 응답 도중 끊겨도 서버가 죽지 않게 한다. `writen`이 `EPIPE`를 반환하고 호출자가 정리한다.
-- **SIGINT/SIGTERM 핸들러**: 첫 시그널은 `g_stop = 1`, 두 번째 시그널은 `_exit(1)`로 강제 종료한다.
-- **`sigaction`에 `SA_RESTART`를 주지 않아서 `accept`/`read`가 `EINTR`로 깰 수 있게 한다.** 이게 없으면 시그널을 받아도 `accept`가 재시작되어 루프가 `g_stop`을 확인하지 못할 수 있다.
-- 실패 시 `-1`, 성공 시 `0`.
-
-### `create_listen_socket()`
-
-`src/server.c:45` · `static int` · ← `server_run()`
-
-- **`socket(AF_INET, SOCK_STREAM, 0)`으로 TCP 소켓을 만든다.** IPv4 스트림 소켓.
-- **`FD_CLOEXEC`를 설정한다.** CGI 자식 프로세스가 `execve` 후에도 listenfd를 들고 있으면, 서버를 재시작해도 포트가 붙잡혀 있을 수 있다.
-- **`SO_REUSEADDR`를 켠다.** 서버를 껐다 켤 때 `TIME_WAIT` 상태의 연결 때문에 `bind`가 실패하는 것을 완화한다.
-- **`INADDR_ANY`에 바인딩한다.** 모든 인터페이스에서 접속을 받는다는 뜻이다.
-- **`listen(SOMAXCONN)`으로 백로그를 커널 최대치로 둔다.** 순간적으로 몰리는 연결을 커널 큐에 쌓아둔다.
-- 어느 단계든 실패하면 **열었던 fd를 닫고 `-1`을 반환한다.** 부분 실패에서 fd를 새지 않게 하는 패턴이다.
-
-### `server_run()`
-
-`src/server.c:230` · `int` · ← `main()`
-
-- **시그널을 먼저 등록하고 listen 소켓을 만든다.** 순서가 중요하다. 소켓을 만든 뒤 시그널을 등록하면 그 사이에 Ctrl-C가 들어와 기본 동작으로 죽을 수 있다.
-- **`while (!g_stop)`으로 `accept`를 반복한다.** Phase 1은 단일 스레드라 한 번에 연결 하나만 처리한다.
-- **종료 시 `handle_connection`은 진행 상태에 따라 중단하거나 응답을 마무리하고, `listenfd`는 그 뒤에 닫힌다.** 헤더/본문을 읽는 중이면 중단하고, 이미 파싱된 요청의 응답은 끝까지 보낸다. 그 사이 backlog에 들어온 연결은 RST될 수 있다 (Phase 2에서 개선).
-- **`EINTR`/`ECONNABORTED`는 `continue`.** 시그널이나 클라이언트의 연결 철회는 정상적인 사건이다.
-- **`EMFILE`이면 로그를 남기고 1초 쉰다.** fd가 고갈된 상태에서 바로 재시도하면 로그 폭풍과 CPU 낭비가 된다. 1초 쉬면 다른 연결이 정리될 시간이 생긴다.
-- **그 외 에러는 `break`.** listen 소켓 자체가 망가진 상황이라 루프를 돌 수 없다.
-- **`handle_connection`이 끝나면 반드시 `close(connfd)`.** keep-alive 루프가 내부에서 끝나든 에러로 끝나든 호출자 책임으로 통일했다.
-- 루프를 빠져나오면 **`listenfd`를 닫고 종료 로그를 남긴다.**
-
-### `server_request_stop()`
-
-`src/server.c:268` · `void` · 현재 미사용 (테스트/확장용 API)
-
-- **외부에서 `g_stop`을 세울 수 있게 열어둔 함수다.** 지금은 시그널 핸들러가 직접 세우므로 호출되는 곳이 없다.
-- Phase 2에서 워커를 정리하거나, 테스트에서 서버를 프로그램적으로 멈출 때 쓸 수 있다.
+`server`와 `server_ev`는 같은 `EV_SERVER_OBJS`를 링크한다. 즉 둘은 동일한 실행 코드다.
 
 ---
 
-## 5. 연결 처리 흐름 — `handle_connection()`
+## 3. 이벤트 루프
 
-`src/server.c:111` · `static void` · ← `server_run()`
-
-이 함수가 Phase 1의 심장이다. 한 연결에서 keep-alive 요청을 여러 개 처리한다.
-
-- **`peer_ip`를 문자열로 바꿔 로그와 CGI `REMOTE_ADDR`에 쓴다.** `inet_ntop` 실패 시 `"?"`.
-- **`set_send_timeout`으로 `SO_SNDTIMEO`을 건다.** 클라이언트가 응답을 안 읽어 송신 버퍼가 차도 `write`가 최대 `request_timeout_sec`까지만 기다린다.
-- **`char buf[16384]` 하나를 연결 내내 재사용한다.** 요청마다 malloc하지 않는다.
-- **`max_len`은 `cfg->max_header_bytes`와 버퍼 크기 중 작은 값.** CLI로 헤더 한계를 키워도 물리 버퍼를 넘을 수 없다.
-- **`pending`은 이전 요청 뒤에 남은 바이트 수.** 파이프라인/keep-alive에서 다음 요청이 이미 버퍼에 들어와 있을 수 있다.
-- **`requests`는 이 연결에서 처리한 요청 수.** `keepalive_max_requests`와 비교한다.
-
-### 헤더 읽기 루프
-
-- **`len = pending`으로 시작하고 `pending = 0`으로 비운다.** 남은 바이트를 이번 요청의 시작으로 삼는다.
-- **`has_header_end`로 `\r\n\r\n`을 찾을 때까지 읽는다.** 헤더 끝을 알아야 본문 시작 위치를 계산할 수 있다.
-- **타임아웃을 상황에 따라 고른다.**
-  - 첫 요청 대기(`len == 0 && requests == 0`) → `request_timeout_sec`
-  - keep-alive로 다음 요청 대기(`len == 0 && requests > 0`) → `keepalive_idle_sec`
-  - 요청이 일부 들어온 상태(`len > 0`) → 다시 `request_timeout_sec`
-- **`EINTR`이면 `g_stop`을 확인한다.** 종료 중이면 바로 return하고, 아니면 재시도한다. 시그널로 `read`가 깨진 것은 에러가 아니다.
-- **`EAGAIN`/`EWOULDBLOCK`은 poll deadline 만료다.**
-  - idle 대기 중이었으면 **응답 없이 조용히 close.** 클라이언트가 그냥 떠난 것과 같다.
-  - 요청 도중이었으면 **`408 Request Timeout`.**
-- **`read == 0`은 클라이언트가 닫은 것.** 그대로 return.
-- **헤더가 `max_len`까지 안 끝나면**: 버퍼가 가득 찼으면 `431`, 아니면 `400`. "너무 큼"과 "형식이 깨짐"을 구분한다.
-
-### `has_header_end()`
-
-`src/server.c:82` · `static int` · ← `handle_connection()`
-
-- **`buf[0..len)`에서 `\r\n\r\n` 4바이트를 찾는다.** 찾으면 `1`, 없으면 `0`.
-- **매 호출마다 처음부터 다시 훑는다.** "어디까지 스캔했는지"를 기억하지 않는 상태 없는 함수다.
-- **`strstr`/`memmem`을 쓰지 않는 이유**: `buf`는 NUL-terminated가 아니고(본문에 `\0`이 들어올 수 있다), `memmem`은 POSIX 표준이 아니다. 길이를 아는 수동 루프가 가장 안전하고 이식성이 좋다.
-- **비용**: 호출 한 번이 `O(len)`. 요청이 `k`번의 `read`로 도착하면 `O(k · n)`, 최악(1바이트씩 도착)이면 `O(n²)`. `n`은 최대 16KB라 실용 범위다.
-- **최적화 아이디어**: 새로 읽은 바이트가 경계를 완성할 수 있는 겹침은 **최대 3바이트**다. 이전 길이에서 3을 뺀 지점부터 스캔하면 전체 `O(n)`이 된다.
+`server_ev_run()`의 메인 루프는 대략 다음과 같다.
 
 ```c
-/* 개념 코드: 이전 len에서 3바이트 겹쳐서 스캔 */
-size_t start = (old_len >= 3) ? old_len - 3 : 0;
-for (size_t i = start; i + 3 < len; i++) {
-    if (buf[i] == '\r' && buf[i+1] == '\n' &&
-        buf[i+2] == '\r' && buf[i+3] == '\n')
-        return 1;
+while (!g_stop || !draining || head != NULL) {
+    if (g_stop && !draining) {
+        draining = 1;
+        begin_drain(...);
+    }
+
+    int timeout = next_timeout(head);
+    int n = ev_wait(loop, events, 64, timeout);
+
+    for (int i = 0; i < n; i++) {
+        if (fd == listenfd)             accept_new();
+        else if (fd == completion_fd)   drain_task_completions();
+        else if (fd == signal_pipe)     drain_signal_pipe();
+        else if (src->kind == EV_SRC_UPSTREAM)
+            proxy_handle_upstream_event(src, events);
+        else if (c->state == ST_PROXY)
+            proxy_handle_client_event(c, events);
+        else {
+            on_readable(...);           // EV_READ
+            on_writable(...);           // EV_WRITE
+        }
+    }
+
+    conn_sweep(&head, &count);
+    expire_timers(loop, head, cfg);
+    proxy_sweep();
+    conn_sweep(&head, &count);
+    proxy_reap();
 }
 ```
 
-- **채택하지 않은 이유**: `old_len`(또는 `scan_pos`)을 호출자와 공유해야 해서 시그니처와 상태 관리가 복잡해진다. 16KB 상한에서는 이득이 측정되지 않는다.
-- **레이어 간 재스캔**: `has_header_end`가 `\r\n\r\n`을 찾은 뒤, `parse_headers`가 다시 처음부터 줄 단위로 `\r\n`을 훑고, `parse_uri`가 경로를 또 훑는다. 각 계층이 자기 역할만 하도록 **의도적으로 여러 번 훑는 구조**다.
-- **문제가 되는 시점**: `max_len`을 크게 올릴 때, 1바이트씩 천천히 보내는 slowloris류가 많을 때, Phase 2에서 동시 연결 수가 늘어날 때. 그때 `scan_pos` 기반 버전이 첫 번째 최적화 후보가 된다.
+### 이벤트 source 구분
 
-### 파싱과 본문
+`ev_event_t.ptr`은 `ev_source_t *`다.
 
-- **`http_request_init`으로 요청 구조체를 0으로 초기화한다.** 이전 요청의 값이 남으면 안 된다.
-- **`http_request_parse_buffer`가 `HTTP_PARSE_INCOMPLETE`를 돌려주면 `400`으로 바꾼다.** 헤더 끝을 확인하고 들어왔으므로 실제로는 나오면 안 되는 값이다.
-- **파싱 성공 시에만 `http_request_read_body`를 부른다.** 잘못된 요청의 본문을 읽을 이유가 없다.
-- **에러면 `http_response_send_error` 후 `close`.** 에러 응답은 항상 연결을 닫는다. 남은 바이트를 해석할 신뢰가 없기 때문이다.
+- `EV_SRC_CLIENT`: `conn_t`
+- `EV_SRC_UPSTREAM`: `proxy_conn_t`
 
-### keep-alive 판단
+`conn_t`와 `proxy_conn_t` 모두 `ev_source_t source`를 **첫 필드**로 가진다. 이벤트 루프는 `source.kind`를 보고 어느 쪽인지 구분한다. 이 구분이 틀리면 UAF/close 오류가 나기 쉬우므로 `include/ev_source.h`의 규칙을 유지해야 한다.
 
-- **`requests++`를 먼저 한다.** "이번 요청까지 포함해서 몇 개인가"를 세야 최대 요청 수를 정확히 자를 수 있다.
-- **`keep = req.keep_alive && requests < keepalive_max_requests && !g_stop`.**
-  - `req.keep_alive`는 파서가 결정한다 (HTTP/1.1 기본 true, HTTP/1.0 기본 false, `Connection` 헤더로 조정).
-  - 최대 요청 수에 도달하면 `keep`이 false가 되어 `Connection: close`로 응답한다.
-  - 종료 중(`g_stop`)이면 `keep`이 false가 되어, 이번 응답에 `Connection: close`를 붙인다. 클라이언트가 이 연결을 재사용하지 않게 하려는 것이다.
-- **`close_after`를 모든 응답 함수에 넘긴다.** 응답 헤더의 `Connection` 값이 이 값으로 결정된다.
+### 타임아웃 소유권
 
-### 라우팅
+- 일반 client 연결: `expire_timers()`가 `c->deadline_ms`를 본다.
+- 프록시 연결: `expire_timers()`는 `ST_PROXY`를 건너뛰고 `proxy_sweep()`이 처리한다.
+- `next_timeout()`은 일반 연결 deadline과 `proxy_next_timeout_ms()` 중 작은 값을 `ev_wait()` timeout으로 넘긴다.
 
-- **`OPTIONS`는 내용과 무관하게 공통 응답.** `Allow` 헤더를 붙인다.
-- **`cfg->cgi_dir`가 비어 있지 않고 경로가 `/cgi-bin/`으로 시작하면 CGI.**
-- **나머지는 정적 파일.**
-- **라우팅 함수의 반환값을 `handler_result_t`로 받는다.**
-- **`HANDLER_CLOSE`면 `keep = 0`.** 핸들러가 `Connection: close` 응답을 보낸 경우다(404/403/416 등).
-- **`HANDLER_ERROR`면 `keep = 0`.** 응답 전송이 실패했거나 파일이 잘린 경우다. 다음 요청을 읽지 않고 연결을 닫는다.
+프록시 timeout을 `expire_timers()`와 `proxy_sweep()` 양쪽에서 처리하지 않도록 주의한다.
 
-### 버퍼 잔여 바이트
+### 루프 끝 정리
 
-- **`body_in_buf`는 버퍼에 이미 들어온 본문 바이트 수.** `len - header_len`과 `body_len` 중 작은 값.
-- **본문을 fd에서 더 읽은 경우 그 바이트는 버퍼에 없으므로 `consumed`에 포함하지 않는다.**
-- **`consumed = header_len + body_in_buf`를 빼고 남은 바이트를 `memmove`로 앞으로 당긴다.** 다음 요청의 시작일 수 있다.
-- **`pending = leftover`로 다음 루프에 넘긴다.**
+매 이벤트 배치가 끝난 뒤:
 
-### 마무리
+1. `conn_sweep()` — 닫힌 `conn_t` 제거
+2. `expire_timers()` — 일반 연결의 request/keep-alive/CGI deadline
+3. `proxy_sweep()` — 프록시 active deadline, backend/pool idle timeout
+4. `conn_sweep()` — 프록시가 닫은 client 정리
+5. `proxy_reap()` — `dead` 표시된 `proxy_conn_t` 실제 free
 
-- **`http_request_free`로 본문 malloc을 해제한다.** 헤더는 버퍼를 가리키는 포인터라 해제할 것이 없다.
-- **`keep`이 false이거나 `g_stop`이면 return.** 응답 도중에 시그널이 왔더라도 다음 요청은 읽지 않는다. 호출자가 `connfd`를 닫는다.
+`proxy_reap()`가 따로 있는 이유는 이벤트 콜백 도중 `free()`하면 같은 이벤트 배치의 다른 이벤트가 같은 포인터를 만질 수 있기 때문이다.
 
-### 종료 흐름
+---
+
+## 4. 연결 수락과 상태
+
+### `accept_new()`
+
+`src/server_ev.c`
+
+- `accept()`를 non-blocking으로 반복한다.
+- `*count >= cfg->max_conns`이면 `reject_overloaded()`로 `503 + Retry-After: 1`을 보내고 닫는다.
+- `set_nonblocking()`, `set_cloexec()` 후 `conn_new()`.
+- `ev_add(fd, EV_READ, c)`로 등록하고 연결 리스트에 넣는다.
+
+### `conn_t` 상태
+
+`include/server_conn.h`
+
+| 상태 | 의미 |
+| --- | --- |
+| `ST_READ` | 다음 요청 헤더를 읽는 중 |
+| `ST_READ_BODY` | CGI용 요청 body를 다 읽는 중 |
+| `ST_WAIT_TASK` | CGI task pool 결과를 기다리는 중 |
+| `ST_PROXY` | 프록시가 client/upstream을 중계하는 중 |
+| `ST_WRITE` | 응답 헤더/body를 쓰는 중 |
+
+`ST_WAIT_TASK`에서는 client fd를 이벤트 루프에서 제거한다. task가 끝나면 completion fd를 통해 다시 `EV_WRITE`로 붙인다.
+
+---
+
+## 5. 요청 처리 — `on_readable()` → `process_buffer()`
+
+### 헤더 읽기
+
+`on_readable()`은 `ST_READ`에서 `\r\n\r\n`이 나올 때까지 `c->in`에 읽는다.
+
+- buffer가 가득 차면 `has_crlf()`와 `request_line_uri_too_long()`으로 원인을 구분해 `414` 또는 `431`을 만든다.
+- keep-alive 연결에서 `in_len == 0`으로 idle이 시작되면 request timeout deadline을 갱신한다.
+
+### `process_buffer()`
+
+`src/server_ev.c`
+
+1. `http_request_init()`
+2. `http_request_parse_buffer()`
+   - `HTTP_PARSE_INCOMPLETE`는 `400`으로 처리
+   - 파싱 실패는 `conn_build_error()`
+3. `config_find_route()`로 longest-prefix route 선택
+4. 분기:
+   - proxy route → `proxy_start()`
+   - `/cgi-bin/` → `submit_cgi()`
+   - 그 외 → `static_file_prepare()` → `conn_build_static()`
+
+프록시 분기가 chunked 거부보다 먼저다. 그래서 **chunked 요청은 프록시 route에서만** stream-through되고, 정적/CGI route에서는 `501`이다.
+
+### proxy 분기
+
+`proxy_start()`가 `1`을 반환하면:
+
+- 이미 `c->in`에 들어온 body 일부를 `c->in` 앞으로 옮긴다.
+- body 뒤에 pipelined byte가 더 있으면 `proxy_mark_close()`로 표시한다.
+- `proxy_kick()`으로 첫 read/write를 시작한다.
+
+`proxy_start()`가 `0`을 반환하면 `502`/`503` 같은 에러 응답을 이미 만든 것이므로 `c->in_len`을 비운다.
+
+### 정적 분기
+
+`static_file_prepare()`가 `static_result_t`를 만들고, `conn_build_static()`이 응답 헤더와 파일 전송 상태를 `conn_t`에 넣는다. 실제 파일 전송은 `on_writable()`에서 한다.
+
+### CGI 분기
+
+- body가 아직 다 오지 않았으면 `ST_READ_BODY`로 바꾸고 body buffer를 할당한다.
+- `Expect: 100-continue`가 있으면 여기서 `100 Continue`를 직접 보낸다.
+- body가 준비되면 `submit_cgi()`.
+
+### keep-alive 복귀
+
+`on_writable()`이 응답을 모두 보내면:
+
+- `close_after`이면 연결을 닫는다.
+- 아니면 `ST_READ`로 돌아가고 `keepalive_idle` 또는 request timeout을 설정한다.
+- `c->in`에 다음 요청이 이미 들어와 있으면 바로 `process_buffer()`를 호출한다.
+
+---
+
+## 6. 정적 파일 흐름
 
 ```text
-SIGINT/SIGTERM (첫 번째)
-  → g_stop = 1
-  → accept/read가 EINTR로 깸
-  → 헤더/본문을 읽는 중이면 중단
-  → 이미 파싱된 요청이면 응답을 끝까지 전송
-  → keep 계산에 !g_stop이 들어가 Connection: close
-  → 루프 끝에서 g_stop 확인 후 return
-  → server_run이 connfd와 listenfd를 닫고 종료
+process_buffer
+└─ static_file_prepare
+   ├─ docroot realpath 검증
+   ├─ path traversal / symlink escape 차단
+   ├─ Range / If-Modified-Since
+   └─ static_result_t
 
-SIGINT/SIGTERM (두 번째)
-  → handle_signal이 _exit(1)로 즉시 종료
+conn_build_static
+├─ 응답 헤더 생성
+├─ file_fd / file_remaining / file_offset 설정
+└─ c->state = ST_WRITE
+
+on_writable
+├─ c->out 전송
+├─ file_fd에서 chunk read → client write
+└─ 완료 후 file_fd close, keep-alive 또는 close
 ```
 
-- **Phase 1 한계**: 요청 처리 중에는 `listenfd`가 열려 있어, backlog에 쌓인 연결은 종료 시 RST될 수 있다. Phase 2에서 accept 담당 주체가 `listenfd`를 먼저 닫는 구조로 해결한다.
+파일 전체를 메모리에 올리지 않고 `EV_FILE_CHUNK` 단위로 읽어서 보낸다.
 
 ---
 
-## 6. 읽으면서 주의할 점
+## 7. CGI 흐름
 
-이 문서를 코드와 대조할 때 알아두면 좋은 현재 구현의 특성이다.
+```text
+process_buffer
+└─ submit_cgi
+   ├─ cgi_job_create
+   ├─ task_pool_submit
+   ├─ c->state = ST_WAIT_TASK
+   └─ ev_del(client fd)
 
-- **에러 응답은 거의 항상 연결을 닫는다.** `http_response_send_error(..., 1)`이 대부분이다. 파싱 실패 후 남은 바이트를 신뢰할 수 없기 때문이다.
-- **응답 상태 라인은 항상 `HTTP/1.1`이다.** HTTP/1.0 요청에도 1.1로 응답한다.
-- **수신은 `poll` + 절대 deadline, 송신은 `SO_SNDTIMEO`으로 제한한다.** 헤더/본문 전체 시간이 `request_timeout_sec`을 넘지 않는다. `writen`은 타임아웃 시 `-1`을 반환하고 호출자가 연결을 닫는다.
-- **Phase 1 종료 시 backlog 연결은 RST될 수 있다.** 단일 스레드라 요청 처리 중 `listenfd`를 즉시 닫을 수 없어서다. Phase 2에서 accept 담당 주체가 먼저 `listenfd`를 닫는 구조로 해결한다.
-- **`has_header_end`는 매 read마다 버퍼 전체를 다시 훑는다.** 최악 O(n²)이지만 16KB 상한이라 실용 범위다. 비용 분석과 최적화 방향은 5절 `has_header_end()` 참고.
-- **CGI 타임아웃은 시작 시점부터의 전체 실행 시간 제한이다.** `poll`을 다시 호출해도 deadline이 연장되지 않는다.
-- **`ci_contains`는 substring 검색이다.** 정식 토큰 파서가 아니다.
-- **`http_response_send_memory`는 keep-alive를 지원하지 않는다.** 테스트 전용 경로다.
-- **`server_request_stop`, `http_request_reset`, `http_response_set_status`는 현재 미사용이다.** Phase 2/테스트를 위한 여지다.
+worker thread
+└─ cgi_job_execute
+   ├─ posix_spawn
+   ├─ stdin/stdout pipe
+   ├─ timeout / signal 처리
+   └─ cgi_result_t
+
+completion fd
+└─ drain_task_completions
+   ├─ find_by_task
+   ├─ 응답을 c->out에 연결
+   ├─ c->state = ST_WRITE
+   └─ ev_add(client fd, EV_WRITE)
+
+on_writable
+└─ 응답 전송 후 keep-alive 또는 close
+```
+
+CGI worker는 event loop와 별도 스레드에서 실행된다. task queue가 가득 차면 `task_pool_submit()`이 `EAGAIN`을 반환하고, 서버는 `503 + Retry-After`를 만든다.
 
 ---
 
-## 더 찾아보기
+## 8. 프록시 흐름
 
-- 함수별 상세: [function_reference.md](function_reference.md)
-- 모듈 구조: [architecture.md](architecture.md)
+### 8.1 초기화 — `proxy_init()`
+
+`src/proxy.c`
+
+1. 설정의 route/backend를 내부 `proxy_route_t`/`proxy_backend_t`로 복사한다.
+2. backend hostname을 `getaddrinfo()`로 **시작 시 1회** resolve한다.
+3. timeout, `max_upstreams`, pool 크기, health cooldown을 전역 설정에 옮긴다.
+4. 실패하면 `proxy_cleanup()` 후 시작 실패.
+
+### 8.2 시작 — `proxy_start()`
+
+```text
+proxy_start
+├─ route/backend 유효성 확인
+├─ max_upstreams 확인 (초과 시 503)
+├─ proxy_conn_t calloc
+├─ body mode 결정
+│  ├─ BODY_CHUNKED
+│  ├─ BODY_CONTENT_LENGTH
+│  └─ BODY_NONE
+├─ proxy_build_request
+├─ c->proxy = p, c->state = ST_PROXY
+├─ proxy_list_add, g_active_upstreams++
+└─ proxy_connect_backend
+```
+
+`proxy_build_request()`는:
+
+- `strip_prefix` 적용 여부에 따라 path를 다시 만든다.
+- query를 유지한다.
+- `Host`, `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`를 넣는다.
+- hop-by-hop 헤더와 `Connection`에 이름이 적힌 헤더를 제거한다.
+- `Content-Length` 또는 `Transfer-Encoding: chunked`를 다시 붙인다.
+- `Expect`는 프록시가 직접 처리하므로 upstream에는 보내지 않는다.
+
+### 8.3 backend 연결 — `proxy_connect_backend()`
+
+```text
+select_backend(route, tried_mask)
+├─ round-robin cursor
+├─ down_until_ms가 지난 backend만 후보
+└─ 이미 시도한 backend는 skip
+
+pool_acquire(backend)
+├─ idle fd가 있으면 MSG_PEEK로 stale 검사
+└─ 정상이면 재사용
+
+없으면 socket → non-blocking connect
+├─ 즉시 성공: PROXY_SENDING
+└─ EINPROGRESS: PROXY_CONNECTING
+```
+
+connect 실패 시 backend를 `down_until_ms`로 표시하고 다음 backend를 시도한다. 모든 backend가 실패하면 `502`다.
+
+### 8.4 이벤트 등록 — `proxy_update_events()`
+
+현재 상태에 따라 client와 upstream의 event interest를 다시 계산한다.
+
+- `PROXY_SENDING`: 요청 헤더/body를 더 보낼 수 있으면 upstream `EV_WRITE`, client body를 읽을 수 있으면 client `EV_READ`
+- `PROXY_READING_HEADERS`: upstream `EV_READ`
+- `PROXY_RELAY_BODY`: upstream `EV_READ` + client `EV_WRITE`
+- client 응답/100-continue가 남아 있으면 client `EV_WRITE`
+
+요청 헤더와 body가 모두 전송되면 `PROXY_SENDING → PROXY_READING_HEADERS`로 전환하고 응답 deadline을 건다.
+
+### 8.5 upstream 이벤트 — `proxy_handle_upstream_event()`
+
+```text
+EV_WRITE
+├─ CONNECTING: getsockopt(SO_ERROR)
+│  ├─ 실패: backend down, 다음 backend
+│  └─ 성공: SENDING
+└─ SENDING/RELAY_BODY: proxy_flush_upstream
+
+EV_READ / EV_ERR
+├─ READING_HEADERS: proxy_read_upstream_headers
+└─ RELAY_BODY: proxy_read_upstream_body
+   └─ EOF면 proxy_drain_eof
+
+EV_ERR
+├─ 읽을 데이터가 남아 있으면 먼저 읽는다
+└─ 응답이 시작되지 않았으면 502, 시작됐으면 close
+```
+
+`EV_ERR`를 곧바로 `abort`하지 않고 **읽을 수 있는 데이터를 먼저 읽는 것**이 중요하다. `Connection: close`, close-delimited body, chunked+close가 여기서 처리된다.
+
+### 8.6 client 이벤트 — `proxy_handle_client_event()`
+
+client fd가 `ST_PROXY`일 때의 이벤트다.
+
+```text
+EV_ERR
+└─ proxy_abort
+
+EV_READ
+├─ PROXY_SENDING && !req_body_done → proxy_read_client_body
+└─ 그 외 → proxy_abort
+
+EV_WRITE
+├─ 100-continue가 남아 있으면 proxy_flush_continue
+└─ 그다음 proxy_flush_client
+```
+
+`proxy_start()` 직후에는 `proxy_kick()`이 `c->in`에 이미 들어온 body를 먼저 처리한다. 이후 client body는 `EV_READ`, 응답 전송은 `EV_WRITE`로 진행한다.
+
+### 8.7 요청 body — `proxy_read_client_body()`
+
+- `BODY_CONTENT_LENGTH`: `c->in`에 있는 body를 우선 소비하고, 부족하면 client fd에서 읽는다.
+- `BODY_CHUNKED`: `chunk_parser_feed()`로 framing을 추적하면서 **원문 chunk byte를 그대로** upstream에 전달한다.
+- body 크기가 `max_body`를 넘으면 `413`.
+- `Expect: 100-continue`는 `proxy_flush_continue()`가 client에 먼저 보낸다.
+
+### 8.8 응답 헤더 — `proxy_read_upstream_headers()`
+
+`http_upstream.c`의 `upstream_response_parse()`를 사용한다.
+
+- status line, reason phrase, 헤더 파싱
+- `Content-Length`/`Transfer-Encoding` 충돌 거부
+- `1xx`는 건너뛰고 최종 응답을 기다림
+- body 종류 결정:
+  - `BODY_CONTENT_LENGTH`
+  - `BODY_CHUNKED`
+  - `BODY_CLOSE`
+  - `BODY_NONE` (`HEAD`, `204`, `304`, `205`)
+- `proxy_build_response()`로 client용 헤더를 만든다.
+- hop-by-hop 헤더와 `Connection` named header를 제거한다.
+- chunked 응답의 `Trailer`는 전달한다.
+
+### 8.9 body 중계 — `proxy_read_upstream_body()` / `proxy_flush_client()`
+
+- `BODY_CONTENT_LENGTH`: 남은 길이만큼 읽는다.
+- `BODY_CHUNKED`: `chunk_parser_feed()`로 decoded byte 수를 세고, 원문 chunk byte를 그대로 client에 보낸다.
+- `BODY_CLOSE`: EOF까지 읽는다.
+- `proxy_flush_client()`가 `resp_out`과 `u2c`를 client에 쓰고, body가 끝나면 `proxy_finish()`.
+
+### 8.10 종료 — `proxy_finish()` / `proxy_fail()` / `proxy_abort()`
+
+`proxy_finish()`:
+
+- access log 기록
+- upstream이 keep-alive 가능하면 `pool_release()`
+- 아니면 `proxy_close_upstream()`
+- `proxy_free_struct()`
+- client keep-alive면 `ST_READ`, 아니면 close
+
+`proxy_fail(status)`:
+
+- 응답이 아직 시작되지 않았으면 `conn_build_error(status)`
+- 이미 시작됐으면 두 번째 응답을 쓰지 않고 연결 close
+- upstream close, `proxy_free_struct()`
+
+`proxy_abort()`:
+
+- client가 끊겼거나 내부 오류일 때 upstream과 client를 정리
+- 응답을 새로 만들지 않는다
+
+### 8.11 지연 free
+
+`proxy_free_struct()`는 즉시 `free()`하지 않고:
+
+1. `p->dead = 1`
+2. `g_dead` 리스트에 추가
+3. `c->proxy = NULL`
+
+이벤트 배치가 끝난 뒤 `proxy_reap()`가 실제 free를 한다. 같은 이벤트 배치에서 client/upstream 이벤트가 겹쳐도 포인터를 안전하게 만드는 장치다.
+
+### 8.12 timeout과 sweep
+
+`proxy_sweep()`:
+
+- pool idle timeout이 지난 fd close
+- active proxy deadline 초과:
+  - `PROXY_SENDING && !req_body_done` → `408`
+  - 그 외 → `504`
+- `PROXY_CONNECTING` timeout이면 backend를 down 처리
+
+`proxy_next_timeout_ms()`는 active proxy deadline과 pool idle 만료 중 가장 이른 값을 반환해 `ev_wait()`가 제때 깨어나게 한다.
+
+### 8.13 pool
+
+`pool_acquire()`:
+
+- `MSG_PEEK`로 idle fd에 예상치 못한 데이터/EOF가 있는지 확인
+- stale이면 close하고 다음 idle fd
+- 정상이면 fd 반환
+
+`pool_release()`:
+
+- `pool max_idle`을 넘으면 close
+- 아니면 `idle_since_ms`를 기록하고 backend별 리스트에 넣는다
+
+HTTP/1.0 응답이거나 `Connection: close`이면 pool에 넣지 않는다.
+
+---
+
+## 9. 종료 흐름
+
+### 신호
+
+`on_signal()`:
+
+- 첫 `SIGINT`/`SIGTERM`: `g_stop = 1`, self-pipe에 byte write
+- 두 번째 신호: `_exit(1)`
+
+`server_ev_run()`은 `g_stop`을 보면:
+
+1. `begin_drain()`
+   - listen fd close
+   - `ST_READ`/`ST_READ_BODY` 연결은 즉시 close
+   - 나머지는 `close_after = 1`
+2. 최대 `EV_DRAIN_TIMEOUT_MS`(5초) 동안 진행 중 연결을 기다린다.
+3. watchdog thread가 drain 시간을 넘기면 프로세스를 종료한다.
+
+### 정리 순서
+
+```text
+proxy_shutdown_all()
+→ 남은 conn_close()
+→ task_pool_shutdown()
+→ task_pool_destroy()
+→ listen fd close
+→ signal pipe close
+→ ev_destroy()
+→ proxy_cleanup()
+→ logger_stop()
+```
+
+`proxy_cleanup()`은 route별 pool fd를 닫고 `proxy_reap()`로 남은 dead proxy를 정리한다.
+
+---
+
+## 10. 모듈 지도
+
+| 파일 | 역할 |
+| --- | --- |
+| `src/main_ev.c` | 진입점, 설정 파싱, `server_ev_run()` 호출 |
+| `src/config.c` | 기본값, CLI 파싱, 검증, route 매칭 |
+| `src/config_file.c` | INI 설정 파일 파서 |
+| `src/server_ev.c` | 이벤트 루프, `conn_t` 상태 머신, 정적/CGI 연결, 종료 |
+| `src/event_backend.c` | epoll/kqueue/poll backend 선택 |
+| `src/event_epoll.c` | Linux epoll backend |
+| `src/event_kqueue.c` | macOS/BSD kqueue backend |
+| `src/event_poll.c` | fallback poll backend |
+| `src/http_request.c` | HTTP 요청 파서, 헤더/URI/body 제한 |
+| `src/http_response.c` | 응답 헤더/에러 응답 생성 |
+| `src/static_file.c` | docroot 검증, Range, IMS, 정적 파일 준비 |
+| `src/cgi.c` | `posix_spawn`, pipe, CGI 출력 처리 |
+| `src/cgi_task.c` | CGI job 실행과 결과 변환 |
+| `src/task_pool.c` | worker thread + queue + completion fd |
+| `src/proxy.c` | route/backend 선택, pool, 프록시 상태 머신 |
+| `src/http_upstream.c` | upstream 응답 헤더 파서 |
+| `src/chunked.c` | chunked parser (framing, trailer, decoded byte 수) |
+| `src/access_log.c` | 요청별 access log 상태 |
+| `src/logger.c` | 로그 큐와 logger thread |
+
+---
+
+## 11. 읽을 때 주의할 점
+
+1. **`ev_source_t`가 항상 첫 필드**
+   - `conn_t`와 `proxy_conn_t` 모두 첫 필드가 `source`다.
+   - 이벤트 dispatch에서 `EV_SRC_CLIENT`/`EV_SRC_UPSTREAM`을 잘못 구분하면 안 된다.
+
+2. **프록시는 즉시 free하지 않는다**
+   - `proxy_free_struct()`는 `dead` 표시만 하고 `proxy_reap()`가 나중에 free한다.
+   - 이벤트 콜백 안에서 직접 `free(p)`를 호출하면 안 된다.
+
+3. **프록시 deadline은 `proxy_sweep()` 소유**
+   - `expire_timers()`는 `ST_PROXY`를 건너뛴다.
+   - `next_timeout()`은 `proxy_next_timeout_ms()`를 함께 본다.
+
+4. **chunked는 raw relay**
+   - `chunked.c`는 framing 검증과 decoded byte 수 계산을 한다.
+   - 프록시는 chunk를 재인코딩하지 않고 원문 byte를 그대로 전달한다.
+   - 정적/CGI route는 chunked 요청을 `501`로 거절한다.
+
+5. **`max_conns`는 client만 센다**
+   - 프록시 연결은 upstream fd가 추가로 필요하다.
+   - 동시 프록시 연결은 `max_upstreams`로 별도 제한한다.
+
+6. **`server`와 `server_ev`는 같은 코드**
+   - Makefile에서 같은 오브젝트를 링크한다.
+   - `server_ev`는 Phase 2 이벤트 루프 바이너리 이름의 흔적이다.
+
+---
+
+## 12. 더 찾아보기
+
+- [README](../README.md) — 발표용 전체 구조와 실행 방법
+- [phase3-design.md](phase3-design.md) — 프록시 설계, 상태 머신, timeout, pool
+- [phase2-design.md](phase2-design.md) — 이벤트 루프와 task pool
+- [quality-gate.md](quality-gate.md) — 테스트 결과와 알려진 한계
