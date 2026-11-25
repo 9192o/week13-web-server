@@ -55,7 +55,7 @@ main_ev
    ├─ http_response
    ├─ static_file
    ├─ cgi_task ─ task_pool
-   ├─ proxy ─ http_upstream / chunked
+   ├─ proxy ─ http_upstream / chunked / proxy_pool
    ├─ access_log
    └─ logger
 ```
@@ -71,7 +71,8 @@ main_ev
 | `static_file.c` | docroot 매핑, MIME, Range, IMS |
 | `cgi.c` / `cgi_task.c` | CGI 실행과 결과 변환 |
 | `task_pool.c` | CGI worker queue와 completion fd |
-| `proxy.c` | route/backend 선택, pool, 프록시 상태 머신 |
+| `proxy.c` | route/backend 선택, 프록시 상태 머신 |
+| `proxy_pool.c` | backend keep-alive pool (idle fd, stale 검사, sweep) |
 | `http_upstream.c` | upstream 응답 헤더 파서 |
 | `chunked.c` | chunked framing/trailer 파서 |
 | `access_log.c` / `logger.c` | 요청 로그와 logger thread |
@@ -249,9 +250,9 @@ proxy_finish()
 
 - backend별 idle fd list
 - `pool max_idle` 기본 8, `pool idle_timeout` 기본 30초
-- `pool_acquire()`는 `MSG_PEEK`로 stale 연결을 감지
+- `proxy_pool_acquire()`는 `MSG_PEEK`로 stale 연결을 감지
 - HTTP/1.0 응답 또는 `Connection: close`는 pool에 넣지 않음
-- `proxy_sweep()`이 idle timeout을 닫고, `proxy_next_timeout_ms()`가 event loop를 깨운다
+- `proxy_pool_sweep()`이 idle timeout을 닫고, `proxy_next_timeout_ms()`가 pool 만료를 반영해 event loop를 깨운다
 
 ### 8.6 실패 정책
 
@@ -320,7 +321,7 @@ config_init
 | backend keep-alive pool | TCP handshake 감소 | stale 검사, idle timeout, pool 크기 관리 |
 | 시작 시 DNS resolve | 요청 경로 단순 | DNS 변경에 재시작 필요 |
 | passive health | 구현 단순 | 죽은 backend를 매 요청 재시도할 수 있음 |
-| 프록시 통합 | 정적/CGI와 한 프로세스 | `proxy.c`가 커지고 상태 머신 결합 |
+| 프록시 통합 | 정적/CGI와 한 프로세스 | `proxy.c`/`proxy_pool.c`가 커지고 상태 머신 결합 |
 
 ## 13. 더 찾아보기
 

@@ -3,6 +3,7 @@
 #include "chunked.h"
 #include "event_backend.h"
 #include "http_upstream.h"
+#include "proxy_internal.h"
 #include "util.h"
 
 #include <arpa/inet.h>
@@ -26,22 +27,6 @@ typedef enum {
     BODY_CHUNKED,
     BODY_CLOSE
 } body_mode_t;
-
-typedef struct proxy_idle {
-    int fd;
-    uint64_t idle_since_ms;
-    struct proxy_idle *next;
-} proxy_idle_t;
-
-typedef struct {
-    char host[MAX_BACKEND_HOST];
-    int port;
-    struct sockaddr_storage addr;
-    socklen_t addr_len;
-    uint64_t down_until_ms;
-    proxy_idle_t *idle_head;
-    int idle_count;
-} proxy_backend_t;
 
 typedef struct {
     char prefix[MAX_ROUTE_PREFIX];
@@ -127,8 +112,6 @@ static proxy_conn_t *g_dead;
 static int g_timeout_connect_ms;
 static int g_timeout_response_ms;
 static int g_timeout_body_ms;
-static int g_pool_max_idle;
-static int g_pool_idle_timeout_ms;
 static int g_max_upstreams;
 static int g_active_upstreams;
 
@@ -430,63 +413,6 @@ static proxy_backend_t *select_backend(proxy_route_t *r, uint32_t skip_mask,
         }
     }
     return NULL;
-}
-
-static int pool_acquire(proxy_backend_t *b) {
-    proxy_idle_t **pp = &b->idle_head;
-    while (*pp != NULL) {
-        proxy_idle_t *idle = *pp;
-        char byte;
-        ssize_t n = recv(idle->fd, &byte, 1, MSG_PEEK);
-        if (n == 0 || n > 0 ||
-            (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
-             errno != EINTR)) {
-            *pp = idle->next;
-            b->idle_count--;
-            close(idle->fd);
-            free(idle);
-            continue;
-        }
-        if (n < 0 && errno == EINTR)
-            continue;
-
-        *pp = idle->next;
-        b->idle_count--;
-        int fd = idle->fd;
-        free(idle);
-        return fd;
-    }
-    return -1;
-}
-
-static void pool_release(proxy_backend_t *b, int fd) {
-    if (g_pool_max_idle <= 0 || b->idle_count >= g_pool_max_idle) {
-        close(fd);
-        return;
-    }
-
-    proxy_idle_t *idle = malloc(sizeof *idle);
-    if (idle == NULL) {
-        close(fd);
-        return;
-    }
-    idle->fd = fd;
-    idle->idle_since_ms = now_ms();
-    idle->next = b->idle_head;
-    b->idle_head = idle;
-    b->idle_count++;
-}
-
-static void pool_close_backend(proxy_backend_t *b) {
-    proxy_idle_t *idle = b->idle_head;
-    while (idle != NULL) {
-        proxy_idle_t *next = idle->next;
-        close(idle->fd);
-        free(idle);
-        idle = next;
-    }
-    b->idle_head = NULL;
-    b->idle_count = 0;
 }
 
 static void proxy_build_request(conn_t *c, const http_request_t *req,
@@ -1135,7 +1061,7 @@ static void proxy_finish(proxy_conn_t *p) {
         }
         int fd = p->upstream_fd;
         p->upstream_fd = -1;
-        pool_release(p->backend, fd);
+        proxy_pool_release(p->backend, fd);
     } else {
         proxy_close_upstream(p);
     }
@@ -1327,8 +1253,7 @@ int proxy_init(const config_t *cfg) {
     g_timeout_connect_ms = cfg->timeout_connect_sec * 1000;
     g_timeout_response_ms = cfg->timeout_response_sec * 1000;
     g_timeout_body_ms = cfg->timeout_body_sec * 1000;
-    g_pool_max_idle = cfg->pool_max_idle;
-    g_pool_idle_timeout_ms = cfg->pool_idle_timeout_sec * 1000;
+    proxy_pool_init(cfg->pool_max_idle, cfg->pool_idle_timeout_sec * 1000);
     g_max_upstreams = cfg->max_upstreams;
     g_active_upstreams = 0;
 
@@ -1373,7 +1298,7 @@ int proxy_init(const config_t *cfg) {
 void proxy_cleanup(void) {
     for (int i = 0; i < g_route_count; i++) {
         for (int j = 0; j < g_routes[i].backend_count; j++)
-            pool_close_backend(&g_routes[i].backends[j]);
+            proxy_pool_close(&g_routes[i].backends[j]);
     }
     g_route_count = 0;
     g_active = NULL;
@@ -1387,20 +1312,7 @@ void proxy_sweep(void) {
 
     for (int i = 0; i < g_route_count; i++) {
         for (int j = 0; j < g_routes[i].backend_count; j++) {
-            proxy_backend_t *b = &g_routes[i].backends[j];
-            proxy_idle_t **pp = &b->idle_head;
-            while (*pp != NULL) {
-                proxy_idle_t *idle = *pp;
-                if (now - idle->idle_since_ms >
-                    (uint64_t)g_pool_idle_timeout_ms) {
-                    *pp = idle->next;
-                    b->idle_count--;
-                    close(idle->fd);
-                    free(idle);
-                } else {
-                    pp = &idle->next;
-                }
-            }
+            proxy_pool_sweep(&g_routes[i].backends[j], now);
         }
     }
 
@@ -1411,7 +1323,7 @@ void proxy_sweep(void) {
             if (p->state == PROXY_CONNECTING && p->backend != NULL) {
                 p->backend->down_until_ms =
                     now + HEALTH_COOLDOWN_MS;
-                pool_close_backend(p->backend);
+                proxy_pool_close(p->backend);
             }
             int status = (p->state == PROXY_SENDING && !p->req_body_done)
                              ? HTTP_REQUEST_TIMEOUT
@@ -1434,13 +1346,9 @@ int proxy_next_timeout_ms(void) {
     for (int i = 0; i < g_route_count; i++) {
         for (int j = 0; j < g_routes[i].backend_count; j++) {
             proxy_backend_t *b = &g_routes[i].backends[j];
-            for (proxy_idle_t *idle = b->idle_head; idle != NULL;
-                 idle = idle->next) {
-                uint64_t expire = idle->idle_since_ms +
-                                  (uint64_t)g_pool_idle_timeout_ms;
-                if (expire < min)
-                    min = expire;
-            }
+            int pool_ms = proxy_pool_next_timeout_ms(b);
+            if (pool_ms >= 0 && (uint64_t)pool_ms < min)
+                min = (uint64_t)pool_ms;
         }
     }
 
@@ -1471,7 +1379,7 @@ static int proxy_connect_backend(proxy_conn_t *p) {
         p->backend = backend;
         p->tried_mask |= 1u << idx;
 
-        int fd = pool_acquire(backend);
+        int fd = proxy_pool_acquire(backend);
         if (fd >= 0) {
             p->upstream_fd = fd;
             p->state = PROXY_SENDING;
@@ -1522,7 +1430,7 @@ static int proxy_connect_backend(proxy_conn_t *p) {
 
         close(fd);
         backend->down_until_ms = now_ms() + HEALTH_COOLDOWN_MS;
-        pool_close_backend(backend);
+        proxy_pool_close(backend);
     }
 }
 
@@ -1619,7 +1527,7 @@ void proxy_handle_upstream_event(proxy_conn_t *p, uint32_t events) {
                            &err, &len) < 0 || err != 0) {
                 p->backend->down_until_ms =
                     now_ms() + HEALTH_COOLDOWN_MS;
-                pool_close_backend(p->backend);
+                proxy_pool_close(p->backend);
                 proxy_close_upstream(p);
                 if (proxy_connect_backend(p) < 0) {
                     proxy_fail(p, 502);
@@ -1729,7 +1637,7 @@ void proxy_shutdown_all(void) {
 
     for (int i = 0; i < g_route_count; i++) {
         for (int j = 0; j < g_routes[i].backend_count; j++)
-            pool_close_backend(&g_routes[i].backends[j]);
+            proxy_pool_close(&g_routes[i].backends[j]);
     }
     proxy_reap();
 }

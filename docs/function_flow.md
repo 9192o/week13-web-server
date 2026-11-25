@@ -1,7 +1,7 @@
 # 함수 흐름 — Phase 3
 
 > 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
-> Phase 3 프록시는 `src/proxy.c`가 담당하고, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
+> Phase 3 프록시는 `src/proxy.c`가 담당하고, `proxy_pool.c`가 backend 연결 pool을, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
 > 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 함수 레퍼런스는 [function_reference.md](function_reference.md)에 남아 있다.
 
 이 문서는 “어떤 함수가 어떤 순서로 호출되는가”를 따라간다. 함수별 세부 구현은 각 소스와 [phase3-design.md](phase3-design.md)를 본다.
@@ -361,7 +361,7 @@ select_backend(route, tried_mask)
 ├─ down_until_ms가 지난 backend만 후보
 └─ 이미 시도한 backend는 skip
 
-pool_acquire(backend)
+proxy_pool_acquire(backend)
 ├─ idle fd가 있으면 MSG_PEEK로 stale 검사
 └─ 정상이면 재사용
 
@@ -458,7 +458,7 @@ EV_WRITE
 `proxy_finish()`:
 
 - access log 기록
-- upstream이 keep-alive 가능하면 `pool_release()`
+- upstream이 keep-alive 가능하면 `proxy_pool_release()`
 - 아니면 `proxy_close_upstream()`
 - `proxy_free_struct()`
 - client keep-alive면 `ST_READ`, 아니면 close
@@ -498,13 +498,13 @@ EV_WRITE
 
 ### 8.13 pool
 
-`pool_acquire()`:
+`proxy_pool_acquire()`:
 
 - `MSG_PEEK`로 idle fd에 예상치 못한 데이터/EOF가 있는지 확인
 - stale이면 close하고 다음 idle fd
 - 정상이면 fd 반환
 
-`pool_release()`:
+`proxy_pool_release()`:
 
 - `pool max_idle`을 넘으면 close
 - 아니면 `idle_since_ms`를 기록하고 backend별 리스트에 넣는다
@@ -567,7 +567,8 @@ proxy_shutdown_all()
 | `src/cgi.c` | `posix_spawn`, pipe, CGI 출력 처리 |
 | `src/cgi_task.c` | CGI job 실행과 결과 변환 |
 | `src/task_pool.c` | worker thread + queue + completion fd |
-| `src/proxy.c` | route/backend 선택, pool, 프록시 상태 머신 |
+| `src/proxy.c` | route/backend 선택, 프록시 상태 머신 |
+| `src/proxy_pool.c` | backend keep-alive pool |
 | `src/http_upstream.c` | upstream 응답 헤더 파서 |
 | `src/chunked.c` | chunked parser (framing, trailer, decoded byte 수) |
 | `src/access_log.c` | 요청별 access log 상태 |
