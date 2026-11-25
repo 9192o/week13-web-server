@@ -32,15 +32,27 @@ git에 커밋하지 않는다.
 ## Result
 
 2026-11-25, `main` `eb486b4`, Linux/amd64 Docker (GCC/Clang 19 이미지),
-16개 seed 기준 60초 smoke 실행:
+16개 seed 기준 실행 결과.
+
+60초 smoke:
 
 ```text
 Done 2274442 runs in 61 second(s)
 0 crashes
 ```
 
-이 결과는 parser fuzz smoke test이며, 전체 서버 동작·프로토콜 적합성·
-커버리지를 보증하지 않는다. CI 상시 작업이 아니라 필요할 때 실행하는 보조 검사다.
+10분 실행:
+
+```text
+Done 13627487 runs in 601 second(s)
+stat::average_exec_per_sec: 22674
+stat::new_units_added:      10952
+stat::peak_rss_mb:          532
+0 crashes, 0 timeout artifacts
+```
+
+이 결과는 parser fuzz이며, 전체 서버 동작·프로토콜 적합성·커버리지를
+보증하지 않는다. CI 상시 작업이 아니라 필요할 때 실행하는 보조 검사다.
 
 ## Seed corpus
 
