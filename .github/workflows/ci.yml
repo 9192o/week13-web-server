@@ -1,0 +1,32 @@
+name: Linux Docker checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  phase2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [test, memory]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: sh dev.sh build
+      - run: sh tests/verify_phase2.sh "$VERIFY_MODE"
+        env:
+          VERIFY_MODE: ${{ matrix.mode }}
+  phase3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - run: sh dev.sh build
+      - run: sh tests/verify_phase3.sh

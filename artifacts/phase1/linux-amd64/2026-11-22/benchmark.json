@@ -1,0 +1,501 @@
+{
+  "metadata": {
+    "timestamp_utc": "2026-11-22T10:09:54.348687+00:00",
+    "hostname": "a72f8bd460b1",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+    "python_version": "3.13.5",
+    "page_size": 4096,
+    "server_executable": "/tmp/tmp.7V0IvBFFsM",
+    "server_args": [
+      "/tmp/tmp.7V0IvBFFsM",
+      "--port",
+      "58079",
+      "--root",
+      "/tmp/webserver-bench-root-zplfjtw1"
+    ],
+    "server_log_file": null,
+    "host": "127.0.0.1",
+    "port": 58079,
+    "root": "/tmp/webserver-bench-root-zplfjtw1",
+    "repeat": 3,
+    "warmup_requests": 1,
+    "sample_requests": 30,
+    "echo_only": false
+  },
+  "environment": {
+    "rss_bytes_before": 1748992,
+    "fd_count_before": 6,
+    "rss_bytes_peak": 3018752,
+    "fd_count_peak": 8,
+    "rss_bytes_after": 3018752,
+    "fd_count_after": 6
+  },
+  "summary": {
+    "total_errors": 0,
+    "total_successful_requests": 990
+  },
+  "workloads": [
+    {
+      "name": "webserver_bench_static_1k_get",
+      "category": "static",
+      "encoding": null,
+      "path": "/webserver_bench_static_1k.png",
+      "request_size": 1024,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2009.615,
+          "elapsed_ms": 14.928,
+          "p50_ms": 0.431,
+          "p95_ms": 0.751,
+          "p99_ms": 1.007
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1975.154,
+          "elapsed_ms": 15.189,
+          "p50_ms": 0.451,
+          "p95_ms": 0.764,
+          "p99_ms": 0.839
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2100.629,
+          "elapsed_ms": 14.281,
+          "p50_ms": 0.438,
+          "p95_ms": 0.736,
+          "p99_ms": 0.777
+        }
+      ]
+    },
+    {
+      "name": "webserver_bench_static_64k_get",
+      "category": "static",
+      "encoding": null,
+      "path": "/webserver_bench_static_64k.png",
+      "request_size": 65536,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 892.367,
+          "elapsed_ms": 33.618,
+          "p50_ms": 1.129,
+          "p95_ms": 1.437,
+          "p99_ms": 1.969
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 693.563,
+          "elapsed_ms": 43.255,
+          "p50_ms": 1.13,
+          "p95_ms": 4.17,
+          "p99_ms": 5.633
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 913.005,
+          "elapsed_ms": 32.859,
+          "p50_ms": 0.995,
+          "p95_ms": 1.543,
+          "p99_ms": 1.545
+        }
+      ]
+    },
+    {
+      "name": "webserver_bench_static_2m_get",
+      "category": "static",
+      "encoding": null,
+      "path": "/webserver_bench_static_2m.png",
+      "request_size": 2097152,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 83.567,
+          "elapsed_ms": 358.992,
+          "p50_ms": 10.829,
+          "p95_ms": 14.634,
+          "p99_ms": 15.749
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 88.532,
+          "elapsed_ms": 338.862,
+          "p50_ms": 10.555,
+          "p95_ms": 12.2,
+          "p99_ms": 13.546
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 84.721,
+          "elapsed_ms": 354.105,
+          "p50_ms": 10.76,
+          "p95_ms": 13.833,
+          "p99_ms": 15.103
+        }
+      ]
+    },
+    {
+      "name": "echo_cl_0",
+      "category": "echo",
+      "encoding": "cl",
+      "path": "/echo",
+      "request_size": 0,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2150.615,
+          "elapsed_ms": 13.949,
+          "p50_ms": 0.342,
+          "p95_ms": 0.852,
+          "p99_ms": 1.458
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2993.855,
+          "elapsed_ms": 10.021,
+          "p50_ms": 0.269,
+          "p95_ms": 0.479,
+          "p99_ms": 0.68
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2003.671,
+          "elapsed_ms": 14.973,
+          "p50_ms": 0.375,
+          "p95_ms": 0.656,
+          "p99_ms": 3.558
+        }
+      ]
+    },
+    {
+      "name": "echo_cl_1024",
+      "category": "echo",
+      "encoding": "cl",
+      "path": "/echo",
+      "request_size": 1024,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2162.905,
+          "elapsed_ms": 13.87,
+          "p50_ms": 0.38,
+          "p95_ms": 0.589,
+          "p99_ms": 2.297
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2331.987,
+          "elapsed_ms": 12.865,
+          "p50_ms": 0.36,
+          "p95_ms": 0.725,
+          "p99_ms": 1.009
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2395.628,
+          "elapsed_ms": 12.523,
+          "p50_ms": 0.374,
+          "p95_ms": 0.698,
+          "p99_ms": 0.737
+        }
+      ]
+    },
+    {
+      "name": "echo_cl_65536",
+      "category": "echo",
+      "encoding": "cl",
+      "path": "/echo",
+      "request_size": 65536,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1702.843,
+          "elapsed_ms": 17.618,
+          "p50_ms": 0.517,
+          "p95_ms": 0.897,
+          "p99_ms": 0.936
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1810.385,
+          "elapsed_ms": 16.571,
+          "p50_ms": 0.496,
+          "p95_ms": 0.728,
+          "p99_ms": 0.843
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1990.942,
+          "elapsed_ms": 15.068,
+          "p50_ms": 0.461,
+          "p95_ms": 0.629,
+          "p99_ms": 0.715
+        }
+      ]
+    },
+    {
+      "name": "echo_cl_1048576",
+      "category": "echo",
+      "encoding": "cl",
+      "path": "/echo",
+      "request_size": 1048576,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 347.311,
+          "elapsed_ms": 86.378,
+          "p50_ms": 2.452,
+          "p95_ms": 3.984,
+          "p99_ms": 5.886
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 314.54,
+          "elapsed_ms": 95.377,
+          "p50_ms": 2.622,
+          "p95_ms": 6.353,
+          "p99_ms": 8.563
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 311.634,
+          "elapsed_ms": 96.267,
+          "p50_ms": 2.725,
+          "p95_ms": 5.391,
+          "p99_ms": 7.42
+        }
+      ]
+    },
+    {
+      "name": "echo_chunked_0",
+      "category": "echo",
+      "encoding": "chunked",
+      "path": "/echo",
+      "request_size": 0,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2762.36,
+          "elapsed_ms": 10.86,
+          "p50_ms": 0.336,
+          "p95_ms": 0.656,
+          "p99_ms": 0.924
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2790.175,
+          "elapsed_ms": 10.752,
+          "p50_ms": 0.339,
+          "p95_ms": 0.55,
+          "p99_ms": 0.659
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2734.979,
+          "elapsed_ms": 10.969,
+          "p50_ms": 0.343,
+          "p95_ms": 0.621,
+          "p99_ms": 0.631
+        }
+      ]
+    },
+    {
+      "name": "echo_chunked_1024",
+      "category": "echo",
+      "encoding": "chunked",
+      "path": "/echo",
+      "request_size": 1024,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2414.763,
+          "elapsed_ms": 12.424,
+          "p50_ms": 0.385,
+          "p95_ms": 0.548,
+          "p99_ms": 0.867
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2692.92,
+          "elapsed_ms": 11.14,
+          "p50_ms": 0.346,
+          "p95_ms": 0.494,
+          "p99_ms": 0.578
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 2420.576,
+          "elapsed_ms": 12.394,
+          "p50_ms": 0.369,
+          "p95_ms": 0.58,
+          "p99_ms": 0.835
+        }
+      ]
+    },
+    {
+      "name": "echo_chunked_65536",
+      "category": "echo",
+      "encoding": "chunked",
+      "path": "/echo",
+      "request_size": 65536,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1904.787,
+          "elapsed_ms": 15.75,
+          "p50_ms": 0.461,
+          "p95_ms": 0.739,
+          "p99_ms": 0.779
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1877.266,
+          "elapsed_ms": 15.981,
+          "p50_ms": 0.492,
+          "p95_ms": 0.688,
+          "p99_ms": 0.711
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 1706.347,
+          "elapsed_ms": 17.581,
+          "p50_ms": 0.469,
+          "p95_ms": 0.764,
+          "p99_ms": 2.083
+        }
+      ]
+    },
+    {
+      "name": "echo_chunked_1048576",
+      "category": "echo",
+      "encoding": "chunked",
+      "path": "/echo",
+      "request_size": 1048576,
+      "repeat": 3,
+      "warmup_requests": 1,
+      "sample_requests": 30,
+      "results": [
+        {
+          "run": 1,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 343.459,
+          "elapsed_ms": 87.347,
+          "p50_ms": 2.535,
+          "p95_ms": 3.715,
+          "p99_ms": 4.953
+        },
+        {
+          "run": 2,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 366.713,
+          "elapsed_ms": 81.808,
+          "p50_ms": 2.521,
+          "p95_ms": 3.407,
+          "p99_ms": 3.699
+        },
+        {
+          "run": 3,
+          "successful": 30,
+          "errors": 0,
+          "throughput_rps": 334.33,
+          "elapsed_ms": 89.732,
+          "p50_ms": 2.541,
+          "p95_ms": 4.181,
+          "p99_ms": 4.377
+        }
+      ]
+    }
+  ]
+}
