@@ -69,7 +69,7 @@ client fd ← proxy_conn_t ← upstream fd
 
 | 파일 | 역할 |
 |---|---|
-| `include/proxy.h`, `src/proxy/proxy.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
+| `include/proxy.h`, `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c` | 라우팅, backend 선택, proxy 상태 머신, 헤더/본문 중계 |
 | `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c` | 내부 proxy 타입, 요청/응답 헤더 재작성 |
 | `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h` | backend keep-alive pool (idle fd, stale 검사, sweep) |
 | `include/http_upstream.h`, `src/http/http_upstream.c` | upstream 응답(status line + headers) 파서 |
@@ -673,7 +673,7 @@ Phase 2 drain을 확장한다.
 
 ## 21. 구현 상태 (2026-11-25)
 
-- **구현 완료**: `src/proxy/proxy.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
+- **구현 완료**: `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_conn.h`, `src/proxy/proxy_wire.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_internal.h`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`, `include/proxy.h`, `include/http_upstream.h`, `include/chunked.h`.
 - **통합**: `server`/`server_ev`가 최종 이벤트 루프 서버로 빌드되고, `--config`로 Phase 3 설정을 읽는다.
 - **동작 확인**:
   - `/api/*` → Round-Robin backend, 그 외 → 정적 서빙.

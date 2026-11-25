@@ -12,8 +12,8 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 | --- | --- | --- |
 | 연결 동시성 | 연결당 스레드 대신 **단일 이벤트 루프 + non-blocking I/O** | `src/conn/conn_loop.c`, `src/app/server_ev.c`, `src/event/event_*.c` |
 | CGI가 이벤트 루프를 막는 문제 | **task pool + `posix_spawn`** | `src/cgi/task_pool.c`, `src/cgi/cgi.c`, `src/cgi/cgi_task.c` |
-| 프록시 backend 연결 비용 | **backend별 keep-alive pool** | `src/proxy/proxy.c`, `src/proxy/proxy_pool.c` |
-| 큰 chunked 응답 | **디코딩/재인코딩 없이 stream-through** | `src/proxy/proxy.c`, `src/http/chunked.c` |
+| 프록시 backend 연결 비용 | **backend별 keep-alive pool** | `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_pool.c` |
+| 큰 chunked 응답 | **디코딩/재인코딩 없이 stream-through** | `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/http/chunked.c` |
 | 잘못된 설정 | 시작 시 **fail-fast 검증** | `src/common/config.c`, `src/common/config_file.c` |
 | Phase 3 검증 | unit + integration + sanitize + fd + load | `tests/` |
 
@@ -107,7 +107,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 ## Phase 3: 리버스 프록시
 
-프록시는 `src/proxy/proxy.c`의 상태 머신이 중심이고, backend keep-alive pool은 `src/proxy/proxy_pool.c`, 요청/응답 헤더 재작성은 `src/proxy/proxy_wire.c`에 분리되어 있습니다.
+프록시는 `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`의 상태 머신이 중심이고, backend keep-alive pool은 `src/proxy/proxy_pool.c`, 요청/응답 헤더 재작성은 `src/proxy/proxy_wire.c`에 분리되어 있습니다.
 
 ```text
 요청 헤더 파싱
@@ -183,7 +183,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 | HTTP | `src/http/http_request.c`, `src/http/http_response.c` | 직접 파서, 응답 빌더 |
 | 정적 파일 | `src/static/static_file.c` | docroot confinement, Range, IMS |
 | CGI | `src/cgi/cgi.c`, `src/cgi/cgi_task.c`, `src/cgi/task_pool.c` | `posix_spawn`, pipe, worker pool |
-| 프록시 | `src/proxy/proxy.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_wire.c`, `src/http/http_upstream.c`, `src/http/chunked.c` | route, pool, header rewrite, relay, parser |
+| 프록시 | `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/proxy/proxy_pool.c`, `src/proxy/proxy_wire.c`, `src/http/http_upstream.c`, `src/http/chunked.c` | route, pool, header rewrite, relay, parser |
 | 로그/종료 | `src/common/access_log.c`, `src/common/logger.c`, `src/conn/conn_loop.c` | logger thread, graceful shutdown |
 
 ## 빌드와 실행

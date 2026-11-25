@@ -9,12 +9,12 @@ LDFLAGS  += -pthread
 
 EVENT_SRCS := src/event/event_backend.c src/event/event_poll.c src/event/event_epoll.c src/event/event_kqueue.c
 
-EV_SERVER_SRCS := src/app/main_ev.c src/common/config.c src/common/config_file.c src/conn/conn.c src/conn/conn_signal.c src/conn/conn_net.c src/conn/conn_timer.c src/conn/conn_io.c src/conn/conn_loop.c src/app/server_ev.c src/app/server_cgi.c src/app/server_request.c src/proxy/proxy.c src/proxy/proxy_pool.c src/proxy/proxy_wire.c src/http/http_upstream.c src/http/chunked.c src/common/util.c src/common/logger.c src/common/access_log.c src/http/http_request.c src/http/http_response.c src/static/static_file.c src/cgi/cgi.c src/cgi/cgi_task.c src/cgi/task_pool.c $(EVENT_SRCS)
+EV_SERVER_SRCS := src/app/main_ev.c src/common/config.c src/common/config_file.c src/conn/conn.c src/conn/conn_signal.c src/conn/conn_net.c src/conn/conn_timer.c src/conn/conn_io.c src/conn/conn_loop.c src/app/server_ev.c src/app/server_cgi.c src/app/server_request.c src/proxy/proxy_route.c src/proxy/proxy_connection.c src/proxy/proxy_relay.c src/proxy/proxy_pool.c src/proxy/proxy_wire.c src/http/http_upstream.c src/http/chunked.c src/common/util.c src/common/logger.c src/common/access_log.c src/http/http_request.c src/http/http_response.c src/static/static_file.c src/cgi/cgi.c src/cgi/cgi_task.c src/cgi/task_pool.c $(EVENT_SRCS)
 EV_SERVER_OBJS := $(EV_SERVER_SRCS:.c=.o)
 EV_SERVER_BIN  := server_ev
 
 # Standalone proxy-only binary: same proxy core, no static/CGI/task pool.
-PROXY_SERVER_SRCS := src/app/main_proxy.c src/common/config.c src/common/config_file.c src/conn/conn.c src/conn/conn_signal.c src/conn/conn_net.c src/conn/conn_timer.c src/conn/conn_io.c src/conn/conn_loop.c src/app/proxy_server.c src/proxy/proxy.c src/proxy/proxy_pool.c src/proxy/proxy_wire.c src/http/http_upstream.c src/http/chunked.c src/common/util.c src/common/logger.c src/common/access_log.c src/http/http_request.c src/http/http_response.c $(EVENT_SRCS)
+PROXY_SERVER_SRCS := src/app/main_proxy.c src/common/config.c src/common/config_file.c src/conn/conn.c src/conn/conn_signal.c src/conn/conn_net.c src/conn/conn_timer.c src/conn/conn_io.c src/conn/conn_loop.c src/app/proxy_server.c src/proxy/proxy_route.c src/proxy/proxy_connection.c src/proxy/proxy_relay.c src/proxy/proxy_pool.c src/proxy/proxy_wire.c src/http/http_upstream.c src/http/chunked.c src/common/util.c src/common/logger.c src/common/access_log.c src/http/http_request.c src/http/http_response.c $(EVENT_SRCS)
 PROXY_SERVER_OBJS := $(PROXY_SERVER_SRCS:.c=.o)
 PROXY_SERVER_BIN  := reverse-proxy
 

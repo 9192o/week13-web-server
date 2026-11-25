@@ -165,7 +165,7 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 
 ### Phase 3 (2026-11-25)
 
-- **Reverse Proxy**: `src/proxy/proxy.c`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
+- **Reverse Proxy**: `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
 - **실패 경로 보강**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 응답 동시 도착, 응답 `Connection` named header 제거, backend failover, proxy deferred free, 205 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용.
 - **기능 보강**: `[global]` 전역 섹션, `route strip_prefix`, `max_upstreams`(503 + `Retry-After`), `timeout request` → 408, upstream reason phrase/Trailer 보존, static route backend 검증, config 파일 테스트.
 - **검증**: `make test` **358 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **182 PASS**, `integration-p3` **42 PASS** (EOF/1xx/205/HEAD/204/304/body idle/failover/pool reuse/pool idle timeout/client abort/strip_prefix/max_upstreams/408 포함), `make sanitize` PASS, `make fdtest` 9→9.
