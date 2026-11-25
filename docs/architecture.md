@@ -55,7 +55,7 @@ main_ev
    ├─ http_response
    ├─ static_file
    ├─ cgi_task ─ task_pool
-   ├─ proxy ─ http_upstream / chunked / proxy_pool
+   ├─ proxy ─ http_upstream / chunked / proxy_pool / proxy_wire
    ├─ access_log
    └─ logger
 ```
@@ -72,6 +72,8 @@ main_ev
 | `cgi.c` / `cgi_task.c` | CGI 실행과 결과 변환 |
 | `task_pool.c` | CGI worker queue와 completion fd |
 | `proxy.c` | route/backend 선택, 프록시 상태 머신 |
+| `proxy_conn.h` | 내부 `proxy_conn_t`/route/state/body 타입 |
+| `proxy_wire.c` | 요청/응답 헤더 직렬화, hop-by-hop 제거 |
 | `proxy_pool.c` | backend keep-alive pool (idle fd, stale 검사, sweep) |
 | `http_upstream.c` | upstream 응답 헤더 파서 |
 | `chunked.c` | chunked framing/trailer 파서 |
@@ -191,10 +193,14 @@ completion fd
 | `proxy_backend_t` | host/port, resolved sockaddr, `down_until_ms`, idle pool |
 | `proxy_conn_t` | 요청 하나의 프록시 상태와 buffer |
 | `proxy_idle_t` | backend별 idle upstream fd |
+| `proxy_wire.c` | 요청/응답 헤더 직렬화 |
+| `proxy_pool.c` | idle fd 획득/반납/sweep |
 | `http_upstream.c` | upstream 응답 헤더 파서 |
 | `chunked.c` | chunked framing/trailer 파서 |
 
 ### 8.2 `proxy_conn_t` 소유권
+
+내부 타입 정의는 `src/proxy_conn.h`에 있고, 요청/응답 헤더 직렬화는 `src/proxy_wire.c`가 담당한다.
 
 ```text
 proxy_conn_t

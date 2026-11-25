@@ -1,7 +1,7 @@
 # 함수 흐름 — Phase 3
 
 > 최종 `server`는 `src/main_ev.c` + `src/server_ev.c` 기반의 **이벤트 루프 + task pool** 서버다.
-> Phase 3 프록시는 `src/proxy.c`가 담당하고, `proxy_pool.c`가 backend 연결 pool을, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
+> Phase 3 프록시는 `src/proxy.c`가 담당하고, `proxy_pool.c`가 backend 연결 pool을, `proxy_wire.c`가 요청/응답 헤더 재작성을, `http_upstream.c`/`chunked.c`가 파서를 보조한다.
 > 이 문서는 현재 코드 기준 실행 흐름을 설명한다. Phase 1 함수 레퍼런스는 [function_reference.md](function_reference.md)에 남아 있다.
 
 이 문서는 “어떤 함수가 어떤 순서로 호출되는가”를 따라간다. 함수별 세부 구현은 각 소스와 [phase3-design.md](phase3-design.md)를 본다.
@@ -344,7 +344,7 @@ proxy_start
 └─ proxy_connect_backend
 ```
 
-`proxy_build_request()`는:
+`proxy_build_request()`는 (`src/proxy_wire.c`):
 
 - `strip_prefix` 적용 여부에 따라 path를 다시 만든다.
 - query를 유지한다.
@@ -442,7 +442,7 @@ EV_WRITE
   - `BODY_CHUNKED`
   - `BODY_CLOSE`
   - `BODY_NONE` (`HEAD`, `204`, `304`, `205`)
-- `proxy_build_response()`로 client용 헤더를 만든다.
+- `proxy_build_response()`로 client용 헤더를 만든다. (`src/proxy_wire.c`)
 - hop-by-hop 헤더와 `Connection` named header를 제거한다.
 - chunked 응답의 `Trailer`는 전달한다.
 
@@ -568,6 +568,8 @@ proxy_shutdown_all()
 | `src/cgi_task.c` | CGI job 실행과 결과 변환 |
 | `src/task_pool.c` | worker thread + queue + completion fd |
 | `src/proxy.c` | route/backend 선택, 프록시 상태 머신 |
+| `src/proxy_conn.h` | 내부 `proxy_conn_t`/route/state/body 타입 |
+| `src/proxy_wire.c` | 요청/응답 헤더 직렬화 |
 | `src/proxy_pool.c` | backend keep-alive pool |
 | `src/http_upstream.c` | upstream 응답 헤더 파서 |
 | `src/chunked.c` | chunked parser (framing, trailer, decoded byte 수) |

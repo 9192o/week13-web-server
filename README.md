@@ -107,7 +107,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 
 ## Phase 3: 리버스 프록시
 
-프록시는 `src/proxy.c`의 상태 머신이 중심이고, backend keep-alive pool은 `src/proxy_pool.c`에 분리되어 있습니다.
+프록시는 `src/proxy.c`의 상태 머신이 중심이고, backend keep-alive pool은 `src/proxy_pool.c`, 요청/응답 헤더 재작성은 `src/proxy_wire.c`에 분리되어 있습니다.
 
 ```text
 요청 헤더 파싱
@@ -183,7 +183,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 | HTTP | `src/http_request.c`, `src/http_response.c` | 직접 파서, 응답 빌더 |
 | 정적 파일 | `src/static_file.c` | docroot confinement, Range, IMS |
 | CGI | `src/cgi.c`, `src/cgi_task.c`, `src/task_pool.c` | `posix_spawn`, pipe, worker pool |
-| 프록시 | `src/proxy.c`, `src/proxy_pool.c`, `src/http_upstream.c`, `src/chunked.c` | route, pool, relay, parser |
+| 프록시 | `src/proxy.c`, `src/proxy_pool.c`, `src/proxy_wire.c`, `src/http_upstream.c`, `src/chunked.c` | route, pool, header rewrite, relay, parser |
 | 로그/종료 | `src/access_log.c`, `src/logger.c`, `src/server_ev.c` | logger thread, graceful shutdown |
 
 ## 빌드와 실행
