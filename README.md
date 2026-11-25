@@ -174,7 +174,21 @@ Mull은 코드에 작은 변경을 넣고 기존 단위 테스트가 그 변경�
 
 ### 퍼징
 
-저장소에 전용 퍼징 하네스나 실행 타깃이 없어 이번에는 퍼징을 실행하지 않았습니다. 파서 단위 테스트의 분할 입력, 잘못된 헤더, 본문 경계 입력은 다시 검사했지만 퍼징 실적으로 집계하지 않습니다.
+`tests/fuzz_http.c`는 HTTP 요청/헤더/본문 파서와 프록시 요청·응답 parser를
+libFuzzer로 검사한다. 개발 이미지는 `clang`과 libFuzzer runtime을 포함하며,
+seed corpus는 `tests/fuzz_corpus/`에 있다.
+
+```sh
+sh dev.sh build
+sh dev.sh shell
+make fuzz FUZZ_SECONDS=600
+```
+
+생성된 입력과 crash/timeout artifact는 `fuzz_work/`에만 쓰고 커밋하지 않는다.
+2026-11-25 `main` `eb486b4` 기준 10분 실행에서 **13,627,487회 실행, crash 0,
+timeout artifact 0**이었다. 이 결과는 parser robustness 확인이며 전체 서버
+동작·프로토콜 적합성·커버리지를 보증하지 않는다. 상세 내용은
+[Fuzzing](docs/FUZZING.md)에 정리했다.
 
 ### 고려한 엣지 케이스
 

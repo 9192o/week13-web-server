@@ -11,7 +11,15 @@ HEADERS = $(COMMON_HEADERS) src/app/app.h src/app/cgi.h src/app/router.h src/sta
 PROXY_SOURCES = $(COMMON_SOURCES) src/proxy/main.c src/proxy/proxy_routes.c src/proxy/proxy_wire.c src/proxy/proxy_exchange.c
 PROXY_HEADERS = $(COMMON_HEADERS) src/proxy/proxy_routes.h src/proxy/proxy_wire.h src/proxy/proxy_exchange.h
 
-.PHONY: all help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll test-keepalive test-proxy test-proxy-unit test-cgi
+FUZZ_BIN = fuzz_http
+FUZZ_CC ?= clang
+FUZZ_SECONDS ?= 60
+FUZZ_MAX_LEN ?= 1081344
+FUZZ_WORK ?= fuzz_work
+FUZZ_CFLAGS = -std=c17 -Wall -Wextra -Wpedantic -Werror -g -O1 \
+              -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+
+.PHONY: all help dev-build dev-shell dev-check test-unit test-integration test-deadlines test-shutdown test-epoll test-keepalive test-proxy test-proxy-unit test-cgi fuzz fuzz-build
 
 all: webserver reverse-proxy
 
@@ -76,6 +84,20 @@ test-proxy: test-proxy-unit reverse-proxy webserver
 test-cgi: webserver
 	python3 tests/test_cgi.py ./webserver
 
+fuzz-build: $(FUZZ_BIN)
+
+$(FUZZ_BIN): tests/fuzz_http.c src/http/http.c src/http/http.h src/proxy/proxy_wire.c src/proxy/proxy_wire.h
+	$(FUZZ_CC) $(CPPFLAGS) -Isrc/proxy $(FUZZ_CFLAGS) \
+		tests/fuzz_http.c src/http/http.c src/proxy/proxy_wire.c -o $@
+
+fuzz: $(FUZZ_BIN)
+	rm -rf $(FUZZ_WORK)
+	mkdir -p $(FUZZ_WORK)
+	cp tests/fuzz_corpus/* $(FUZZ_WORK)/
+	./$(FUZZ_BIN) -max_total_time=$(FUZZ_SECONDS) -max_len=$(FUZZ_MAX_LEN) \
+		-timeout=2 -print_final_stats=1 -artifact_prefix=$(FUZZ_WORK)/ \
+		$(FUZZ_WORK)
+
 help:
 	@printf '%s\n' \
 		'Host: sh dev.sh build | shell | check' \
@@ -84,6 +106,7 @@ help:
 		'Unit tests: make test-unit' \
 		'Integration tests: make test-integration' \
 		'Reverse proxy tests: make test-proxy' \
+		'Fuzz (libFuzzer): make fuzz FUZZ_SECONDS=600' \
 		'Full gate: make test; memory checks: make sanitize | valgrind' \
 		'Performance baseline: make benchmark' \
 		'Run the server: ./webserver --port 8080 --root .'

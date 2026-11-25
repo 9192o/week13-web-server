@@ -1,3 +1,8 @@
 /webserver
 /reverse-proxy
 __pycache__/
+
+fuzz_http
+
+fuzz_work/
+fuzz_artifacts/
