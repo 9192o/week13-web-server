@@ -1,6 +1,6 @@
 # Standalone reverse-proxy experiment
 
-`ldc`의 프록시 코어를 별도 실행 파일로 빼보는 실험입니다. 실제 배포용이 아니라
+`ldc`의 프록시 코어를 별도 실행 파일로 빼는 실험이며, 현재 브랜치의 기본 배포 구조(`client → reverse-proxy → server --backend`)의 기반입니다. 실제 배포용이 아니라
 "통합 서버에서 프록시만 분리하면 무엇이 남고 무엇이 필요한가"를 확인하기 위한
 브랜치입니다.
 

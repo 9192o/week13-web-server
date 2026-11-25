@@ -166,9 +166,10 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 ### Phase 3 (2026-11-25)
 
 - **Reverse Proxy**: `src/proxy/proxy_route.c`, `src/proxy/proxy_connection.c`, `src/proxy/proxy_relay.c`, `src/http/http_upstream.c`, `src/http/chunked.c`, `src/common/config_file.c`. 경로 기반 라우팅, Round-Robin, passive health, keep-alive 풀, chunked stream-through, gzip pass-through.
+- **기본 배포**: `client → reverse-proxy:8080 → server --backend:8001`. `server --backend`는 proxy route를 거부하고 정적/CGI만 처리한다. 예제는 `examples/proxy-first/`.
 - **실패 경로 보강**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 응답 동시 도착, 응답 `Connection` named header 제거, backend failover, proxy deferred free, 205 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용.
 - **기능 보강**: `[global]` 전역 섹션, `route strip_prefix`, `max_upstreams`(503 + `Retry-After`), `timeout request` → 408, upstream reason phrase/Trailer 보존, static route backend 검증, config 파일 테스트.
-- **검증**: `make test` **358 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **182 PASS**, `integration-p3` **42 PASS** (EOF/1xx/205/HEAD/204/304/body idle/failover/pool reuse/pool idle timeout/client abort/strip_prefix/max_upstreams/408 포함), `make sanitize` PASS, `make fdtest` 9→9.
+- **검증**: `make test` **358 assertions**, `make integration`/`-s1`/`-s2`/`-p3`/`shutdown-test` **182 PASS**, `integration-p3` **42 PASS** (EOF/1xx/205/HEAD/204/304/body idle/failover/pool reuse/pool idle timeout/client abort/strip_prefix/max_upstreams/408 포함), `make proxy-bin-test` **12 PASS**, `make proxy-front-test` **6 PASS**, `make sanitize` PASS, `make fdtest` 9→9.
 - **부하**: proxy `ab -k -n 10000 -c 100` failed=0, 약 **8.7k rps** (macOS 로컬, backend 2개, pool max_idle 8).
 - **알려진 한계**: 100 concurrent에서 upstream 연결 다수 생성(pool max_idle 8), max_conns가 client만 세어 upstream fd가 2배 필요, 설정 파일 IPv6 literal 미지원, `test_proxy_route.c`/`test_proxy_pool.c` 대신 integration 검증, active `/health`/캐싱/gzip 변환/Forward/CONNECT는 future. Linux epoll CI는 통과.
 

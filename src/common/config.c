@@ -142,6 +142,8 @@ int config_parse_cli(int argc, char **argv, config_t *cfg) {
             if (i >= argc ||
                 parse_int_arg(argv[i], 1, 65536, &cfg->max_upstreams) < 0)
                 return -1;
+        } else if (strcmp(argv[i], "--backend") == 0) {
+            cfg->mode = SERVER_MODE_BACKEND;
         } else if (argv[i][0] == '-' && argv[i][1] == '-') {
             return -1;
         } else if (pos == 0) {
@@ -240,6 +242,12 @@ int config_validate(const config_t *cfg) {
         if (cfg->mode == SERVER_MODE_PROXY_ONLY && r->type != ROUTE_PROXY) {
             fprintf(stderr,
                     "proxy-only server cannot serve static route: %s\n",
+                    r->prefix);
+            return -1;
+        }
+        if (cfg->mode == SERVER_MODE_BACKEND && r->type == ROUTE_PROXY) {
+            fprintf(stderr,
+                    "backend server cannot use proxy route: %s\n",
                     r->prefix);
             return -1;
         }

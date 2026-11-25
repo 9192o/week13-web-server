@@ -48,3 +48,6 @@ jobs:
 
       - name: Proxy load test
         run: make proxy-load
+
+      - name: Proxy-first integration
+        run: make proxy-front-test

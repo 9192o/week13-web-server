@@ -31,7 +31,8 @@ typedef enum {
 
 typedef enum {
     SERVER_MODE_FULL = 0,
-    SERVER_MODE_PROXY_ONLY = 1
+    SERVER_MODE_PROXY_ONLY = 1,
+    SERVER_MODE_BACKEND = 2
 } server_mode_t;
 
 typedef struct {

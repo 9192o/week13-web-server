@@ -8,6 +8,14 @@
 
 ---
 
+## 0. 실행 모드
+
+- **기본(프록시 우선)**: `main_proxy` → `proxy_server` → `conn_loop` → backend `server --backend`
+- **백엔드**: `main_ev` → `server_ev` → `conn_loop`; 정적/CGI만 처리하고 proxy route는 거부
+- **통합(비교용)**: `main_ev` → `server_ev`; 정적/CGI/proxy를 한 프로세스에서 처리
+
+아래 흐름은 통합 서버와 백엔드에 공통인 `conn_loop`/`conn_*`를 기준으로 설명하고, 프록시 요청은 별도로 표시한다.
+
 ## 1. 전체 호출 흐름
 
 ### 시작

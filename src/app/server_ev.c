@@ -70,7 +70,9 @@ static void server_extra_event(void *ctx, ev_loop_t *loop, conn_t *head,
 }
 
 static void server_tick(void *ctx) {
-    (void)ctx;
+    server_app_ctx *app = ctx;
+    if (app->cfg->mode == SERVER_MODE_BACKEND)
+        return;
     proxy_sweep();
     proxy_reap();
 }
@@ -82,14 +84,15 @@ static void server_upstream_event(void *p, uint32_t events) {
 static int server_start(void *ctx, ev_loop_t *loop) {
     (void)loop;
     server_app_ctx *app = ctx;
-    if (proxy_init(app->cfg) < 0) {
+    if (app->cfg->mode != SERVER_MODE_BACKEND && proxy_init(app->cfg) < 0) {
         proxy_cleanup();
         return -2;
     }
     app->pool = task_pool_create(app->cfg->task_workers,
                                  app->cfg->task_queue_size);
     if (app->pool == NULL) {
-        proxy_cleanup();
+        if (app->cfg->mode != SERVER_MODE_BACKEND)
+            proxy_cleanup();
         return -2;
     }
     return task_pool_completion_fd(app->pool);
@@ -103,8 +106,10 @@ static void server_stop(void *ctx) {
         task_pool_destroy(app->pool);
         app->pool = NULL;
     }
-    proxy_shutdown_all();
-    proxy_cleanup();
+    if (app->cfg->mode != SERVER_MODE_BACKEND) {
+        proxy_shutdown_all();
+        proxy_cleanup();
+    }
 }
 
 int server_ev_run(const config_t *cfg) {

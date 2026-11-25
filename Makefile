@@ -39,7 +39,7 @@ DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(PROXY_SERVER_OBJS:.o=.d) 
 SAN_CFLAGS := -std=c11 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -Wall -Wextra -Wpedantic -g -MMD -MP -pthread -fsanitize=address,undefined -fno-omit-frame-pointer
 SAN_LDFLAGS := -fsanitize=address,undefined -pthread
 
-.PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 proxy-load proxy-bin-test shutdown-test sanitize fdtest load linux-test clean
+.PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 proxy-load proxy-bin-test proxy-front-test demo-proxy shutdown-test sanitize fdtest load linux-test clean
 
 all: $(SERVER_BIN) $(EV_SERVER_BIN) $(PROXY_SERVER_BIN) cgi
 
@@ -92,6 +92,12 @@ proxy-load: $(SERVER_BIN) backend
 proxy-bin-test: $(PROXY_SERVER_BIN) backend
 	sh tests/integration_proxy_bin.sh
 
+proxy-front-test: $(SERVER_BIN) $(PROXY_SERVER_BIN) cgi
+	sh tests/integration_proxy_front.sh
+
+demo-proxy: $(SERVER_BIN) $(PROXY_SERVER_BIN) cgi
+	sh examples/proxy-first/run.sh
+
 shutdown-test: $(SERVER_BIN) cgi
 	sh tests/shutdown.sh
 
@@ -109,7 +115,7 @@ load: $(SERVER_BIN)
 
 linux-test:
 	docker run --rm -v "$(PWD)":/src -w /src gcc:13 \
-		sh -c "apt-get update && apt-get install -y curl netcat-openbsd apache2-utils && make test && make integration && make integration-s1 && make integration-s2 && make integration-p3 && make proxy-load && make shutdown-test"
+		sh -c "apt-get update && apt-get install -y curl netcat-openbsd apache2-utils && make test && make integration && make integration-s1 && make integration-s2 && make integration-p3 && make proxy-load && make proxy-front-test && make shutdown-test"
 
 clean:
 	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(PROXY_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(PROXY_SERVER_BIN) $(CGI_BINS) $(BACKEND_BIN) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o src/main.o src/server.o src/main.d src/server.d

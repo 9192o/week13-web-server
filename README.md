@@ -2,6 +2,8 @@
 
 C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외부 웹서버나 이벤트 루프 라이브러리 없이 소켓, HTTP 파싱, 정적 파일 서빙, CGI, 프록시를 직접 구현했습니다.
 
+기본 실행 구조는 **클라이언트 → `reverse-proxy` → `server` 백엔드**입니다. `server` 단독 실행은 정적/CGI/프록시를 한 프로세스에서 처리하는 비교용 통합 모드로 남겨두었습니다.
+
 - **Phase 1**: HTTP/1.1 파싱, 정적 `GET`/`HEAD`, `POST`, CGI
 - **Phase 2**: `poll`/`epoll`/`kqueue` 이벤트 루프, keep-alive, CGI task pool, graceful shutdown, access log
 - **Phase 3**: 경로 기반 리버스 프록시, 라운드로빈, backend keep-alive pool, passive health, chunked stream-through
@@ -209,71 +211,94 @@ Linux 또는 macOS에서:
 make
 ```
 
-테스트용 backend는 별도로 빌드합니다.
+### 기본: 프록시 우선
 
-```sh
-make backend
+기본 배포 구조는 **클라이언트 → `reverse-proxy` → `server` 백엔드**입니다.
+
+```text
+클라이언트 → reverse-proxy:8080 → server:8001
 ```
 
-### 정적 서버
+예제 설정과 실행 스크립트:
 
 ```sh
-./server 8080 ./www
+make demo-proxy
 ```
 
-CGI 디렉터리까지 지정하려면:
+또는 직접:
+
+```sh
+./server --backend --config examples/proxy-first/backend.conf &
+./reverse-proxy --config examples/proxy-first/proxy.conf &
+```
+
+- `server --backend`: 정적 파일/CGI만 처리하고 proxy route는 거부합니다.
+- `reverse-proxy`: docroot 없이 모든 요청을 backend로 중계합니다.
+- `http://127.0.0.1:8080/`
+- `http://127.0.0.1:8080/demo/`
+- `http://127.0.0.1:8080/cgi-bin/echo?x=1`
+
+`examples/proxy-first/backend.conf`:
+
+```ini
+listen 8001
+docroot ./www
+cgi_dir ./cgi-bin
+
+[route /]
+type static
+```
+
+`examples/proxy-first/proxy.conf`:
+
+```ini
+listen 8080
+timeout request 10
+timeout connect 2
+timeout response 10
+timeout body 10
+pool max_idle 8
+pool idle_timeout 30
+
+[route /]
+type proxy
+backend 127.0.0.1:8001
+```
+
+### 통합 서버 (비교용)
+
+`server`를 단독으로 실행하면 정적/CGI/프록시를 한 프로세스에서 처리하는 기존 통합 모드도 그대로 사용할 수 있습니다.
 
 ```sh
 ./server 8080 ./www ./cgi-bin
 ```
 
 - `http://127.0.0.1:8080/`
-- `http://127.0.0.1:8080/demo/`
 - `http://127.0.0.1:8080/cgi-bin/echo?x=1`
 
-### 리버스 프록시
-
-`proxy.conf`:
+통합 모드에서 `/api/`만 프록시로 보내려면:
 
 ```ini
 listen 8080
 docroot ./www
 
-max_conns 1024
-max_upstreams 512
-
-timeout request 20
-timeout connect 2
-timeout response 10
-timeout body 10
-
-pool max_idle 8
-pool idle_timeout 30
-
 [route /api/]
 type proxy
-strip_prefix 1
 backend 127.0.0.1:8001
-backend 127.0.0.1:8002
 
 [route /]
 type static
 ```
 
-backend 두 개와 프록시를 실행합니다.
-
 ```sh
-./tests/backend 8001 1 &
-./tests/backend 8002 2 &
 ./server --config proxy.conf
 ```
 
-```sh
-curl http://127.0.0.1:8080/api/id
-# id=1 또는 id=2 (라운드로빈)
-```
+테스트용 backend는 별도로 빌드합니다.
 
-`/api/id`는 `strip_prefix 1`에 의해 backend에서 `/id`로 전달됩니다. `strip_prefix`를 빼면 backend가 `/api/id`를 그대로 받습니다.
+```sh
+make backend
+```
 
 ## 설정과 CLI
 
@@ -309,6 +334,7 @@ curl http://127.0.0.1:8080/api/id
 --task-queue <count>
 --max-conns <count>
 --max-upstreams <count>
+--backend
 ```
 
 CLI 값이 설정 파일보다 우선합니다.
@@ -326,11 +352,13 @@ make sanitize          # ASan/UBSan 전체 스위트
 make fdtest            # fd 누수 검사
 make load              # 정적 서버 부하 테스트
 make proxy-load        # 프록시 부하 테스트 (ab 필요)
+make proxy-bin-test    # standalone reverse-proxy 테스트
+make proxy-front-test  # client -> proxy -> backend 통합 테스트
 ```
 
-현재 로컬 기준 `make test`는 **358 assertions**, 전체 integration은 **182 PASS**입니다.
+현재 로컬 기준 `make test`는 **358 assertions**, 전체 integration은 proxy 테스트를 포함해 **194 PASS**입니다.
 
-- Linux CI: 빌드, 전체 integration, sanitize, load, proxy-load 통과
+- Linux CI: 빌드, 전체 integration, sanitize, load, proxy-load, proxy-front-test 통과
 - proxy `ab -k -n 10000 -c 100`: `failed=0`, 로컬 약 10k rps
 - fd 누수: 9 → 9
 
@@ -341,6 +369,7 @@ make proxy-load        # 프록시 부하 테스트 (ab 필요)
 - backend hostname은 시작 시 한 번 resolve합니다. DNS 변경은 재시작해야 반영됩니다.
 - 설정 파일의 IPv6 literal backend(`[::1]:8001`)는 지원하지 않습니다.
 - `max_conns`는 client 연결만 세므로 프록시 사용 시 upstream fd가 추가로 필요합니다.
+- `server --backend`는 런타임 모드이며, 바이너리에는 full 모드용 프록시 코드가 함께 링크됩니다.
 - `pool max_idle` 기본값이 8이라 동시 연결이 많으면 backend 연결이 여러 개 생길 수 있습니다.
 
 ## 문서

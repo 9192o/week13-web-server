@@ -14,7 +14,7 @@ int main(int argc, char **argv) {
                 "[--max-header N] [--max-body N] "
                 "[--keepalive-idle N] [--keepalive-max N] "
                 "[--task-workers N] [--task-queue N] [--max-conns N] "
-                "[--max-upstreams N]\n",
+                "[--max-upstreams N] [--backend]\n",
                 argv[0]);
         return 1;
     }
