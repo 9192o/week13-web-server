@@ -697,7 +697,8 @@ Phase 2 drain을 확장한다.
 - **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205/HEAD/204/304 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용, slow request body 408, upstream 상한 503.
 - **알려진 한계**:
   - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.
-  - `max_conns`는 client+proxy upstream fd 합계를 제한한다. 별도로 `max_upstreams`가 활성 프록시 연결을 제한한다.
+  - `max_conns`는 accept 시점에 client+proxy upstream fd 합계를 제한한다. 동시 upstream 시작 시 일시 초과할 수 있어 strict global fd 상한은 future다. `max_upstreams`는 활성 프록시 연결을 제한한다.
   - 설정 파일의 IPv6 literal(`[::1]:8001`)은 아직 지원하지 않는다.
+  - TLS/호스트 라우팅, active health/DNS refresh, metrics/tracing, config reload는 future다.
   - active `/health`, 캐싱, gzip 변환, Forward proxy, CONNECT는 범위 밖.
   - Linux epoll CI는 통과했다.

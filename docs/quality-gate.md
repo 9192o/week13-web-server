@@ -175,6 +175,11 @@ Phase 1에서 의도적으로 남긴 것과 Phase 2에서 정리할 것.
 
 ## 남은 품질 항목
 
+- TLS 종료와 호스트 기반 라우팅
+- active health check와 DNS refresh
+- metrics/tracing
+- strict global fd 상한 (`max_conns`는 accept 시점 검사라 동시 upstream 시작 시 일시 초과 가능)
+- 설정 파일 IPv6 literal
 - CGI 큰 POST 교착 테스트
 - CGI fd 상속 테스트
 - bind 실패/EMFILE 같은 운영 엣지 테스트

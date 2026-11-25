@@ -407,7 +407,8 @@ make proxy-front-test  # client -> proxy -> backend 통합 테스트
 - 캐싱, gzip 변환, active health check는 범위 밖입니다. gzip은 pass-through만 합니다.
 - backend hostname은 시작 시 한 번 resolve합니다. DNS 변경은 재시작해야 반영됩니다.
 - 설정 파일의 IPv6 literal backend(`[::1]:8001`)는 지원하지 않습니다.
-- `max_conns`는 client 연결과 proxy upstream fd(활성+idle pool)의 합계를 제한합니다. `max_upstreams`는 활성 프록시 연결만 제한합니다.
+- `max_conns`는 accept 시점에 client + proxy upstream fd 합계를 제한합니다. 동시에 upstream이 시작되는 순간에는 일시적으로 넘을 수 있어 strict global fd 상한은 아직 없습니다. `max_upstreams`는 활성 프록시 연결만 제한합니다.
+- TLS/호스트 기반 라우팅, active health, metrics/tracing, config reload, IPv6 literal은 future 항목입니다.
 - `backend-server`는 proxy 코드를 링크하지 않는 별도 백엔드 바이너리입니다. `server --backend`는 호환용 런타임 모드입니다.
 - `pool max_idle` 기본값이 8이라 동시 연결이 많으면 backend 연결이 여러 개 생길 수 있습니다.
 
