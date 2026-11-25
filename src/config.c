@@ -237,7 +237,7 @@ int config_validate(const config_t *cfg) {
             fprintf(stderr, "invalid route type: %s\n", r->prefix);
             return -1;
         }
-        if (cfg->proxy_only && r->type != ROUTE_PROXY) {
+        if (cfg->mode == SERVER_MODE_PROXY_ONLY && r->type != ROUTE_PROXY) {
             fprintf(stderr,
                     "proxy-only server cannot serve static route: %s\n",
                     r->prefix);
@@ -274,7 +274,7 @@ int config_validate(const config_t *cfg) {
         return -1;
     }
 
-    if (cfg->proxy_only) {
+    if (cfg->mode == SERVER_MODE_PROXY_ONLY) {
         if (cfg->route_count == 0) {
             fprintf(stderr, "proxy-only server needs at least one route\n");
             return -1;

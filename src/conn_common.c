@@ -3,7 +3,6 @@
 #include "access_log.h"
 #include "http.h"
 #include "logger.h"
-#include "proxy.h"
 #include "util.h"
 
 #include <arpa/inet.h>
@@ -27,6 +26,11 @@
 static volatile sig_atomic_t g_stop = 0;
 static volatile sig_atomic_t g_signal_count = 0;
 static int g_signal_pipe[2] = {-1, -1};
+static const conn_common_hooks_t *g_hooks;
+
+void conn_common_set_hooks(const conn_common_hooks_t *hooks) {
+    g_hooks = hooks;
+}
 
 static void on_signal(int sig) {
     (void)sig;
@@ -224,7 +228,8 @@ void conn_common_log_end(conn_t *c) {
 }
 
 void conn_common_free(conn_t *c) {
-    proxy_detach(c);
+    if (g_hooks != NULL && g_hooks->detach != NULL)
+        g_hooks->detach(c);
     if (c->file_fd >= 0)
         close(c->file_fd);
     free(c->file_buf);
@@ -237,7 +242,8 @@ void conn_common_close(ev_loop_t *loop, conn_t *c) {
     if (c->closed)
         return;
     conn_common_log_end(c);
-    proxy_detach(c);
+    if (g_hooks != NULL && g_hooks->detach != NULL)
+        g_hooks->detach(c);
     c->closed = 1;
     if (c->fd >= 0) {
         if (c->in_loop) {
@@ -421,7 +427,9 @@ int conn_common_next_timeout(conn_t *head) {
             min = c->deadline_ms;
     }
 
-    int proxy_ms = proxy_next_timeout_ms();
+    int proxy_ms = -1;
+    if (g_hooks != NULL && g_hooks->next_timeout_ms != NULL)
+        proxy_ms = g_hooks->next_timeout_ms();
     if (proxy_ms >= 0 && (uint64_t)proxy_ms < min)
         min = (uint64_t)proxy_ms;
 

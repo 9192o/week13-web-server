@@ -29,6 +29,11 @@ typedef enum {
     ROUTE_PROXY = 2
 } route_type_t;
 
+typedef enum {
+    SERVER_MODE_FULL = 0,
+    SERVER_MODE_PROXY_ONLY = 1
+} server_mode_t;
+
 typedef struct {
     char host[MAX_BACKEND_HOST];
     int port;
@@ -47,7 +52,7 @@ typedef struct {
     int port;
     char docroot[PATH_MAX];
     char cgi_dir[PATH_MAX];
-    int proxy_only; /* standalone reverse-proxy: no static files, no CGI */
+    server_mode_t mode; /* full server or proxy-only binary */
 
     size_t max_uri;
     size_t max_header_bytes;

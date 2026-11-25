@@ -7,7 +7,7 @@
 int main(int argc, char **argv) {
     config_t cfg;
     config_init(&cfg);
-    cfg.proxy_only = 1;
+    cfg.mode = SERVER_MODE_PROXY_ONLY;
 
     int has_config = 0;
     for (int i = 1; i < argc; i++) {
