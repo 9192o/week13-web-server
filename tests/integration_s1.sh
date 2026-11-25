@@ -369,18 +369,16 @@ if [ -n "$TPORT" ]; then
     tpid=""
 fi
 
-long_out=$({ printf 'GET / HTTP/1.1\r\nHost: x\r\nX: '; \
-    head -c 17000 /dev/zero | tr '\0' 'a'; \
-    printf '\r\n\r\n'; } | nc -w 3 127.0.0.1 "$PORT" 2>/dev/null || true)
-case "$long_out" in
-    *"431"*)
-        echo "PASS: oversized header -> 431"
-        ;;
-    *)
-        echo "FAIL: oversized header (expected 431)"
-        fail=1
-        ;;
-esac
+long_header=$(head -c 17000 /dev/zero | tr '\0' 'a')
+header_code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+    -H "X-Long: $long_header" "http://127.0.0.1:$PORT/" 2>/dev/null ||
+    echo "000")
+if [ "$header_code" = "431" ]; then
+    echo "PASS: oversized header -> 431"
+else
+    echo "FAIL: oversized header (expected 431, got $header_code)"
+    fail=1
+fi
 
 uri_out=$({ printf 'GET /'; head -c 20000 /dev/zero | tr '\0' 'a'; \
     printf ' HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n'; } \
