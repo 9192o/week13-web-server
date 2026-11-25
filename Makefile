@@ -9,12 +9,12 @@ LDFLAGS  += -pthread
 
 EVENT_SRCS := src/event_backend.c src/event_poll.c src/event_epoll.c src/event_kqueue.c
 
-EV_SERVER_SRCS := src/main_ev.c src/config.c src/config_file.c src/server_ev.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c src/cgi_task.c src/task_pool.c $(EVENT_SRCS)
+EV_SERVER_SRCS := src/main_ev.c src/config.c src/config_file.c src/conn_common.c src/server_ev.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c src/static_file.c src/cgi.c src/cgi_task.c src/task_pool.c $(EVENT_SRCS)
 EV_SERVER_OBJS := $(EV_SERVER_SRCS:.c=.o)
 EV_SERVER_BIN  := server_ev
 
 # Standalone proxy-only binary: same proxy core, no static/CGI/task pool.
-PROXY_SERVER_SRCS := src/main_proxy.c src/config.c src/config_file.c src/proxy_server.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c $(EVENT_SRCS)
+PROXY_SERVER_SRCS := src/main_proxy.c src/config.c src/config_file.c src/conn_common.c src/proxy_server.c src/proxy.c src/proxy_pool.c src/proxy_wire.c src/http_upstream.c src/chunked.c src/util.c src/logger.c src/access_log.c src/http_request.c src/http_response.c $(EVENT_SRCS)
 PROXY_SERVER_OBJS := $(PROXY_SERVER_SRCS:.c=.o)
 PROXY_SERVER_BIN  := reverse-proxy
 
