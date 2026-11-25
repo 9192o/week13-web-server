@@ -21,7 +21,7 @@ SERVER_BIN  := server
 CGI_BINS := cgi-bin/echo cgi-bin/sleep cgi-bin/crash cgi-bin/term cgi-bin/partial cgi-bin/created cgi-bin/dupct cgi-bin/status204 cgi-bin/badstatus cgi-bin/nocontent cgi-bin/notmodified cgi-bin/reset
 BACKEND_BIN := tests/backend
 
-TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c tests/test_event_backend.c tests/test_task_pool.c tests/test_logger.c tests/test_chunked.c tests/test_http_upstream.c
+TEST_SRCS := tests/test_main.c tests/test_http_request.c tests/test_http_response.c tests/test_util.c tests/test_static_file.c tests/test_event_backend.c tests/test_task_pool.c tests/test_logger.c tests/test_chunked.c tests/test_http_upstream.c tests/test_config_file.c
 TEST_OBJS := $(TEST_SRCS:.c=.o)
 TEST_BIN  := run_tests
 
@@ -34,7 +34,7 @@ DEPS := $(SERVER_OBJS:.o=.d) $(EV_SERVER_OBJS:.o=.d) $(TEST_OBJS:.o=.d) $(TEST_S
 SAN_CFLAGS := -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wpedantic -g -MMD -MP -pthread -fsanitize=address,undefined -fno-omit-frame-pointer
 SAN_LDFLAGS := -fsanitize=address,undefined -pthread
 
-.PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 shutdown-test sanitize fdtest load linux-test clean
+.PHONY: all cgi backend test integration integration-s1 integration-s2 integration-p3 proxy-load shutdown-test sanitize fdtest load linux-test clean
 
 all: $(SERVER_BIN) $(EV_SERVER_BIN) cgi
 
@@ -78,6 +78,9 @@ integration-s2: $(EV_SERVER_BIN) cgi
 integration-p3: $(SERVER_BIN) backend
 	sh tests/integration_p3.sh
 
+proxy-load: $(SERVER_BIN) backend
+	sh tests/load_proxy.sh
+
 shutdown-test: $(SERVER_BIN) cgi
 	sh tests/shutdown.sh
 
@@ -95,7 +98,7 @@ load: $(SERVER_BIN)
 
 linux-test:
 	docker run --rm -v "$(PWD)":/src -w /src gcc:13 \
-		sh -c "apt-get update && apt-get install -y curl netcat-openbsd && make test && make integration && make integration-s1 && make integration-s2 && make integration-p3 && make shutdown-test"
+		sh -c "apt-get update && apt-get install -y curl netcat-openbsd apache2-utils && make test && make integration && make integration-s1 && make integration-s2 && make integration-p3 && make proxy-load && make shutdown-test"
 
 clean:
 	rm -f $(SERVER_OBJS) $(EV_SERVER_OBJS) $(SERVER_BIN) $(EV_SERVER_BIN) $(CGI_BINS) $(BACKEND_BIN) $(TEST_OBJS) $(TEST_BIN) $(DEPS) src/http_request.o src/http_response.o src/static_file.o src/main.o src/server.o src/main.d src/server.d

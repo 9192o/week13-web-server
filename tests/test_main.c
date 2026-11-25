@@ -82,6 +82,13 @@ void test_upstream_bad_status(void);
 void test_upstream_connection_tokens(void);
 void test_upstream_http10_keepalive(void);
 void test_upstream_header_htab(void);
+void test_upstream_reason(void);
+
+void test_config_file_valid(void);
+void test_config_file_duplicate_route(void);
+void test_config_file_bad_number(void);
+void test_config_file_proxy_without_backend(void);
+void test_config_file_ipv6_backend(void);
 
 int g_tests_run = 0;
 int g_tests_failed = 0;
@@ -166,6 +173,12 @@ int main(void) {
     RUN_TEST(test_upstream_connection_tokens);
     RUN_TEST(test_upstream_http10_keepalive);
     RUN_TEST(test_upstream_header_htab);
+    RUN_TEST(test_upstream_reason);
+    RUN_TEST(test_config_file_valid);
+    RUN_TEST(test_config_file_duplicate_route);
+    RUN_TEST(test_config_file_bad_number);
+    RUN_TEST(test_config_file_proxy_without_backend);
+    RUN_TEST(test_config_file_ipv6_backend);
 
     printf("%d assertions, %d failed\n", g_tests_run, g_tests_failed);
     return g_tests_failed == 0 ? 0 : 1;

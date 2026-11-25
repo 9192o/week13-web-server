@@ -37,6 +37,7 @@ typedef struct {
 typedef struct {
     char prefix[MAX_ROUTE_PREFIX];
     route_type_t type;
+    int strip_prefix;
     backend_spec_t backends[MAX_BACKENDS];
     int backend_count;
     int rr_index; /* runtime round-robin cursor */
@@ -59,6 +60,7 @@ typedef struct {
     int task_workers;
     int task_queue_size;
     int max_conns;
+    int max_upstreams;
 
     route_spec_t routes[MAX_ROUTES];
     int route_count;

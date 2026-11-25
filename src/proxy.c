@@ -46,6 +46,7 @@ typedef struct {
 typedef struct {
     char prefix[MAX_ROUTE_PREFIX];
     route_type_t type;
+    int strip_prefix;
     proxy_backend_t backends[MAX_BACKENDS];
     int backend_count;
     int rr_index;
@@ -128,6 +129,8 @@ static int g_timeout_response_ms;
 static int g_timeout_body_ms;
 static int g_pool_max_idle;
 static int g_pool_idle_timeout_ms;
+static int g_max_upstreams;
+static int g_active_upstreams;
 
 typedef struct {
     char *data;
@@ -355,6 +358,8 @@ static void proxy_free_struct(proxy_conn_t *p) {
     if (p->client != NULL && p->client->proxy == p)
         p->client->proxy = NULL;
     proxy_list_remove(p);
+    if (g_active_upstreams > 0)
+        g_active_upstreams--;
     p->dead = 1;
     p->next_dead = g_dead;
     g_dead = p;
@@ -487,7 +492,34 @@ static void pool_close_backend(proxy_backend_t *b) {
 static void proxy_build_request(conn_t *c, const http_request_t *req,
                                 proxy_conn_t *p) {
     proxy_buf_t b = {0};
-    const char *target = req->target[0] != '\0' ? req->target : req->path;
+    char target[HTTP_MAX_URI * 2 + 2];
+    int tn = -1;
+
+    if (p->route->strip_prefix) {
+        const char *prefix = p->route->prefix;
+        size_t plen = strlen(prefix);
+        const char *rest = req->path;
+        if (strncmp(req->path, prefix, plen) == 0)
+            rest = req->path + plen;
+        if (*rest == '\0')
+            rest = "/";
+        if (*rest == '/')
+            tn = snprintf(target, sizeof target, "%s", rest);
+        else
+            tn = snprintf(target, sizeof target, "/%s", rest);
+        if (tn >= 0 && (size_t)tn < sizeof target && req->query[0] != '\0') {
+            size_t used = (size_t)tn;
+            tn = snprintf(target + used, sizeof target - used,
+                          "?%s", req->query);
+            if (tn >= 0)
+                tn += (int)used;
+        }
+    } else {
+        tn = snprintf(target, sizeof target, "%s",
+                      req->target[0] != '\0' ? req->target : req->path);
+    }
+    if (tn < 0 || (size_t)tn >= sizeof target)
+        goto fail;
 
     if (buf_printf(&b, "%s %s HTTP/1.1\r\n",
                    req->method_str, target) < 0)
@@ -580,13 +612,23 @@ fail:
 
 static void proxy_build_response(proxy_conn_t *p) {
     proxy_buf_t b = {0};
-    const char *reason = http_status_reason(p->status);
+    const char *reason = p->resp.reason[0] != '\0'
+                             ? p->resp.reason
+                             : http_status_reason(p->status);
 
     if (buf_printf(&b, "HTTP/1.1 %d %s\r\n", p->status, reason) < 0)
         goto fail;
 
     for (size_t i = 0; i < p->resp.header_count; i++) {
         const upstream_header_t *h = &p->resp.headers[i];
+        if (p->resp_body == BODY_CHUNKED &&
+            ci_equal(h->name, h->name_len, "Trailer")) {
+            if (buf_printf(&b, "%.*s: %.*s\r\n",
+                           (int)h->name_len, h->name,
+                           (int)h->value_len, h->value) < 0)
+                goto fail;
+            continue;
+        }
         if (is_hop_by_hop(h->name, h->name_len))
             continue;
         if (response_connection_names(p, h->name, h->name_len))
@@ -1078,7 +1120,8 @@ static void proxy_drain_eof(proxy_conn_t *p) {
     }
 }
 
-static void proxy_finish(proxy_conn_t *p) {    conn_t *c = p->client;
+static void proxy_finish(proxy_conn_t *p) {
+    conn_t *c = p->client;
     int keep = p->client_keep_alive && !p->close_client &&
                !server_is_stopping();
 
@@ -1286,12 +1329,15 @@ int proxy_init(const config_t *cfg) {
     g_timeout_body_ms = cfg->timeout_body_sec * 1000;
     g_pool_max_idle = cfg->pool_max_idle;
     g_pool_idle_timeout_ms = cfg->pool_idle_timeout_sec * 1000;
+    g_max_upstreams = cfg->max_upstreams;
+    g_active_upstreams = 0;
 
     for (int i = 0; i < cfg->route_count; i++) {
         const route_spec_t *spec = &cfg->routes[i];
         proxy_route_t *r = &g_routes[i];
         snprintf(r->prefix, sizeof r->prefix, "%s", spec->prefix);
         r->type = spec->type;
+        r->strip_prefix = spec->strip_prefix;
         r->backend_count = spec->backend_count;
 
         for (int j = 0; j < spec->backend_count; j++) {
@@ -1331,6 +1377,7 @@ void proxy_cleanup(void) {
     }
     g_route_count = 0;
     g_active = NULL;
+    g_active_upstreams = 0;
     g_cfg = NULL;
     proxy_reap();
 }
@@ -1366,7 +1413,10 @@ void proxy_sweep(void) {
                     now + HEALTH_COOLDOWN_MS;
                 pool_close_backend(p->backend);
             }
-            proxy_fail(p, HTTP_GATEWAY_TIMEOUT);
+            int status = (p->state == PROXY_SENDING && !p->req_body_done)
+                             ? HTTP_REQUEST_TIMEOUT
+                             : HTTP_GATEWAY_TIMEOUT;
+            proxy_fail(p, status);
         }
         p = next;
     }
@@ -1491,6 +1541,15 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
         return 0;
     }
 
+    if (g_active_upstreams >= g_max_upstreams) {
+        if (server_conn_build_error(c, HTTP_SERVICE_UNAVAILABLE, 1,
+                                    req->method == HTTP_HEAD, 1) < 0)
+            return -1;
+        if (ev_mod(c->loop, c->fd, EV_WRITE, c) < 0)
+            return -1;
+        return 0;
+    }
+
     proxy_conn_t *p = calloc(1, sizeof *p);
     if (p == NULL)
         return -1;
@@ -1537,6 +1596,7 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
     c->state = ST_PROXY;
     c->requests++;
     proxy_list_add(p);
+    g_active_upstreams++;
 
     if (proxy_connect_backend(p) < 0) {
         proxy_fail(p, 502);

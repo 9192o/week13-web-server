@@ -5,7 +5,10 @@ find_base_ports() {
     for p in 18090 18190 18290 18390 18490 18590; do
         if ! nc -z 127.0.0.1 "$p" >/dev/null 2>&1 &&
            ! nc -z 127.0.0.1 "$((p + 1))" >/dev/null 2>&1 &&
-           ! nc -z 127.0.0.1 "$((p + 2))" >/dev/null 2>&1; then
+           ! nc -z 127.0.0.1 "$((p + 2))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 3))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 4))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 5))" >/dev/null 2>&1; then
             echo "$p"
             return 0
         fi
@@ -42,6 +45,12 @@ type proxy
 backend 127.0.0.1:$B1PORT
 backend 127.0.0.1:$B2PORT
 
+[route /strip/]
+type proxy
+strip_prefix 1
+backend 127.0.0.1:$B1PORT
+backend 127.0.0.1:$B2PORT
+
 [route /]
 type static
 EOF
@@ -50,6 +59,7 @@ EOF
 BPID1=$!
 ./tests/backend "$B2PORT" 2 >"$B2LOG" 2>&1 &
 BPID2=$!
+LPID=""
 
 i=0
 while [ "$i" -lt 50 ]; do
@@ -73,9 +83,11 @@ PID=$!
 
 cleanup() {
     kill -INT "$PID" 2>/dev/null || true
+    [ -z "$LPID" ] || kill -INT "$LPID" 2>/dev/null || true
     kill -TERM "$BPID1" 2>/dev/null || true
     kill -TERM "$BPID2" 2>/dev/null || true
     wait "$PID" 2>/dev/null || true
+    [ -z "$LPID" ] || wait "$LPID" 2>/dev/null || true
     wait "$BPID1" 2>/dev/null || true
     wait "$BPID2" 2>/dev/null || true
     rm -rf "$TMP"
@@ -147,6 +159,8 @@ case "$ids" in
 esac
 
 check_body_contains "proxy GET body" "$BASEURL/api/echo?x=1" "QUERY=x=1"
+check_body_contains "strip_prefix route" "$BASEURL/strip/echo" "PATH=/echo"
+check_body_contains "strip_prefix keeps query" "$BASEURL/strip/echo?x=1" "QUERY=x=1"
 check_body_contains "X-Forwarded-For" "$BASEURL/api/echo" "XFF=127.0.0.1"
 
 post_out=$(curl -sS --max-time 5 -d 'hello=world' "$BASEURL/api/echo" 2>/dev/null || true)
@@ -348,6 +362,95 @@ else
     echo "FAIL: pool reuse (b1 $b1conn/$b1req, b2 $b2conn/$b2req)"
     fail=1
 fi
+
+# Upstream limit: one active proxy connection fills max_upstreams=1.
+LPORT=$((BASE + 4))
+LCONF="$TMP/limit.conf"
+cat >"$LCONF" <<EOF
+listen $LPORT
+docroot ./www
+max_upstreams 1
+timeout connect 1
+timeout response 3
+timeout body 2
+[route /api/]
+type proxy
+backend 127.0.0.1:$B1PORT
+backend 127.0.0.1:$B2PORT
+[route /]
+type static
+EOF
+./server --config "$LCONF" >"$TMP/limit.log" 2>&1 &
+LPID=$!
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$LPORT/" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+curl -sS --max-time 5 -o /dev/null "http://127.0.0.1:$LPORT/api/slow?ms=1000" 2>/dev/null &
+slow_pid=$!
+sleep 0.2
+limit_headers=$(curl -sS --max-time 3 -D - -o /dev/null \
+    "http://127.0.0.1:$LPORT/api/id" 2>/dev/null || true)
+limit_code=$(printf '%s' "$limit_headers" | awk 'NR==1{print $2}')
+case "$limit_headers" in
+    *"Retry-After: 1"*) limit_retry=1 ;;
+    *) limit_retry=0 ;;
+esac
+wait "$slow_pid" 2>/dev/null || true
+if [ "$limit_code" = "503" ] && [ "$limit_retry" = "1" ]; then
+    echo "PASS: max_upstreams overflow -> 503 + Retry-After"
+else
+    echo "FAIL: max_upstreams overflow (code=$limit_code retry=$limit_retry)"
+    fail=1
+fi
+kill -INT "$LPID" 2>/dev/null || true
+wait "$LPID" 2>/dev/null || true
+LPID=""
+
+# Slow request body: an idle request body must time out with 408.
+RPORT=$((BASE + 5))
+RCONF="$TMP/request-timeout.conf"
+cat >"$RCONF" <<EOF
+listen $RPORT
+docroot ./www
+timeout request 1
+timeout connect 1
+timeout response 3
+timeout body 2
+[route /api/]
+type proxy
+backend 127.0.0.1:$B1PORT
+[route /]
+type static
+EOF
+./server --config "$RCONF" >"$TMP/request-timeout.log" 2>&1 &
+LPID=$!
+i=0
+while [ "$i" -lt 50 ]; do
+    if curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$RPORT/" 2>/dev/null; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+{ printf 'POST /api/echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nConnection: close\r\n\r\n'
+  sleep 2
+  printf 'hello'
+} | nc -w 5 127.0.0.1 "$RPORT" >"$TMP/slowreq.out" 2>/dev/null || true
+if grep -q 'HTTP/1.1 408' "$TMP/slowreq.out"; then
+    echo "PASS: slow request body -> 408"
+else
+    echo "FAIL: slow request body (no 408)"
+    cat "$TMP/slowreq.out" 2>/dev/null || true
+    fail=1
+fi
+kill -INT "$LPID" 2>/dev/null || true
+wait "$LPID" 2>/dev/null || true
+LPID=""
 
 # Failover: one backend down, the other must serve the request.
 kill -TERM "$BPID1" 2>/dev/null || true

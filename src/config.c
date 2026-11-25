@@ -23,6 +23,7 @@ void config_init(config_t *cfg) {
     cfg->task_workers = DEFAULT_TASK_WORKERS;
     cfg->task_queue_size = DEFAULT_TASK_QUEUE;
     cfg->max_conns = DEFAULT_MAX_CONNS;
+    cfg->max_upstreams = 512;
 
     cfg->route_count = 0;
     cfg->timeout_connect_sec = 2;
@@ -136,6 +137,11 @@ int config_parse_cli(int argc, char **argv, config_t *cfg) {
             if (i >= argc ||
                 parse_int_arg(argv[i], 1, 65536, &cfg->max_conns) < 0)
                 return -1;
+        } else if (strcmp(argv[i], "--max-upstreams") == 0) {
+            i++;
+            if (i >= argc ||
+                parse_int_arg(argv[i], 1, 65536, &cfg->max_upstreams) < 0)
+                return -1;
         } else if (argv[i][0] == '-' && argv[i][1] == '-') {
             return -1;
         } else if (pos == 0) {
@@ -206,7 +212,8 @@ int config_validate(const config_t *cfg) {
     }
     if (cfg->timeout_connect_sec < 1 || cfg->timeout_connect_sec > 3600 ||
         cfg->timeout_response_sec < 1 || cfg->timeout_response_sec > 3600 ||
-        cfg->timeout_body_sec < 1 || cfg->timeout_body_sec > 3600) {
+        cfg->timeout_body_sec < 1 || cfg->timeout_body_sec > 3600 ||
+        cfg->request_timeout_sec < 1 || cfg->request_timeout_sec > 3600) {
         fprintf(stderr, "invalid proxy timeout\n");
         return -1;
     }
@@ -238,6 +245,10 @@ int config_validate(const config_t *cfg) {
             fprintf(stderr, "proxy route has no backend: %s\n", r->prefix);
             return -1;
         }
+        if (r->type == ROUTE_STATIC && r->backend_count > 0) {
+            fprintf(stderr, "static route has backend: %s\n", r->prefix);
+            return -1;
+        }
     }
     if (cfg->task_workers < 1 || cfg->task_workers > 64) {
         fprintf(stderr, "invalid task workers: %d\n", cfg->task_workers);
@@ -250,6 +261,10 @@ int config_validate(const config_t *cfg) {
     }
     if (cfg->max_conns < 1 || cfg->max_conns > 65536) {
         fprintf(stderr, "invalid max conns: %d\n", cfg->max_conns);
+        return -1;
+    }
+    if (cfg->max_upstreams < 1 || cfg->max_upstreams > 65536) {
+        fprintf(stderr, "invalid max upstreams: %d\n", cfg->max_upstreams);
         return -1;
     }
 

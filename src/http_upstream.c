@@ -155,6 +155,17 @@ http_status_t upstream_response_parse(const char *buf, size_t len,
         return HTTP_BAD_GATEWAY;
     res->status = status;
 
+    const char *reason = p + 3;
+    if (reason < line_end && *reason == ' ')
+        reason++;
+    size_t reason_len = (size_t)(line_end - reason);
+    while (reason_len > 0 && reason[reason_len - 1] == ' ')
+        reason_len--;
+    if (reason_len >= sizeof res->reason)
+        reason_len = sizeof res->reason - 1;
+    memcpy(res->reason, reason, reason_len);
+    res->reason[reason_len] = '\0';
+
     p = line_end + 2;
     while (1) {
         if (p + 1 >= end)

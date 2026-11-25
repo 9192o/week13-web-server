@@ -42,7 +42,7 @@ static int parse_backend(const char *s, backend_spec_t *out) {
         return -1;
 
     size_t host_len = (size_t)(colon - s);
-    if (host_len >= sizeof out->host)
+    if (host_len >= sizeof out->host || memchr(s, '[', host_len) != NULL)
         return -1;
 
     memcpy(out->host, s, host_len);
@@ -135,6 +135,10 @@ int config_parse_file(config_t *cfg, const char *path) {
                 break;
             }
             *end = '\0';
+            if (strcmp(s + 1, "global") == 0) {
+                route_index = -1;
+                continue;
+            }
             if (parse_route_section(cfg, path, line_no, s + 1,
                                     &route_index) < 0) {
                 rc = -1;
@@ -195,6 +199,16 @@ int config_parse_file(config_t *cfg, const char *path) {
                     break;
                 }
                 r->backend_count++;
+            } else if (strcmp(key, "strip_prefix") == 0) {
+                int v = 0;
+                if (arg2 != NULL ||
+                    parse_int_value(arg1, 0, 1, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid strip_prefix\n",
+                            path, line_no);
+                    rc = -1;
+                    break;
+                }
+                r->strip_prefix = v;
             } else {
                 fprintf(stderr, "%s:%d: unknown route key '%s'\n",
                         path, line_no, key);
@@ -227,6 +241,14 @@ int config_parse_file(config_t *cfg, const char *path) {
         } else if (strcmp(key, "max_conns") == 0) {
             if (parse_int_value(arg1, 1, 65536, &cfg->max_conns) < 0) {
                 fprintf(stderr, "%s:%d: invalid max_conns\n", path, line_no);
+                rc = -1;
+                break;
+            }
+        } else if (strcmp(key, "max_upstreams") == 0) {
+            if (parse_int_value(arg1, 1, 65536,
+                                &cfg->max_upstreams) < 0) {
+                fprintf(stderr, "%s:%d: invalid max_upstreams\n",
+                        path, line_no);
                 rc = -1;
                 break;
             }
@@ -286,7 +308,15 @@ int config_parse_file(config_t *cfg, const char *path) {
                 break;
             }
             int v = 0;
-            if (strcmp(arg1, "connect") == 0) {
+            if (strcmp(arg1, "request") == 0) {
+                if (parse_int_value(arg2, 1, 3600, &v) < 0) {
+                    fprintf(stderr, "%s:%d: invalid value\n",
+                            path, line_no);
+                    rc = -1;
+                    break;
+                }
+                cfg->request_timeout_sec = v;
+            } else if (strcmp(arg1, "connect") == 0) {
                 if (parse_int_value(arg2, 1, 3600, &v) < 0) {
                     fprintf(stderr, "%s:%d: invalid value\n",
                             path, line_no);

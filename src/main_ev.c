@@ -13,7 +13,8 @@ int main(int argc, char **argv) {
                 "[--config FILE] [--timeout N] [--max-uri N] "
                 "[--max-header N] [--max-body N] "
                 "[--keepalive-idle N] [--keepalive-max N] "
-                "[--task-workers N] [--task-queue N] [--max-conns N]\n",
+                "[--task-workers N] [--task-queue N] [--max-conns N] "
+                "[--max-upstreams N]\n",
                 argv[0]);
         return 1;
     }

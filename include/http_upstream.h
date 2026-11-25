@@ -17,6 +17,7 @@ typedef struct {
     int status;
     int version_major;
     int version_minor;
+    char reason[64];
     upstream_header_t headers[HTTP_MAX_HEADERS];
     size_t header_count;
     size_t header_len;

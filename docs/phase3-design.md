@@ -222,7 +222,7 @@ ST_WRITE       일반 응답 쓰기
 
 1. route의 Round-Robin으로 backend 선택 (passive health에서 down이면 skip).
 2. 요청 헤더를 `req_out`으로 직렬화한다.
-   - request line: method + 원래 path (prefix strip 없음)
+   - request line: method + 원래 path. route에 `strip_prefix 1`이 있으면 prefix를 제거하고, 빈 path는 `/`로 바꾸고 query는 유지한다.
    - hop-by-hop 헤더 제거
    - `Host` 유지, `X-Forwarded-For`/`X-Forwarded-Proto`/`X-Forwarded-Host` 추가
    - `Expect: 100-continue`는 프록시가 직접 `100 Continue`를 client에 보내고 헤더는 제거
@@ -320,11 +320,13 @@ listen 8080
 docroot ./www
 cgi_dir ./cgi-bin
 max_conns 1024
+max_upstreams 512
 task_workers 4
 task_queue 64
 keepalive_idle 5
 keepalive_max 100
 
+timeout request 5
 timeout connect 2
 timeout response 10
 timeout body 10
@@ -336,6 +338,11 @@ pool idle_timeout 30
 type proxy
 backend 127.0.0.1:8001
 backend 127.0.0.1:8002
+
+[route /internal/]
+type proxy
+strip_prefix 1
+backend 127.0.0.1:8003
 
 [route /static/]
 type static
@@ -349,9 +356,13 @@ type static
 - `[route <prefix>]` 섹션 하나가 route 하나.
 - `type`은 `static` 또는 `proxy`.
 - `backend`는 `host:port`. `proxy` route에 1개 이상 필요.
-- host는 IP 또는 hostname. hostname은 시작 시 1회 resolve.
+- `strip_prefix 1`이면 upstream request path에서 route prefix를 제거한다.
+- `max_upstreams`는 동시에 살아 있는 proxy 연결 수 상한이다. 넘으면 `503` + `Retry-After: 1`.
+- `timeout request`는 client 요청 body를 기다리는 시간이다. 초과하면 `408 Request Timeout`.
+- host는 IPv4 또는 hostname. hostname은 시작 시 1회 resolve. IPv6 literal(`[::1]:8001`)은 지원하지 않는다.
 - 같은 prefix 중복은 오류.
 - 알 수 없는 key/section, 잘못된 숫자/포트는 줄 번호와 함께 fail fast.
+- `[global]` 섹션은 이후 key를 전역 설정으로 되돌린다.
 - `route /`는 기본 route. 없으면 정적 404.
 - `/cgi-bin/`은 proxy route보다 우선해서 Phase 2 CGI로 처리한다.
 
@@ -364,6 +375,7 @@ CLI > 설정 파일 > 기본값
 - `--config <path>` 추가.
 - `./server --config phase3.conf`처럼 positional port/docroot 없이 실행 가능하게 한다.
 - positional 인자가 있으면 파일 값을 override한다.
+- `--max-upstreams N`, `--max-conns N`으로 파일 값을 override할 수 있다.
 - 기존 Phase 1/2 CLI 옵션은 그대로 유지한다.
 
 ## 9. upstream keep-alive 풀
@@ -528,7 +540,7 @@ proxy는 양방향이므로 한쪽이 느릴 때 다른 쪽 읽기를 멈춰야 
 | connect | 2초 | 다음 backend 재시도, 모두 실패 시 `502` |
 | response header | 10초 | `504` |
 | body idle | 10초 | `504` 또는 close |
-| client body read | 기존 request timeout | `408`/close |
+| client body read | `timeout request` (5초) | `408`/close |
 
 - backend connect 실패 → `502 Bad Gateway`
 - backend 응답 지연 → `504 Gateway Timeout`
@@ -666,14 +678,15 @@ Phase 2 drain을 확장한다.
   - hop-by-hop 헤더 제거, `X-Forwarded-For` 추가.
   - Content-Length/chunked 요청·응답 중계, gzip pass-through.
   - keep-alive 풀(재사용/만료/stale 감지), passive health(connect 실패 502 + cooldown).
-  - connect/response/body timeout, 502/504.
+  - connect/response/body timeout, 502/504. client request body timeout은 408.
   - client keep-alive, 1MB body, backpressure.
-- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 10개, `tests/integration_p3.sh` 37개 PASS. `make test` 328 assertions, 전체 integration 177 PASS, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
-- **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용.
+  - `strip_prefix 1` route, `max_upstreams` 상한(503 + `Retry-After`), upstream reason phrase/Trailer 보존.
+- **검증**: `tests/test_chunked.c` 6개, `tests/test_http_upstream.c` 11개, `tests/test_config_file.c` 5개, `tests/integration_p3.sh` 41개 PASS. `make test` **358 assertions**, 전체 integration **181 PASS**, `make sanitize` PASS, fd 9→9. proxy `ab -k -n 10000 -c 100` failed=0, 약 8.7k rps (macOS 로컬, backend 2개).
+- **실패 경로**: upstream EOF/EV_ERR를 읽기 후 판정(Connection: close, close-delimited, chunked+close), body idle timeout, 1xx+최종 동시 도착, 응답 Connection named header 제거, backend failover, deferred proxy free, 205/HEAD/204/304 no-body, HTTP/1.0 pool 금지, route prefix 경계, HTAB 허용, slow request body 408, upstream 상한 503.
 - **알려진 한계**:
-  - path prefix strip 옵션은 아직 없다. backend가 `/api/...` 경로를 그대로 받는다.
   - `pool max_idle` 기본 8이라 100 concurrent에서는 upstream 연결이 다수 생성된다.
   - `max_conns`는 client만 세므로 proxy 연결에서는 upstream fd가 2배 필요하다.
-  - reason phrase 보존과 Trailer 세부 처리는 future.
+  - 설정 파일의 IPv6 literal(`[::1]:8001`)은 아직 지원하지 않는다.
+  - `test_proxy_route.c`/`test_proxy_pool.c` 단위 테스트 대신 integration으로 검증한다.
   - active `/health`, 캐싱, gzip 변환, Forward proxy, CONNECT는 범위 밖.
   - Linux epoll은 CI에서 확인한다.

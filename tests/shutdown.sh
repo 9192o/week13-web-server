@@ -10,7 +10,25 @@
 # usage: sh tests/shutdown.sh [base-port]
 set -u
 
-BASE_PORT=${1:-18090}
+if [ "$#" -ge 1 ]; then
+    BASE_PORT=$1
+else
+    BASE_PORT=""
+    for p in 18090 18190 18290 18390 18490 18590; do
+        if ! nc -z 127.0.0.1 "$p" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 1))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 2))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 3))" >/dev/null 2>&1 &&
+           ! nc -z 127.0.0.1 "$((p + 4))" >/dev/null 2>&1; then
+            BASE_PORT=$p
+            break
+        fi
+    done
+    if [ -z "$BASE_PORT" ]; then
+        echo "error: no free ports" >&2
+        exit 1
+    fi
+fi
 HOST=127.0.0.1
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SERVER="$ROOT/server"

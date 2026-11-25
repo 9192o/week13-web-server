@@ -121,3 +121,14 @@ void test_upstream_header_htab(void) {
         &res);
     TEST_ASSERT_EQ_INT(st, HTTP_OK);
 }
+
+void test_upstream_reason(void) {
+    upstream_response_t res;
+    http_status_t st = parse_resp(
+        "HTTP/1.1 201 Created Custom\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        &res);
+    TEST_ASSERT_EQ_INT(st, HTTP_OK);
+    TEST_ASSERT_EQ_STR(res.reason, "Created Custom");
+}

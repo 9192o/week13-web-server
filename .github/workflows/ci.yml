@@ -45,3 +45,6 @@ jobs:
 
       - name: Load test
         run: make load
+
+      - name: Proxy load test
+        run: make proxy-load
