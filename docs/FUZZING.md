@@ -12,6 +12,25 @@ HTTP parser와 reverse-proxy response parser를 libFuzzer로 검사한다.
 - `proxy_request_head()`
 - `proxy_response_head()` with `is_head` true/false
 
+## Fuzz 범위
+
+이 fuzz는 **parser 계층만** 대상으로 한다. 아래 영역은 현재 fuzz에 포함되지 않는다.
+
+| 영역 | fuzz 여부 | 이유 / 필요한 방법 |
+| --- | --- | --- |
+| HTTP 요청 줄·헤더·본문 parser | 완료 | 현재 `tests/fuzz_http.c` |
+| proxy request/response wire parser | 완료 | 현재 `tests/fuzz_http.c` |
+| 네트워크 이벤트 루프 | 미포함 | 실제 socket 기반 network fuzz(AFLnet/boofuzz 등) 필요 |
+| keep-alive·파이프라인 상태 머신 | 미포함 | 요청 순서/부분 전송을 다루는 stateful network fuzz 필요 |
+| proxy exchange 전체(연결·풀·timeout) | 미포함 | mock socket/clock과 backend fault injection 필요 |
+| CGI 프로세스·큐 | 미포함 | 동시성 stress, child abort/timeout fault injection 영역 |
+| 정적 파일·파일 시스템 경로 | 미포함 | 임시 root fixture와 path fuzz harness가 별도로 필요 |
+| 204/205 등 실제 응답 동작 | 미포함 | backend 응답 시퀀스와 framing/hang property assertion 필요 |
+
+따라서 이 fuzz 결과를 **“전체 서버 fuzz 완료”로 해석하면 안 된다.**
+전체 서버는 `sh tests/verify_phase3.sh`, 실제 A/B 프록시·CGI E2E, GitHub CI로
+검증하며, fuzz는 그중 parser 보조 검사다.
+
 ## Run
 
 ```sh
