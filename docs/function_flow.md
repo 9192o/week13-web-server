@@ -103,7 +103,7 @@ ev_wait
       └─ drain_task_completions (src/app/server_cgi.c)
 ```
 
-프록시 요청은 client fd가 `ST_PROXY`가 되고, 이후 client 이벤트는 `proxy_handle_client_event()`가, upstream 이벤트는 `proxy_handle_upstream_event()`가 처리한다. 두 콜백은 `conn_loop_app_t`로 전달된다.
+프록시 요청은 client fd가 `ST_STREAM`이 되고, 이후 client 이벤트는 `proxy_handle_client_event()`가, upstream 이벤트는 `proxy_handle_upstream_event()`가 처리한다. 두 콜백은 `conn_loop_app_t`로 전달된다.
 
 ---
 
@@ -178,7 +178,7 @@ return conn_loop_run(cfg, &app, &ctx);
    - signal pipe → 신호 소비
    - app이 등록한 extra fd → `server_extra_event()` → `drain_task_completions()`
    - `EV_SRC_UPSTREAM` → `app->upstream_event()`
-   - `ST_PROXY` client → `app->client_event()`
+   - `ST_STREAM` client → `app->client_event()`
    - 그 외 client → `app->readable()` / `app->writable()`
 4. 루프 끝에서 `conn_common_sweep()`, `conn_common_expire_timers()`, `app->tick()`을 호출한다.
 5. `app->tick()`은 서버에서 `proxy_sweep()`과 `proxy_reap()`을 호출한다.
@@ -209,7 +209,7 @@ return conn_loop_run(cfg, &app, &ctx);
 | `ST_READ` | 다음 요청 헤더를 읽는 중 |
 | `ST_READ_BODY` | CGI용 요청 body를 다 읽는 중 |
 | `ST_WAIT_TASK` | CGI task pool 결과를 기다리는 중 |
-| `ST_PROXY` | 프록시가 client/upstream을 중계하는 중 |
+| `ST_STREAM` | 앱이 소유한 스트림 상태 (프록시 중계 등) |
 | `ST_WRITE` | 응답 헤더/body를 쓰는 중 |
 
 `ST_WAIT_TASK`에서는 client fd를 이벤트 루프에서 제거한다. task가 끝나면 completion fd를 통해 다시 `EV_WRITE`로 붙인다.
@@ -337,7 +337,7 @@ proxy_start
 │  ├─ BODY_CONTENT_LENGTH
 │  └─ BODY_NONE
 ├─ proxy_build_request
-├─ c->proxy = p, c->state = ST_PROXY
+├─ c->app_state = p, c->state = ST_STREAM
 ├─ proxy_list_add, g_active_upstreams++
 └─ proxy_connect_backend
 ```
@@ -404,7 +404,7 @@ EV_ERR
 
 ### 8.6 client 이벤트 — `proxy_handle_client_event()`
 
-client fd가 `ST_PROXY`일 때의 이벤트다.
+client fd가 `ST_STREAM`일 때의 이벤트다.
 
 ```text
 EV_ERR
@@ -478,7 +478,7 @@ EV_WRITE
 
 1. `p->dead = 1`
 2. `g_dead` 리스트에 추가
-3. `c->proxy = NULL`
+3. `c->app_state = NULL`
 
 이벤트 배치가 끝난 뒤 `proxy_reap()`가 실제 free를 한다. 같은 이벤트 배치에서 client/upstream 이벤트가 겹쳐도 포인터를 안전하게 만드는 장치다.
 
@@ -595,7 +595,7 @@ proxy_shutdown_all()
    - 이벤트 콜백 안에서 직접 `free(p)`를 호출하면 안 된다.
 
 3. **프록시 deadline은 `proxy_sweep()` 소유**
-   - `conn_common_expire_timers()`는 `ST_PROXY`를 건너뛴다.
+   - `conn_common_expire_timers()`는 `ST_STREAM`을 건너뛴다.
    - `conn_common_next_timeout()`은 `proxy_next_timeout_ms()`를 함께 본다.
 
 4. **chunked는 raw relay**

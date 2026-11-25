@@ -15,7 +15,7 @@ int conn_common_next_timeout(conn_t *head) {
     uint64_t now = now_ms();
     uint64_t min = UINT64_MAX;
     for (conn_t *c = head; c != NULL; c = c->next) {
-        if (c->state == ST_PROXY)
+        if (c->state == ST_STREAM)
             continue;
         if (c->deadline_ms < min)
             min = c->deadline_ms;
@@ -40,7 +40,7 @@ void conn_common_expire_timers(ev_loop_t *loop, conn_t *head,
     for (conn_t *c = head; c != NULL; c = c->next) {
         if (c->closed || now < c->deadline_ms)
             continue;
-        if (c->state == ST_PROXY)
+        if (c->state == ST_STREAM)
             continue;
 
         if (c->state == ST_READ && c->in_len == 0 && c->requests > 0) {

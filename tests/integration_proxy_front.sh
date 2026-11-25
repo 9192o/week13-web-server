@@ -87,7 +87,7 @@ trap cleanup EXIT INT TERM
 
 i=0
 while [ "$i" -lt 50 ]; do
-    if curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:$PPORT/" 2>/dev/null; then
+    if curl -fsS --max-time 1 -o /dev/null "http://127.0.0.1:$PPORT/" 2>/dev/null; then
         break
     fi
     i=$((i + 1))

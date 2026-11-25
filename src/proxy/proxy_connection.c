@@ -104,8 +104,8 @@ void proxy_close_upstream(proxy_conn_t *p) {
 static void proxy_free_struct(proxy_conn_t *p) {
     if (p == NULL || p->dead)
         return;
-    if (p->client != NULL && p->client->proxy == p)
-        p->client->proxy = NULL;
+    if (p->client != NULL && p->client->app_state == p)
+        p->client->app_state = NULL;
     proxy_list_remove(p);
     if (g_active_upstreams > 0)
         g_active_upstreams--;
@@ -256,9 +256,9 @@ void proxy_update_events(proxy_conn_t *p) {
 }
 
 void proxy_kick(conn_t *c) {
-    if (c == NULL || c->proxy == NULL)
+    if (c == NULL || c->app_state == NULL)
         return;
-    proxy_conn_t *p = c->proxy;
+    proxy_conn_t *p = c->app_state;
     if (p->state == PROXY_SENDING && !p->req_body_done &&
         c->in_len > 0) {
         proxy_read_client_body(p);
@@ -268,8 +268,10 @@ void proxy_kick(conn_t *c) {
 }
 
 void proxy_mark_close(conn_t *c) {
-    if (c != NULL && c->proxy != NULL)
-        c->proxy->close_client = 1;
+    if (c != NULL && c->app_state != NULL) {
+        proxy_conn_t *p = c->app_state;
+        p->close_client = 1;
+    }
 }
 
 void proxy_sweep(void) {
@@ -465,8 +467,8 @@ int proxy_start(conn_t *c, int route_index, const http_request_t *req) {
         p->continue_sent = 0;
     }
 
-    c->proxy = p;
-    c->state = ST_PROXY;
+    c->app_state = p;
+    c->state = ST_STREAM;
     c->requests++;
     proxy_list_add(p);
     g_active_upstreams++;
@@ -554,7 +556,7 @@ void proxy_handle_upstream_event(proxy_conn_t *p, uint32_t events) {
 }
 
 void proxy_handle_client_event(conn_t *c, uint32_t events) {
-    proxy_conn_t *p = c->proxy;
+    proxy_conn_t *p = c->app_state;
     if (p == NULL || p->dead)
         return;
 
@@ -572,7 +574,7 @@ void proxy_handle_client_event(conn_t *c, uint32_t events) {
         }
     }
 
-    if (c->proxy != NULL && (events & EV_WRITE)) {
+    if (c->app_state != NULL && (events & EV_WRITE)) {
         if (p->continue_pending)
             proxy_flush_continue(p);
         if (!p->dead && !p->continue_pending)
@@ -581,9 +583,9 @@ void proxy_handle_client_event(conn_t *c, uint32_t events) {
 }
 
 void proxy_detach(conn_t *c) {
-    if (c == NULL || c->proxy == NULL)
+    if (c == NULL || c->app_state == NULL)
         return;
-    proxy_conn_t *p = c->proxy;
+    proxy_conn_t *p = c->app_state;
     proxy_close_upstream(p);
     proxy_free_struct(p);
 }

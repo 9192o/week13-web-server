@@ -126,17 +126,15 @@ chunked, POST, Expect 100-continue, keep-alive, 504, 502).
   `conn_common_hooks_t`의 `detach`/`next_timeout_ms` 콜백만 쓴다.
 - `conn_loop`는 `conn_loop_app_t`의 콜백만 호출하고, `proxy_handle_*`를
   직접 알지 않는다.
-- `conn_t`에는 아직 `proxy` 포인터와 `ST_PROXY` 상태가 있다. 연결 상태
-  자체를 완전히 범용화하려면 이 필드를 `void *app_state`로 바꾸는
-  마지막 정리가 남아 있다.
+- `conn_t`는 이제 `void *app_state`와 `ST_STREAM` 상태를 쓴다. 연결 코어는
+  프록시 타입을 직접 알지 않고, 앱이 `app_state`를 해석한다.
 
 즉 **연결 수명주기와 이벤트 루프는 공유**했고, **애플리케이션 계층만
 분리**되어 있다. "실행 파일 분리 + 코드 공유" 기준으로는 사실상 완료다.
 
 ## 한계
 
-- `server_mode`(FULL / PROXY_ONLY)는 `config_t`에 실험용으로 추가했다.
-- `conn_t`의 `proxy` 포인터와 `ST_PROXY` 상태는 아직 남아 있다.
-  정적 전용 서버와 완전히 공유하려면 `void *app_state`로 일반화하는
-  마지막 정리가 필요하다.
+- `server_mode`는 FULL / PROXY_ONLY / BACKEND로 나뉜다. `backend-server`는 BACKEND 모드로 빌드된다.
+- `conn_t`는 `void *app_state`/`ST_STREAM`으로 일반화되어 공통 코어가
+  프록시 타입을 직접 포함하지 않는다. 프록시 앱이 `app_state`를 캐스팅해 쓴다.
 - 이 브랜치는 실제 제품/과제 제출용이 아니라 구조 확인용이다.

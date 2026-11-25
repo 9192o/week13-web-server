@@ -79,12 +79,12 @@ backend-server
 | `include/http_upstream.h`, `src/http/http_upstream.c` | upstream 응답(status line + headers) 파서 |
 | `include/chunked.h`, `src/http/chunked.c` | chunked stream-through 파서 |
 | `src/common/config_file.c` | INI 유사 설정 파일 파서 |
-| `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_PROXY`, event source kind |
+| `include/server_conn.h`, `include/ev_source.h` | client `conn_t`/`ST_STREAM`, event source kind |
 | `tests/backend.c`, `tests/integration_p3.sh` | 테스트용 C backend와 Phase 3 통합 테스트 |
 | `src/app/main_proxy.c`, `src/app/proxy_server.c` | 프론트 진입점, 프록시 앱 콜백/proxy 초기화 |
 | `src/app/main_backend.c` | 백엔드 전용 진입점 |
 | `src/app/server_ev.c` | 백엔드/통합 앱 어댑터, `conn_loop` 콜백, proxy 이벤트 dispatch |
-| `src/app/server_request.c` | client 상태 `ST_PROXY` route 분기, 정적 응답 |
+| `src/app/server_request.c` | client 상태 `ST_STREAM` route 분기, 정적 응답 |
 | `src/conn/conn_loop.c`, `src/conn/conn_io.c` | 이벤트 dispatch, header read, read/write 상태 머신 |
 | `include/config.h`, `src/common/config.c` | route/backend/timeout/pool 설정 필드 추가 |
 | `Makefile` | proxy 모듈/테스트 backend/`integration-p3` 타깃 추가 |
@@ -202,18 +202,18 @@ typedef struct {
 
 ### 5.4 client 상태 확장
 
-`conn_state_t`에 `ST_PROXY`를 추가한다.
+`conn_state_t`에 `ST_STREAM`를 추가한다.
 
 ```text
 ST_READ        헤더 읽기 / keep-alive idle
 ST_READ_BODY   CGI POST body 읽기
 ST_WAIT_TASK   CGI 작업 대기
-ST_PROXY       proxy 요청 진행 중 (client↔upstream 중계)
+ST_STREAM       proxy 요청 진행 중 (client↔upstream 중계)
 ST_WRITE       일반 응답 쓰기
 ```
 
 - `conn_t`에 `proxy_conn_t *proxy`를 추가한다.
-- `ST_PROXY`에서 client fd 이벤트는 `conn_loop_app_t.client_event`를 거쳐 `proxy_handle_client_event()`로 위임한다. upstream 이벤트는 `conn_loop_app_t.upstream_event` → `proxy_handle_upstream_event()`다.
+- `ST_STREAM`에서 client fd 이벤트는 `conn_loop_app_t.client_event`를 거쳐 `proxy_handle_client_event()`로 위임한다. upstream 이벤트는 `conn_loop_app_t.upstream_event` → `proxy_handle_upstream_event()`다.
 - `conn_close`는 `proxy_detach(c)`를 호출해 upstream과 풀 상태를 정리한다.
 
 ## 6. 요청 흐름
@@ -228,7 +228,7 @@ ST_WRITE       일반 응답 쓰기
 4. route table에서 longest-prefix 매칭:
    - `ROUTE_STATIC` → 기존 `static_file_prepare`/`conn_build_static`
    - `ROUTE_PROXY` → `proxy_start`
-5. proxy 요청이면 `conn_t.state = ST_PROXY`, `conn_t.proxy` 설정.
+5. proxy 요청이면 `conn_t.state = ST_STREAM`, `conn_t.app_state` 설정.
 
 ### 6.2 proxy_start
 
@@ -593,7 +593,7 @@ Phase 2 drain을 확장한다.
 
 1. SIGINT/SIGTERM → listen 중단, 새 proxy 요청 중단.
 2. `ST_READ`/`ST_READ_BODY` client는 close.
-3. `ST_PROXY` client는 5초 유예:
+3. `ST_STREAM` client는 5초 유예:
    - 진행 중 요청/응답을 마치게 한다.
    - 5초가 지나면 client/upstream close.
 4. pool의 idle 연결은 즉시 close.
@@ -659,7 +659,7 @@ Phase 2 drain을 확장한다.
 ## 19. 구현 순서
 
 1. 설정 파일 parser + route table + 시작 시 DNS resolve.
-2. `conn_t`에 `ST_PROXY`/event source kind 추가.
+2. `conn_t`에 `ST_STREAM`/event source kind 추가.
 3. 기본 proxy: connect → 요청 헤더 전송 → 응답 헤더 파싱 → Content-Length body 중계 → close.
 4. hop-by-hop 헤더/XFF/502/504/timeout.
 5. 정적 route와 proxy route 공존.

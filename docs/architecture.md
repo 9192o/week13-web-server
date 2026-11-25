@@ -135,7 +135,7 @@ typedef struct {
 | `ST_READ` | 요청 헤더 읽기 | `server_readable()` → `conn_common_read_headers()` |
 | `ST_READ_BODY` | CGI용 body 읽기 | `server_readable()` |
 | `ST_WAIT_TASK` | CGI worker 결과 대기 | completion fd |
-| `ST_PROXY` | 프록시 중계 | `proxy_*` |
+| `ST_STREAM` | 앱 소유 스트림 (프록시 중계 등) | `proxy_*` |
 | `ST_WRITE` | 응답 전송 | `conn_common_on_writable()` |
 
 ### 이벤트 루프의 책임 분리
@@ -144,7 +144,7 @@ typedef struct {
 - task completion fd: `server_extra_event()` → `drain_task_completions()`
 - signal self-pipe: `conn_loop`가 소비
 - `EV_SRC_UPSTREAM`: `conn_loop_app_t.upstream_event` → `proxy_handle_upstream_event()`
-- `ST_PROXY` client: `conn_loop_app_t.client_event` → `proxy_handle_client_event()`
+- `ST_STREAM` client: `conn_loop_app_t.client_event` → `proxy_handle_client_event()`
 - 그 외 client: `conn_loop_app_t.readable` / `writable`
 
 루프 끝에서 `conn_common_sweep()`, `conn_common_expire_timers()`, `conn_loop_app_t.tick()`을 호출한다. 서버의 tick은 `proxy_sweep()`/`proxy_reap()`이고, 일반 연결 deadline은 공통 timer가, 프록시 deadline은 `proxy_sweep()`이 소유한다.

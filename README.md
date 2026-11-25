@@ -101,7 +101,7 @@ C11로 직접 구현한 HTTP/1.1 웹서버와 리버스 프록시입니다. 외�
 5. 응답을 `ST_WRITE` 상태로 전송합니다. keep-alive면 상태를 초기화하고, 아니면 연결을 닫습니다.
 6. 이벤트 루프가 주기적으로 timeout, keep-alive 만료, 프록시 pool 만료를 정리합니다.
 
-`conn_t`의 주요 상태는 `ST_READ`, `ST_READ_BODY`, `ST_WAIT_TASK`, `ST_PROXY`, `ST_WRITE`입니다.
+`conn_t`의 주요 상태는 `ST_READ`, `ST_READ_BODY`, `ST_WAIT_TASK`, `ST_STREAM`, `ST_WRITE`입니다.
 
 ## Phase 1: HTTP와 정적 파일
 

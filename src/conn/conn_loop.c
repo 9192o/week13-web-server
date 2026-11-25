@@ -161,7 +161,7 @@ int conn_loop_run(const config_t *cfg, const conn_loop_app_t *app, void *ctx) {
             conn_t *c = (conn_t *)src;
             if (c->closed)
                 continue;
-            if (c->state == ST_PROXY) {
+            if (c->state == ST_STREAM) {
                 if (app->client_event != NULL)
                     app->client_event(c, events[i].events);
                 else

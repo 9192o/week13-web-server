@@ -15,11 +15,10 @@ typedef enum {
     ST_READ,
     ST_READ_BODY,
     ST_WAIT_TASK,
-    ST_PROXY,
+    ST_STREAM,
     ST_WRITE
 } conn_state_t;
 
-struct proxy_conn;
 struct ev_loop;
 
 typedef struct conn {
@@ -57,7 +56,7 @@ typedef struct conn {
     access_log_t log;
     int log_has_request;
 
-    struct proxy_conn *proxy;
+    void *app_state; /* app-owned stream state (proxy etc.) */
     struct ev_loop *loop;
     const config_t *cfg;
 
